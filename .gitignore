@@ -1,0 +1,45 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Tauri / Rust build outputs
+src-tauri/target*/
+src-tauri/gen/
+
+# Local preview, verification and packaging outputs
+.tmp/
+.tmp-*/
+.package/
+artifacts/
+LanChat-green/
+LanChat_*_green/
+LanChat_*_green.zip
+*-preview.html
+ui-style-preview.html
+vite-dev*.log
+.vite-*.log
+.static-preview*.log
+
+# Local duplicate icon backups
+src-tauri/icons - 副本/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

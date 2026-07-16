@@ -1,0 +1,72 @@
+﻿import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+
+const appVue = await readFile("src/App.vue", "utf8");
+const css = await readFile("src/styles/global.css", "utf8");
+const api = await readFile("src/services/tauri-api.ts", "utf8");
+const store = await readFile("src/stores/lanchat.ts", "utf8");
+const eventBus = await readFile("src/services/event-bus.ts", "utf8");
+const types = await readFile("src/types/lanchat.ts", "utf8");
+const protocol = await readFile("src-tauri/src/protocol.rs", "utf8");
+const network = await readFile("src-tauri/src/network.rs", "utf8");
+const lib = await readFile("src-tauri/src/lib.rs", "utf8");
+
+assert.match(appVue, /type RecipientPickerMode = "gameInvite" \| "privateChannelCreate" \| "privateChannelInvite"/, "应有复用接收人选择模式");
+assert.match(appVue, /class="recipient-picker-modal"/, "应有复用接收人选择弹窗");
+assert.match(appVue, /class="recipient-list-row"/, "接收人选择应使用通讯录列表行");
+assert.doesNotMatch(appVue, /class="recipient-card"/, "接收人选择不应再使用方卡片");
+assert.match(appVue, /createRoomGameMenuOpen = ref\(false\)/, "创建房间应使用自定义下拉开关状态");
+assert.match(appVue, /class="create-room-game-dropdown"/, "创建房间应使用自定义下拉容器");
+assert.match(appVue, /class="create-room-game-select"/, "创建房间应使用下拉选择入口");
+assert.match(appVue, /v-for="game in gameRegistry"[\s\S]*selectCreateRoomGame\(game\.type\)/, "创建房间下拉应以列表选择游戏");
+assert.doesNotMatch(appVue, /class="create-room-game-card"/, "创建房间不应再使用游戏卡片网格");
+assert.doesNotMatch(appVue, /createRoomGameOptions/, "创建房间不应再依赖 Naive 下拉 options 渲染大块内容");
+assert.doesNotMatch(appVue, /renderCreateRoomGameLabel/, "创建房间不应再通过 Naive render-label 渲染大块菜单项");
+assert.match(appVue, /const groupInspectorAvailable = computed\([\s\S]*kind === "group"/, "群聊应固定显示右侧群信息栏");
+assert.match(appVue, /<NLayoutSider v-if="groupInspectorAvailable" class="group-inspector"/, "群聊应渲染群成员和群公告栏");
+assert.match(appVue, /class="pane-resize-handle right-group"/, "群信息栏应支持拖动调节宽度");
+assert.doesNotMatch(appVue, /channelPaneExpanded = ref\(/, "群信息栏不应再依赖展开收起状态");
+assert.match(appVue, /class="message-avatar"/, "聊天消息应展示头像");
+assert.match(appVue, /class="message-meta"/, "聊天消息应展示昵称");
+assert.match(appVue, /openRecipientPicker\('gameInvite'\)/, "游戏邀请应打开选择弹窗");
+assert.match(appVue, /openRecipientPicker\('privateChannelCreate'\)/, "超管应能创建私有频道");
+assert.match(appVue, /openRecipientPicker\('privateChannelInvite'\)/, "群主应能邀请私有频道成员");
+assert.doesNotMatch(appVue, /privateChannelCreate"\) return !privateChannelTitleDraft\.value\.trim\(\) \|\| selectedRecipientPeerIds/, "创建私有频道不应强制选择成员");
+assert.match(appVue, /PRIVATE_CHANNEL_INVITE_PREFIX/, "私有频道邀请应以聊天卡片编码");
+assert.match(appVue, /privateChannelInvitePayload/, "聊天消息应识别私有频道邀请卡片");
+assert.match(appVue, /acceptPrivateChannelInviteCard/, "邀请卡片应支持加入操作");
+assert.match(appVue, /rejectPrivateChannelInviteCard/, "邀请卡片应支持拒绝操作");
+assert.match(appVue, /sendPrivateChannelInviteCards/, "邀请频道成员应发送私聊邀请卡片");
+assert.match(appVue, /deviceChannelConversations/, "设备列表应汇总公开和私有频道数据");
+assert.match(appVue, /channel-category-list/, "设备列表应展示频道分类");
+assert.doesNotMatch(appVue, /<NDropdown[\s\S]{0,240}openRecipientPicker\('gameInvite'\)/, "游戏邀请不应再使用下拉菜单");
+
+assert.match(css, /\.recipient-picker-modal\.n-card/, "接收人选择弹窗应有独立样式");
+assert.match(css, /\.recipient-list-row/, "接收人列表行应有独立样式");
+assert.match(css, /\.message-avatar/, "消息头像应有独立样式");
+assert.match(css, /\.group-inspector\s*\{/, "群信息栏应有独立样式");
+assert.match(css, /\.pane-resize-handle\.right-group/, "群信息栏应有右侧宽度调节手柄");
+assert.match(css, /\.channel-invite-card/, "私有频道邀请卡片应有独立样式");
+assert.match(css, /\.create-room-game-option/, "创建房间下拉项应有图文样式");
+assert.match(css, /\.create-room-game-menu/, "创建房间下拉菜单应有独立滚动样式");
+
+assert.match(api, /createPrivateChannel/, "前端 API 应暴露创建私有频道");
+assert.match(api, /invitePrivateChannelMembers/, "前端 API 应暴露邀请私有频道成员");
+assert.match(api, /buildPrivateChannelInviteCard/, "前端 API 应暴露构建邀请卡片接口");
+assert.match(api, /acceptPrivateChannelInvite/, "前端 API 应暴露接受邀请接口");
+assert.match(store, /buildPrivateChannelInvite/, "Store 应封装构建邀请卡片");
+assert.match(store, /acceptPrivateChannelInvite/, "Store 应封装接受邀请并切换频道");
+assert.match(eventBus, /private_channel_invited/, "前端应保留私有频道邀请事件兼容旧协议");
+assert.match(types, /is_private: boolean/, "会话类型应包含私有频道标识");
+assert.match(types, /export type ChannelMember/, "应定义频道成员类型");
+assert.match(types, /export type PrivateChannelInvitePayload/, "应定义私有频道邀请卡片类型");
+
+assert.match(lib, /build_private_channel_invite_card/, "后端应提供构建私有频道邀请卡片命令");
+assert.match(lib, /accept_private_channel_invite/, "后端应提供接受私有频道邀请命令");
+assert.match(protocol, /PrivateChannelInvite/, "协议应包含私有频道邀请帧");
+assert.match(protocol, /encrypted: bool/, "聊天消息帧应带加密标识");
+assert.match(protocol, /nonce: Option<String>/, "聊天消息帧应带 nonce");
+assert.match(network, /encrypt_channel_content/, "私有频道发送应加密内容");
+assert.match(network, /decrypt_channel_content/, "私有频道接收应解密内容");
+
+console.log("private channel ui and protocol checks passed");

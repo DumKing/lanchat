@@ -1,0 +1,43 @@
+{
+  "name": "lanchat",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "test:gomoku": "node scripts/test-gomoku-rules.mjs",
+    "test:xiangqi": "node scripts/test-xiangqi-rules.mjs",
+    "test:minesweeper": "node scripts/test-minesweeper-rules.mjs",
+    "test:minesweeper-room-ui": "node scripts/test-minesweeper-room-ui.mjs",
+    "test:minesweeper-leaderboard": "node scripts/test-minesweeper-leaderboard.mjs",
+    "test:game-leaderboard": "node scripts/test-game-leaderboard.mjs",
+    "test:game-catalog-view": "node scripts/test-game-catalog-view.mjs",
+    "test:private-channel-ui": "node scripts/test-private-channel-ui.mjs",
+    "test:alert-credibility": "node scripts/test-alert-credibility.mjs",
+    "test:frog-alert-mode": "node scripts/test-frog-alert-mode.mjs",
+    "test:frog-pet-ui": "node scripts/test-frog-pet-ui-native.mjs",
+    "test:native-frog-pet": "node scripts/test-native-frog-pet.mjs",
+    "test:avatar-profile": "node scripts/test-avatar-profile.mjs",
+    "test:app-error-boundary": "node scripts/test-app-error-boundary.mjs",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
+    "@tauri-apps/plugin-opener": "^2",
+    "crypto-js": "^4.2.0",
+    "naive-ui": "^2.44.1",
+    "pinia": "^3.0.4",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "@types/crypto-js": "^4.2.2",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "~5.6.2",
+    "vite": "^6.0.3",
+    "vue-tsc": "^2.1.10"
+  }
+}

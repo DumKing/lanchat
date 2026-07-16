@@ -1,0 +1,37 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+
+const appVue = readFileSync("src/App.vue", "utf8");
+const native = readFileSync("src-tauri/src/native_frog_pet.rs", "utf8");
+const rust = readFileSync("src-tauri/src/lib.rs", "utf8");
+const api = readFileSync("src/services/tauri-api.ts", "utf8");
+
+assert.match(rust, /mod native_frog_pet;/, "应注册原生桌宠模块");
+assert.match(rust, /NativeFrogPetController::start/, "应用启动时应启动原生桌宠线程");
+assert.match(rust, /update_native_frog_pet/, "Tauri 应暴露原生桌宠状态同步命令");
+assert.doesNotMatch(rust, /WebviewWindowBuilder::new\(app, "frog-pet"/, "桌宠不应再创建第二个 WebView");
+assert.match(native, /eframe::run_native/, "桌宠应由 eframe 创建原生窗口");
+assert.match(native, /with_transparent\(true\)/, "桌宠原生窗口必须透明");
+assert.match(native, /with_decorations\(false\)/, "桌宠原生窗口不应有系统边框");
+assert.match(native, /with_taskbar\(false\)/, "桌宠不应单独出现在任务栏");
+assert.match(native, /FROG_SHEET_BYTES[\s\S]{0,120}frog-3d-actions-alpha\.png/, "青蛙应使用完整动作池 3D 透明 PNG 素材");
+assert.match(native, /ALERT_POSES: \[usize; 3\] = \[POSE_SURPRISE, POSE_ANGRY, POSE_ALERT\]/, "普通报警应使用惊讶、生气、告警三张图循环");
+assert.match(native, /fitted_texture_rect/, "青蛙本体应按原图比例居中绘制");
+assert.match(native, /painter\.image/, "青蛙本体应通过 egui 图片纹理绘制");
+assert.match(native, /raw_scroll_delta/, "桌宠应通过原生输入处理滚轮缩放");
+assert.match(native, /InnerSize\(next\)/, "滚轮应改变桌宠本体所在原生窗口尺寸");
+assert.match(native, /native_frog_action/, "原生桌宠动作应回传主应用");
+assert.match(appVue, /NativeFrogPetState/, "Vue 应构造原生桌宠状态");
+assert.match(appVue, /api\.(?:updateDesktopPetState|updateNativeFrogPet)\(nativeState\)/, "Vue 应同步告警状态给原生桌宠");
+assert.match(appVue, /listen<\{ action: string; alert_id\?: string \| null \}>\("(?:desktop_pet_action|native_frog_action)"/, "Vue 应接收原生桌宠动作");
+assert.match(api, /updateDesktopPetState|updateNativeFrogPet/, "前端 API 应包含桌宠状态命令");
+assert.match(appVue, /const ALERT_SEND_COOLDOWN_MS = 20_000;/, "告警发送仍应保留本地频率限制");
+assert.match(appVue, /lastOwnAlertSentAt\.value = 0/, "点击青蛙停止后应重置本机告警冷却");
+assert.match(appVue, /frogStopHotkey|captureFrogStopHotkey|handleFrogStopHotkey/, "设置里应支持配置停止蹦迪快捷键");
+assert.match(appVue, /theme_accent:\s*currentTheme\.value\.accent/, "前端应把当前主题色同步给原生桌宠");
+assert.match(appVue, /registerFrogStopHotkey/, "设置快捷键后应注册后端全局停止快捷键");
+assert.match(api, /registerFrogStopHotkey/, "前端 API 应包含注册停止蹦迪全局快捷键命令");
+assert.match(rust, /register_frog_stop_hotkey/, "Tauri 应暴露注册停止蹦迪全局快捷键命令");
+assert.match(rust, /frog_stop_hotkey_received/, "全局快捷键触发后应发事件给前端，即使主窗口隐藏到托盘");
+assert.match(appVue, /latestPendingAlert\.value/, "桌宠状态应保留待反馈告警");
+console.log("frog pet ui checks passed");

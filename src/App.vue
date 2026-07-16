@@ -1,0 +1,5238 @@
+<script setup lang="ts">
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { listen } from "@tauri-apps/api/event";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { availableMonitors, getCurrentWindow, LogicalPosition, LogicalSize, UserAttentionType } from "@tauri-apps/api/window";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import CryptoJS from "crypto-js";
+import {
+  NAlert,
+  NAvatar,
+  NBadge,
+  NButton,
+  NCard,
+  NConfigProvider,
+  NDropdown,
+  NEmpty,
+  NFormItem,
+  NInput,
+  NInputNumber,
+  NLayout,
+  NLayoutSider,
+  NList,
+  NListItem,
+  NMessageProvider,
+  NModal,
+  NRadioButton,
+  NRadioGroup,
+  NScrollbar,
+  NSelect,
+  NSpace,
+  NSpin,
+  NSwitch,
+  NTabPane,
+  NTabs,
+  NTag,
+  NText,
+  NThing,
+  NTooltip,
+} from "naive-ui";
+import { storeToRefs } from "pinia";
+import { api } from "./services/tauri-api";
+import { DEFAULT_GROUP_ID, useLanChatStore } from "./stores/lanchat";
+import { useDesktopPetStore } from "./stores/desktopPet";
+import type { DesktopPetPackage, DesktopPetRegistrySnapshot, PetPackageSource, PetStateKind } from "./types/desktop-pet";
+import type { AdminAlertMode, AdminDiscoMode, ChannelMember, Conversation, FrogAlertMode, GameFrame, Message, NativeFrogPetState, Peer, PrivateChannelInvitePayload, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem } from "./types/lanchat";
+import { DDZ_TURN_TIMEOUT_MS, canBeat, dealHands, evaluatePlay, isTurnTimedOut, playLabel, sortCards, turnRemainingSeconds, type DdzCard, type DdzPhase, type DdzPlay } from "./games/doudizhu";
+import { GOMOKU_TURN_TIMEOUT_MS, chooseAutoGomokuPoint, cloneGomokuBoard, createGomokuBoard, gomokuStoneLabel, gomokuTurnRemainingSeconds, isGomokuTurnTimedOut, placeGomokuStone, type GomokuBoard, type GomokuPhase, type GomokuPoint, type GomokuStone } from "./games/gomoku";
+import { cloneXiangqiBoard, createXiangqiBoard, createXiangqiDisplayGrid, isLegalXiangqiMove, moveXiangqiPiece, otherXiangqiSide, resignXiangqiSide, undoXiangqiMove, xiangqiPieceLabel, xiangqiSideLabel, type XiangqiBoard, type XiangqiPhase, type XiangqiPiece, type XiangqiPoint, type XiangqiSide } from "./games/xiangqi";
+import { MINESWEEPER_DEFAULT_HEIGHT, MINESWEEPER_DEFAULT_MINES, MINESWEEPER_DEFAULT_WIDTH, chordRevealMinesweeperCell, cloneMinesweeperBoard, createMinesweeperBoard, getMinesweeperProgress, revealMinesweeperCell, toggleMinesweeperFlag, type MinesweeperBoard, type MinesweeperCell, type MinesweeperPhase, type MinesweeperPoint } from "./games/minesweeper";
+import { MINESWEEPER_DIFFICULTIES, createMinesweeperLeaderboardRecord, difficultyByKey, formatMinesweeperElapsed, minesweeperDifficultyLabel, recordsForDifficulty, upsertMinesweeperLeaderboardRecords, type MinesweeperLeaderboardRecord } from "./games/minesweeperLeaderboard";
+import { formatWinRate, incrementGameStats, recordsForGame, upsertGameStatsRecords, type GameStatsRecord, type RankedGameType } from "./games/gameLeaderboard";
+import { createGameRoomShell, gameDefinitionOf, gameRegistry, type GameRoomShell, type GameType } from "./games/registry";
+import { alertTemperature, alertTruthScore, senderCredibility } from "./utils/alertCredibility";
+type UiThemeKey = "theme-dingtalk" | "theme-work" | "theme-lan" | "theme-light";
+type MainSection = "chat" | "devices" | "games" | "alerts" | "settings";
+type RecipientPickerMode = "gameInvite" | "privateChannelCreate" | "privateChannelInvite";
+function currentWindowLabel() {
+  try {
+    return getCurrentWindow().label;
+  } catch {
+    return "";
+  }
+}
+const isPetWindow = currentWindowLabel() === "frog-pet";
+type UndoRequest = {
+  requesterId: string;
+  requesterName: string;
+  createdAt: number;
+};
+type RoomChatItem = {
+  id: string;
+  senderDeviceId: string;
+  sender: string;
+  content: string;
+  mine: boolean;
+  createdAt: number;
+};
+type AlertFeedbackResult = "real" | "false";
+type AlertFeedbackRecord = {
+  responderDeviceId: string;
+  responderNickname: string;
+  result: AlertFeedbackResult;
+  createdAt: number;
+};
+type AlertRecord = {
+  alertId: string;
+  senderDeviceId: string;
+  senderNickname: string;
+  content: string;
+  mode: FrogAlertMode;
+  createdAt: number;
+  incoming: boolean;
+  handled: boolean;
+  localFeedback?: AlertFeedbackResult;
+  feedbacks: AlertFeedbackRecord[];
+};
+type DdzSeat = {
+  deviceId: string;
+  nickname: string;
+  avatar?: string | null;
+  online: boolean;
+  ready: boolean;
+  role?: "landlord" | "farmer";
+  handCount: number;
+};
+type DdzTableState = {
+  roomId: string;
+  phase: DdzPhase;
+  players: DdzSeat[];
+  landlordCards: DdzCard[];
+  hands: Record<string, DdzCard[]>;
+  turnDeviceId?: string;
+  turnStartedAt?: number;
+  landlordDeviceId?: string;
+  bidOrder: string[];
+  bidIndex: number;
+  bids: Record<string, boolean>;
+  lastPlay: DdzPlay | null;
+  passCount: number;
+  winnerDeviceId?: string;
+  winnerName?: string;
+  chatMessages: RoomChatItem[];
+  logs: string[];
+  updatedAt: number;
+};
+type DdzActionPayload =
+  | { action: "join"; player: DdzSeat }
+  | { action: "ready"; playerId: string; ready: boolean }
+  | { action: "bid"; playerId: string; call: boolean }
+  | { action: "play"; playerId: string; cardIds: string[] }
+  | { action: "pass"; playerId: string }
+  | { action: "leave"; playerId: string }
+  | { action: "chat"; message: RoomChatItem };
+type GomokuSeat = {
+  deviceId: string;
+  nickname: string;
+  avatar?: string | null;
+  online: boolean;
+  ready: boolean;
+  stone?: GomokuStone;
+};
+type GomokuMove = GomokuPoint & {
+  playerId: string;
+  playerName: string;
+  stone: GomokuStone;
+  createdAt: number;
+};
+type GomokuTableState = {
+  roomId: string;
+  phase: GomokuPhase;
+  players: GomokuSeat[];
+  board: GomokuBoard;
+  moves: GomokuMove[];
+  turnDeviceId?: string;
+  turnStartedAt?: number;
+  winnerDeviceId?: string;
+  winnerName?: string;
+  winnerStone?: GomokuStone;
+  winLine: GomokuPoint[];
+  pendingUndo?: UndoRequest;
+  chatMessages: RoomChatItem[];
+  logs: string[];
+  updatedAt: number;
+};
+type GomokuActionPayload =
+  | { action: "join"; player: GomokuSeat }
+  | { action: "ready"; playerId: string; ready: boolean }
+  | { action: "move"; playerId: string; x: number; y: number }
+  | { action: "undo_request"; playerId: string }
+  | { action: "undo_response"; playerId: string; accepted: boolean }
+  | { action: "resign"; playerId: string }
+  | { action: "leave"; playerId: string }
+  | { action: "chat"; message: RoomChatItem };
+type MinesweeperSeat = {
+  deviceId: string;
+  nickname: string;
+  avatar?: string | null;
+  online: boolean;
+  ready: boolean;
+};
+type MinesweeperPlayerState = {
+  board: MinesweeperBoard;
+  status: "playing" | "won" | "lost";
+  moves: number;
+  startedAt: number;
+  finishedAt?: number;
+  revealedSafe: number;
+  totalSafe: number;
+  flagged: number;
+};
+type MinesweeperTableState = {
+  roomId: string;
+  phase: MinesweeperPhase;
+  players: MinesweeperSeat[];
+  width: number;
+  height: number;
+  mines: number;
+  seed: number;
+  boards: Record<string, MinesweeperPlayerState>;
+  winnerDeviceId?: string;
+  winnerName?: string;
+  chatMessages: RoomChatItem[];
+  logs: string[];
+  updatedAt: number;
+};
+type MinesweeperActionPayload =
+  | { action: "join"; player: MinesweeperSeat }
+  | { action: "ready"; playerId: string; ready: boolean }
+  | { action: "difficulty"; playerId: string; width: number; height: number; mines: number }
+  | { action: "reveal"; playerId: string; x: number; y: number }
+  | { action: "flag"; playerId: string; x: number; y: number }
+  | { action: "chord"; playerId: string; x: number; y: number }
+  | { action: "leave"; playerId: string }
+  | { action: "chat"; message: RoomChatItem };type XiangqiSeat = {
+  deviceId: string;
+  nickname: string;
+  avatar?: string | null;
+  online: boolean;
+  ready: boolean;
+  side?: XiangqiSide;
+};
+type XiangqiMove = {
+  from: XiangqiPoint;
+  to: XiangqiPoint;
+  playerId: string;
+  playerName: string;
+  side: XiangqiSide;
+  piece?: XiangqiPiece;
+  captured?: XiangqiPiece | null;
+  previousCheckSide?: XiangqiSide;
+  pieceLabel: string;
+  capturedLabel?: string;
+  createdAt: number;
+};
+type XiangqiTableState = {
+  roomId: string;
+  phase: XiangqiPhase;
+  players: XiangqiSeat[];
+  board: XiangqiBoard;
+  moves: XiangqiMove[];
+  turnDeviceId?: string;
+  turnStartedAt?: number;
+  winnerDeviceId?: string;
+  winnerName?: string;
+  winnerSide?: XiangqiSide;
+  checkSide?: XiangqiSide;
+  pendingUndo?: UndoRequest;
+  chatMessages: RoomChatItem[];
+  logs: string[];
+  updatedAt: number;
+};
+type XiangqiActionPayload =
+  | { action: "join"; player: XiangqiSeat }
+  | { action: "ready"; playerId: string; ready: boolean }
+  | { action: "move"; playerId: string; from: XiangqiPoint; to: XiangqiPoint }
+  | { action: "undo_request"; playerId: string }
+  | { action: "undo_response"; playerId: string; accepted: boolean }
+  | { action: "resign"; playerId: string }
+  | { action: "leave"; playerId: string }
+  | { action: "chat"; message: RoomChatItem };
+type GameActionPayload = DdzActionPayload | GomokuActionPayload | XiangqiActionPayload | MinesweeperActionPayload;
+type GameInvitePayload = {
+  roomId: string;
+  roomName: string;
+  gameType: GameType;
+  gameName: string;
+  hostName: string;
+  hostDeviceId?: string;
+  createdAt: number;
+};
+type LeaderboardSyncPayload = {
+  gameStatsRecords?: GameStatsRecord[];
+  minesweeperLeaderboardRecords?: MinesweeperLeaderboardRecord[];
+};
+const GAME_INVITE_PREFIX = "LANCHAT_GAME_INVITE:";
+const PRIVATE_CHANNEL_INVITE_PREFIX = "LANCHAT_PRIVATE_CHANNEL_INVITE:";
+const DEFAULT_CHANNEL_NOTICE = "欢迎来到频道，公告可以由超管维护。";
+const QUICK_ALERT_TRUST_RESET_ALL_TARGET = "__all__";
+const store = useLanChatStore();
+const desktopPetStore = useDesktopPetStore();
+const {
+  settings: desktopPetSettings,
+  packages: desktopPetPackages,
+  issues: desktopPetIssues,
+  selectedPackage: selectedDesktopPetPackage,
+  loading: desktopPetLoading,
+  error: desktopPetError,
+} = storeToRefs(desktopPetStore);
+const {
+  profile,
+  peers,
+  conversations,
+  activeConversationId,
+  activeConversation,
+  activeMessages,
+  messagesByConversation,
+  channelMembersByConversation,
+  channelMutedByConversation,
+  onlinePeers,
+  activePeer,
+  canSendActive,
+  loading,
+  error,
+  networkRepairing,
+  networkRepairStatus,
+  debugEnabled,
+  debugLogs,
+  unreadByConversation,
+  totalUnread,
+  latestIncomingMessage,
+  latestGameFrame,
+  latestChannelNotice,
+  latestQuickAlert,
+  latestQuickAlertFeedback,
+  latestQuickAlertTrustReset,
+  latestAdminDiscoMode,
+  latestAdminAlertMode,
+  manualAddress,
+  manualPort,
+  draft,
+} = storeToRefs(store);
+const messagePane = ref<HTMLElement | null>(null);
+const roomChatPane = ref<HTMLElement | null>(null);
+const nicknameDraft = ref("");
+const portDraft = ref(18145);
+const avatarDraft = ref("");
+const profileAvatarInput = ref<HTMLInputElement | null>(null);
+const AVATAR_MAX_BYTES = 500 * 1024;
+const isRecording = ref(false);
+const recordingStartedAt = ref(0);
+let mediaRecorder: MediaRecorder | null = null;
+let recordingChunks: BlobPart[] = [];
+let recordingTimer: number | null = null;
+let turnTicker: number | null = null;
+let autoTurnRunning = false;
+let unlistenTrayOpenTarget: (() => void) | null = null;
+let unlistenNativeFrogAction: (() => void) | null = null;
+let unlistenFrogStopHotkey: (() => void) | null = null;
+let unlistenDesktopPetRegistry: (() => void) | null = null;
+const conversationSearch = ref("");
+const deviceSearch = ref("");
+const selectedPeerId = ref("");
+const selectedDeviceChannelId = ref("");
+const adminNicknameDraft = ref("");
+const superAdminEnabled = ref(readSavedSuperAdminEnabled());
+const superAdminTapCount = ref(0);
+const superAdminAuthOpen = ref(false);
+const superAdminPasswordDraft = ref("");
+const superAdminPasswordError = ref("");
+const SUPER_ADMIN_PASSWORD_MD5 = "D7B9AF919901FA1598BDC21465E3EB3F";
+const alertTrustResetTargetId = ref<string | null>(null);
+const adminAlertModeTargetId = ref<string | null>(null);
+const adminAlertModeDraft = ref<FrogAlertMode>("normal");
+const activeSection = ref<MainSection>("chat");
+const settingsCategory = ref<"basic" | "pet">("basic");
+const listPaneCollapsed = ref(false);
+type ResizePaneKind = "list" | "group";
+type PaneResizeState = { kind: ResizePaneKind; startX: number; startWidth: number };
+const listPaneWidth = ref(readSavedPaneWidth("lanchat-list-pane-width", 292, 240, 380));
+const groupInspectorWidth = ref(readSavedPaneWidth("lanchat-group-inspector-width", 252, 210, 340));
+const paneResizeState = ref<PaneResizeState | null>(null);
+const chatEmojiOpen = ref(false);
+const roomEmojiOpen = ref(false);
+const roomChatDraft = ref("");
+const nowTick = ref(Date.now());
+const createRoomOpen = ref(false);
+const createRoomGameMenuOpen = ref(false);
+const channelNoticeEditing = ref(false);
+const channelNoticeDraft = ref("");
+const channelNotices = ref<Record<string, string>>(readSavedChannelNotices());
+const publicChannelMutedIds = ref<Record<string, boolean>>(readSavedPublicChannelMutedIds());
+const recipientPickerOpen = ref(false);
+const recipientPickerMode = ref<RecipientPickerMode>("gameInvite");
+const selectedRecipientPeerIds = ref<string[]>([]);
+const selectedRecipientConversationIds = ref<string[]>([]);
+const privateChannelTitleDraft = ref("私有频道");
+const handledPrivateChannelInvites = ref<Record<string, "accepted" | "rejected">>(readSavedPrivateChannelInviteStates());
+const leaderboardOpen = ref(false);
+const gameStatsRecords = ref<GameStatsRecord[]>(readSavedGameStatsRecords());
+const minesweeperLeaderboardRecords = ref<MinesweeperLeaderboardRecord[]>(readSavedMinesweeperLeaderboardRecords());
+const selectedMinesweeperLeaderboardKey = ref(MINESWEEPER_DIFFICULTIES[0]?.key ?? "");
+const recordedGameResultIds = new Set<string>();
+const messageContextMenuOpen = ref(false);
+const messageContextMenuX = ref(0);
+const messageContextMenuY = ref(0);
+const messageContextMessage = ref<Message | null>(null);
+const frogAlertEnabled = ref(readSavedFrogAlertEnabled());
+const frogAlertPanelOpen = ref(false);
+const frogPetBodyClass = "frog-pet-body";
+const quickAlertDraft = ref(readSavedQuickAlertText());
+const frogAlertMode = ref<FrogAlertMode>(readSavedFrogAlertMode());
+const frogStopHotkey = ref(readSavedFrogStopHotkey());
+const alertRecords = ref<AlertRecord[]>(readSavedAlertRecords());
+const ownAlertFlashUntil = ref(0);
+const lastOwnAlertSentAt = ref(0);
+const discoModeUntil = ref(0);
+const visuallyStoppedAlertIds = ref<Set<string>>(new Set());
+const frogPetScale = ref(readSavedFrogPetScale());
+let discoMoveTimer: number | null = null;
+const ALERT_SEND_COOLDOWN_MS = 20_000;
+const FROG_DISCO_ALERT_DURATION_MS = 60_000;
+const FROG_PET_BASE_WIDTH = 180;
+const FROG_PET_BASE_HEIGHT = 160;
+const FROG_PET_DETAIL_WIDTH = 420;
+const FROG_PET_DETAIL_HEIGHT = 320;
+const selectedGameType = ref<GameType>("doudizhu");
+const roomNameDraft = ref("午休娱乐局");
+const gameRoomsState = ref<GameRoomShell[]>([]);
+const activeGameRoomId = ref("");
+const selectedCardIds = ref<string[]>([]);
+const selectedXiangqiPoint = ref<XiangqiPoint | null>(null);
+const doudizhuRooms = ref<Record<string, DdzTableState>>({});
+const gomokuRooms = ref<Record<string, GomokuTableState>>({});
+const xiangqiRooms = ref<Record<string, XiangqiTableState>>({});
+const minesweeperRooms = ref<Record<string, MinesweeperTableState>>({});
+const emojiOptions = ["😀", "😄", "😂", "😉", "👍", "👏", "🎉", "🔥", "❤️", "👌", "😎", "🤝", "🍵", "🃏", "💣", "🚀"];
+const navExpanded = ref(readSavedNavExpanded());
+const themeOptions: Array<{ label: string; key: UiThemeKey; accent: string; hover: string; pressed: string }> = [
+  { label: "钉钉商务蓝", key: "theme-dingtalk", accent: "#1677ff", hover: "#4096ff", pressed: "#0958d9" },
+  { label: "企业灰白", key: "theme-work", accent: "#2f6fed", hover: "#5287f2", pressed: "#1f55bf" },
+  { label: "局域网设备感", key: "theme-lan", accent: "#0f8f83", hover: "#14a99a", pressed: "#0b746c" },
+  { label: "轻量清新", key: "theme-light", accent: "#2a9df4", hover: "#55b5fb", pressed: "#177ec7" },
+];
+const languageOptions = [
+  { label: "简体中文", key: "zh-CN" },
+  { label: "English", key: "en-US" },
+];
+const selectedLanguage = ref(readSavedLanguage());
+const themeMenuOptions = themeOptions.map((item) => ({ label: item.label, key: item.key }));
+const messageContextOptions = computed(() => {
+  const message = messageContextMessage.value;
+  return canRecallMessage(message) ? [{ label: "撤回", key: "recall" }] : [];
+});
+const selectedTheme = ref<UiThemeKey>(readSavedTheme());
+const currentTheme = computed(() => themeOptions.find((item) => item.key === selectedTheme.value) ?? themeOptions[0]);
+const selectedThemeLabel = computed(() => currentTheme.value.label);
+const selectedLanguageLabel = computed(
+  () => languageOptions.find((item) => item.key === selectedLanguage.value)?.label ?? "简体中文",
+);
+const themeOverrides = computed(() => ({
+  common: {
+    primaryColor: currentTheme.value.accent,
+    primaryColorHover: currentTheme.value.hover,
+    primaryColorPressed: currentTheme.value.pressed,
+    borderRadius: "8px",
+    borderRadiusSmall: "6px",
+  },
+  Button: {
+    borderRadiusMedium: "7px",
+    borderRadiusLarge: "7px",
+  },
+  Card: {
+    borderRadius: "8px",
+  },
+  Input: {
+    borderRadius: "7px",
+  },
+}));
+const sortedConversations = computed(() => {
+  const keyword = conversationSearch.value.trim().toLowerCase();
+  return [...conversations.value]
+    .filter((conversation) => !keyword || conversation.title.toLowerCase().includes(keyword))
+    .sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === "group" ? -1 : 1;
+      return b.updated_at - a.updated_at;
+    });
+});
+const pickerPeerOptions = computed(() => {
+  const existingPrivateMembers = activeConversation.value?.is_private
+    ? new Set((channelMembersByConversation.value[activeConversation.value.id] ?? []).map((member) => member.device_id))
+    : new Set<string>();
+  return peers.value.filter((peer) => {
+    if (!peer.online) return false;
+    if (recipientPickerMode.value === "privateChannelInvite" && existingPrivateMembers.has(peer.device_id)) return false;
+    return true;
+  });
+});
+const pickerConversationOptions = computed(() => sortedConversations.value.filter((conversation) => {
+  if (recipientPickerMode.value !== "gameInvite") return false;
+  return conversation.kind === "group";
+}));
+const recipientPickerTitle = computed(() => {
+  if (recipientPickerMode.value === "privateChannelCreate") return "创建私有频道";
+  if (recipientPickerMode.value === "privateChannelInvite") return "邀请频道成员";
+  return "发送游戏邀请";
+});
+const recipientConfirmDisabled = computed(() => {
+  if (recipientPickerMode.value === "privateChannelCreate") return !privateChannelTitleDraft.value.trim();
+  if (recipientPickerMode.value === "privateChannelInvite") return selectedRecipientPeerIds.value.length === 0;
+  return selectedRecipientPeerIds.value.length + selectedRecipientConversationIds.value.length === 0;
+});
+const deviceChannelConversations = computed(() => conversations.value
+  .filter((conversation) => conversation.kind === "group")
+  .sort((a, b) => Number(a.is_private) - Number(b.is_private) || b.updated_at - a.updated_at));
+const filteredPeers = computed(() => {
+  const keyword = deviceSearch.value.trim().toLowerCase();
+  return peers.value.filter((peer) => {
+    const text = `${peer.nickname} ${peer.address} ${peer.port}`.toLowerCase();
+    return !keyword || text.includes(keyword);
+  });
+});
+const selectedPeerDetail = computed(() => peers.value.find((peer) => peer.device_id === selectedPeerId.value) ?? null);
+const selectedDeviceChannelDetail = computed(() => deviceChannelConversations.value.find((conversation) => conversation.id === selectedDeviceChannelId.value) ?? null);
+const selectedDeviceChannelMembers = computed<Array<ChannelMember | Peer>>(() => {
+  const channel = selectedDeviceChannelDetail.value;
+  if (!channel) return [];
+  return channel.is_private ? channelMembersByConversation.value[channel.id] ?? [] : onlinePeers.value;
+});
+const selectedDeviceChannelOwnerName = computed(() => {
+  const channel = selectedDeviceChannelDetail.value;
+  const ownerId = channel?.owner_device_id;
+  if (!channel) return "";
+  if (!ownerId) return channel.is_private ? "未知" : "局域网公开频道";
+  if (ownerId === profile.value?.device_id) return profile.value?.nickname ?? "我";
+  return peers.value.find((peer) => peer.device_id === ownerId)?.nickname ?? ownerId;
+});
+const canManageSelectedDeviceChannel = computed(() => !!selectedDeviceChannelDetail.value?.is_private && (selectedDeviceChannelDetail.value.owner_device_id === profile.value?.device_id || superAdminEnabled.value));
+const activePrivateChannelMembers = computed(() => activeConversation.value?.is_private ? channelMembersByConversation.value[activeConversation.value.id] ?? [] : []);
+const channelMembers = computed<Array<ChannelMember | Peer>>(() => activeConversation.value?.is_private ? activePrivateChannelMembers.value : onlinePeers.value);
+const normalizedChannelMembers = computed<Array<ChannelMember | Peer>>(() => channelMembers.value.map((member) => {
+  if (member.device_id !== profile.value?.device_id) return member;
+  return {
+    ...member,
+    nickname: profile.value?.nickname ?? member.nickname,
+    avatar: profile.value?.avatar ?? member.avatar,
+    online: true,
+    last_seen_at: Date.now(),
+  };
+}));
+const channelMembersOnlineCount = computed(() => normalizedChannelMembers.value.filter((member) => member.device_id === profile.value?.device_id || member.online).length);
+const canManageActivePrivateChannel = computed(() => !!activeConversation.value?.is_private && (activeConversation.value.owner_device_id === profile.value?.device_id || superAdminEnabled.value));
+const groupInspectorAvailable = computed(() => activeSection.value === "chat" && activeConversation.value?.kind === "group");
+const canManageActivePublicChannel = computed(() => !!superAdminEnabled.value && activeConversation.value?.id === DEFAULT_GROUP_ID);
+const canEditActiveChannelNotice = computed(() => !!superAdminEnabled.value && groupInspectorAvailable.value);
+const activeChannelNotice = computed(() => {
+  const conversation = activeConversation.value;
+  if (!conversation?.id) return DEFAULT_CHANNEL_NOTICE;
+  return channelNotices.value[conversation.id] ?? (conversation.is_private ? "这是私有频道，只有受邀成员可以接收消息。" : DEFAULT_CHANNEL_NOTICE);
+});
+const activeSelfMuted = computed(() => {
+  const selfId = profile.value?.device_id;
+  const conversation = activeConversation.value;
+  if (!selfId || conversation?.kind !== "group") return false;
+  if (conversation.is_private) {
+    return activePrivateChannelMembers.value.some((member) => member.device_id === selfId && member.muted);
+  }
+  return channelMutedByConversation.value[conversation.id] === true;
+});
+const activePeerStatusLabel = computed(() => (activePeer.value?.online ? "在线" : "离线"));
+const activePeerStatusType = computed(() => (activePeer.value?.online ? "success" : "default"));
+const composerPlaceholder = computed(() => {
+  if (canSendActive.value) return "输入消息";
+  if (activeSelfMuted.value) return "你已被禁言，暂不能发言";
+  return activeConversation.value?.kind === "direct" ? "对方已离线，暂不能发送私聊消息" : "当前不可发送消息";
+});
+const activeGameRoom = computed(() => gameRoomsState.value.find((room) => room.roomId === activeGameRoomId.value) ?? null);
+const activeGameDefinition = computed(() => gameDefinitionOf(activeGameRoom.value?.gameType ?? selectedGameType.value));
+const activeDdzState = computed(() => doudizhuRooms.value[activeGameRoomId.value] ?? null);
+const activeGomokuState = computed(() => gomokuRooms.value[activeGameRoomId.value] ?? null);
+const activeXiangqiState = computed(() => xiangqiRooms.value[activeGameRoomId.value] ?? null);
+const activeMinesweeperState = computed(() => minesweeperRooms.value[activeGameRoomId.value] ?? null);
+const myDeviceId = computed(() => profile.value?.device_id ?? "");
+const myDdzSeat = computed(() => activeDdzState.value?.players.find((player) => player.deviceId === myDeviceId.value) ?? null);
+const myGomokuSeat = computed(() => activeGomokuState.value?.players.find((player) => player.deviceId === myDeviceId.value) ?? null);
+const myXiangqiSeat = computed(() => activeXiangqiState.value?.players.find((player) => player.deviceId === myDeviceId.value) ?? null);
+const myMinesweeperSeat = computed(() => activeMinesweeperState.value?.players.find((player) => player.deviceId === myDeviceId.value) ?? null);
+const myGameSeat = computed(() => {
+  if (activeGameRoom.value?.gameType === "gomoku") return myGomokuSeat.value;
+  if (activeGameRoom.value?.gameType === "xiangqi") return myXiangqiSeat.value;
+  if (activeGameRoom.value?.gameType === "minesweeper") return myMinesweeperSeat.value;
+  return myDdzSeat.value;
+});
+const myDdzHand = computed(() => sortCards(activeDdzState.value?.hands[myDeviceId.value] ?? []));
+const selectedCards = computed(() => myDdzHand.value.filter((card) => selectedCardIds.value.includes(card.id)));
+const selectedPlay = computed(() => evaluatePlay(selectedCards.value));
+const isMyDdzTurn = computed(() => activeDdzState.value?.turnDeviceId === myDeviceId.value);
+const isMyGomokuTurn = computed(() => activeGomokuState.value?.turnDeviceId === myDeviceId.value);
+const isMyXiangqiTurn = computed(() => activeXiangqiState.value?.turnDeviceId === myDeviceId.value);
+const isDdzLeading = computed(() => !activeDdzState.value?.lastPlay || activeDdzState.value.lastPlay.playerId === myDeviceId.value);
+const canPassDdz = computed(() => activeDdzState.value?.phase === "playing" && isMyDdzTurn.value && !isDdzLeading.value);
+const canPlaySelectedCards = computed(() => {
+  if (activeDdzState.value?.phase !== "playing" || !isMyDdzTurn.value) return false;
+  return canBeat(selectedCards.value, isDdzLeading.value ? null : activeDdzState.value.lastPlay);
+});
+const playHint = computed(() => {
+  if (!activeDdzState.value) return "先创建或加入斗地主房间";
+  if (activeDdzState.value.phase === "lobby") return "凑齐 3 人并全部准备后自动发牌";
+  if (activeDdzState.value.phase === "bidding") return isMyDdzTurn.value ? "轮到你叫地主" : "等待其他玩家叫地主";
+  if (activeDdzState.value.phase === "ended") return activeDdzState.value.winnerName ? `${activeDdzState.value.winnerName} 获胜` : "牌局结束";
+  if (selectedCards.value.length === 0) return isMyDdzTurn.value ? "请选择要出的牌" : "等待对方出牌";
+  const label = playLabel(selectedPlay.value);
+  return canPlaySelectedCards.value ? `${label}，可以出牌` : `${label}，压不过上家，只能不要`;
+});
+const minesweeperDifficultyOptions = MINESWEEPER_DIFFICULTIES.map((difficulty) => ({ label: `${difficulty.label} · ${difficulty.mines} 雷`, key: difficulty.key }));
+const selectedCreateRoomGame = computed(() => gameDefinitionOf(selectedGameType.value));
+const leaderboardTitle = computed(() => `${activeGameDefinition.value.name}排行榜`);
+const rankedActiveGame = computed<RankedGameType | null>(() => {
+  const game = activeGameRoom.value?.gameType ?? selectedGameType.value;
+  return game === "doudizhu" || game === "gomoku" || game === "xiangqi" ? game : null;
+});
+const activeGameStatsRows = computed(() => {
+  const game = rankedActiveGame.value;
+  return game ? recordsForGame(gameStatsRecords.value, game, 30) : [];
+});
+const minesweeperLeaderboardRows = computed(() => recordsForDifficulty(
+  minesweeperLeaderboardRecords.value,
+  selectedMinesweeperLeaderboardKey.value,
+  Number.MAX_SAFE_INTEGER,
+));
+const pendingAlertCount = computed(() => alertRecords.value.filter((item) => item.incoming && !item.handled && item.senderDeviceId !== profile.value?.device_id).length);
+const adminDeviceOptions = computed(() => {
+  const local = profile.value
+    ? [{
+        label: `我 · ${profile.value.nickname}`,
+        value: profile.value.device_id,
+      }]
+    : [];
+  return [
+    ...local,
+    ...peers.value.map((peer) => ({
+      label: `${peer.nickname} · ${peer.online ? "在线" : "离线"}`,
+      value: peer.device_id,
+    })),
+  ];
+});
+const latestPendingAlert = computed(() =>
+  [...alertRecords.value]
+    .filter((item) => item.incoming && !item.handled && item.senderDeviceId !== profile.value?.device_id)
+    .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null,
+);
+const latestOwnAlert = computed(() =>
+  [...alertRecords.value]
+    .filter((item) => !item.incoming && item.senderDeviceId === profile.value?.device_id)
+    .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null,
+);
+const activePetAlert = computed(() =>
+  (latestPendingAlert.value && !visuallyStoppedAlertIds.value.has(latestPendingAlert.value.alertId) ? latestPendingAlert.value : null)
+  ?? (latestOwnAlert.value && ownAlertFlashUntil.value > 0 && !visuallyStoppedAlertIds.value.has(latestOwnAlert.value.alertId) ? latestOwnAlert.value : null),
+);
+const alertRankingRows = computed(() => {
+  const map = new Map<string, {
+    deviceId: string;
+    nickname: string;
+    total: number;
+    feedbackTotal: number;
+    real: number;
+    falseCount: number;
+    lastAt: number;
+  }>();
+  for (const alert of alertRecords.value) {
+    const row = map.get(alert.senderDeviceId) ?? {
+      deviceId: alert.senderDeviceId,
+      nickname: alert.senderNickname,
+      total: 0,
+      feedbackTotal: 0,
+      real: 0,
+      falseCount: 0,
+      lastAt: 0,
+    };
+    row.total += 1;
+    row.lastAt = Math.max(row.lastAt, alert.createdAt);
+    for (const feedback of alert.feedbacks) {
+      row.feedbackTotal += 1;
+      if (feedback.result === "real") row.real += 1;
+      if (feedback.result === "false") row.falseCount += 1;
+    }
+    map.set(alert.senderDeviceId, row);
+  }
+  return [...map.values()]
+    .map((row) => ({
+      ...row,
+      probability: senderCredibility(alertRecords.value, row.deviceId, nowTick.value),
+    }))
+    .sort((a, b) => (b.probability ?? -1) - (a.probability ?? -1) || b.feedbackTotal - a.feedbackTotal || b.lastAt - a.lastAt);
+});
+const petAlertProbability = computed(() => alertDisplayTemperature(activePetAlert.value));
+const petTemperatureLabel = computed(() => activePetAlert.value ? `${petAlertProbability.value}°C` : "");
+const discoModeActive = computed(() => discoModeUntil.value > nowTick.value);
+const frogPetClass = computed(() => ({
+  alerting: !!activePetAlert.value,
+  disco: discoModeActive.value && !!activePetAlert.value,
+  feedbackable: pendingAlertCount.value > 0,
+  open: frogAlertPanelOpen.value,
+  hot: petAlertProbability.value >= 70,
+}));
+const frogPetStyle = computed(() => {
+  const temperature = Math.max(0, Math.min(100, petAlertProbability.value));
+  return {
+    "--frog-alert-duration": `${Math.max(0.24, 1.1 - temperature / 120)}s`,
+    "--frog-alert-redness": `${temperature}%`,
+    "--frog-pet-scale": String(frogPetScale.value),
+  };
+});
+const activeRoomChatMessages = computed(() => {
+  if (activeGameRoom.value?.gameType === "gomoku") return activeGomokuState.value?.chatMessages ?? [];
+  if (activeGameRoom.value?.gameType === "xiangqi") return activeXiangqiState.value?.chatMessages ?? [];
+  if (activeGameRoom.value?.gameType === "minesweeper") return activeMinesweeperState.value?.chatMessages ?? [];
+  return activeDdzState.value?.chatMessages ?? [];
+});
+const activeTurnRemainingSeconds = computed(() => {
+  const state = activeDdzState.value;
+  if (!state || !state.turnDeviceId || (state.phase !== "bidding" && state.phase !== "playing")) return 0;
+  return turnRemainingSeconds(state.turnStartedAt, nowTick.value, DDZ_TURN_TIMEOUT_MS);
+});
+const activeGomokuTurnRemainingSeconds = computed(() => {
+  const state = activeGomokuState.value;
+  if (!state || !state.turnDeviceId || state.phase !== "playing" || state.pendingUndo) return 0;
+  return gomokuTurnRemainingSeconds(state.turnStartedAt, nowTick.value, GOMOKU_TURN_TIMEOUT_MS);
+});
+const visibleLandlordCards = computed(() => {
+  const state = activeDdzState.value;
+  if (!state || state.landlordCards.length === 0 || state.phase === "bidding") return [null, null, null];
+  return state.landlordCards;
+});
+const tableLastCards = computed(() => activeDdzState.value?.lastPlay?.cards ?? []);
+const settlementRows = computed(() => {
+  const state = activeDdzState.value;
+  if (!state) return [];
+  return state.players.map((player) => ({
+    ...player,
+    remaining: state.hands[player.deviceId]?.length ?? player.handCount,
+  }));
+});
+const settlementWinnerLabel = computed(() => activeDdzState.value?.winnerName ?? "本局结束");
+const gomokuSeats = computed(() => activeGomokuState.value?.players ?? []);
+const blackGomokuSeat = computed(() => gomokuSeats.value.find((player) => player.stone === "black") ?? null);
+const whiteGomokuSeat = computed(() => gomokuSeats.value.find((player) => player.stone === "white") ?? null);
+const gomokuWinPointKeys = computed(() => new Set((activeGomokuState.value?.winLine ?? []).map((point) => `${point.x}:${point.y}`)));
+const gomokuBoardPoints = computed(() => (activeGomokuState.value?.board ?? []).flatMap((row, y) => row.map((cell, x) => ({ x, y, cell }))));
+const lastOpponentGomokuMove = computed(() => {
+  const moves = activeGomokuState.value?.moves ?? [];
+  for (let index = moves.length - 1; index >= 0; index -= 1) {
+    if (moves[index]?.playerId !== myDeviceId.value) return moves[index] ?? null;
+  }
+  return null;
+});
+const lastGomokuMove = computed(() => activeGomokuState.value?.moves.slice(-1)[0] ?? null);
+const canRequestUndoGomoku = computed(() => activeGomokuState.value?.phase === "playing" && !!myGomokuSeat.value && !!lastGomokuMove.value && !activeGomokuState.value?.pendingUndo);
+const canRespondGomokuUndo = computed(() => {
+  const state = activeGomokuState.value;
+  const pending = state?.pendingUndo;
+  return state?.phase === "playing" && !!pending && pending.requesterId !== myDeviceId.value;
+});
+const canResignGomoku = computed(() => activeGomokuState.value?.phase === "playing" && !!myGomokuSeat.value);
+const gomokuSettlementRows = computed(() => gomokuSeats.value.map((player) => ({
+  ...player,
+  result: activeGomokuState.value?.winnerDeviceId === player.deviceId ? "胜利" : activeGomokuState.value?.winnerDeviceId ? "失败" : "平局",
+})));
+const xiangqiSeats = computed(() => activeXiangqiState.value?.players ?? []);
+
+const xiangqiPerspectiveSide = computed<XiangqiSide>(() => myXiangqiSeat.value?.side === "black" ? "black" : "red");
+const leftXiangqiSide = computed<XiangqiSide>(() => xiangqiPerspectiveSide.value === "black" ? "red" : "black");
+const rightXiangqiSide = computed<XiangqiSide>(() => xiangqiPerspectiveSide.value === "black" ? "black" : "red");
+const leftXiangqiSeat = computed(() => xiangqiSeats.value.find((player) => player.side === leftXiangqiSide.value) ?? null);
+const rightXiangqiSeat = computed(() => xiangqiSeats.value.find((player) => player.side === rightXiangqiSide.value) ?? null);
+const xiangqiDisplayRows = computed(() => {
+  const board = activeXiangqiState.value?.board;
+  if (!board) return [];
+  return createXiangqiDisplayGrid(xiangqiPerspectiveSide.value).map((row) =>
+    row.map((point) => ({ ...point, cell: board[point.y]?.[point.x] ?? null })),
+  );
+});
+const lastXiangqiMove = computed(() => activeXiangqiState.value?.moves.slice(-1)[0] ?? null);
+const lastOpponentXiangqiMove = computed(() => {
+  const moves = activeXiangqiState.value?.moves ?? [];
+  for (let index = moves.length - 1; index >= 0; index -= 1) {
+    if (moves[index]?.playerId !== myDeviceId.value) return moves[index] ?? null;
+  }
+  return null;
+});
+const canRequestUndoXiangqi = computed(() => activeXiangqiState.value?.phase === "playing" && !!myXiangqiSeat.value && !!lastXiangqiMove.value?.piece && !activeXiangqiState.value?.pendingUndo);
+const canRespondXiangqiUndo = computed(() => {
+  const state = activeXiangqiState.value;
+  const pending = state?.pendingUndo;
+  return state?.phase === "playing" && !!pending && pending.requesterId !== myDeviceId.value;
+});
+const canResignXiangqi = computed(() => activeXiangqiState.value?.phase === "playing" && !!myXiangqiSeat.value);
+const isMyXiangqiChecked = computed(() => !!activeXiangqiState.value?.checkSide && activeXiangqiState.value.checkSide === myXiangqiSeat.value?.side);
+const xiangqiSettlementRows = computed(() => xiangqiSeats.value.map((player) => ({
+  ...player,
+  result: activeXiangqiState.value?.winnerDeviceId === player.deviceId ? "胜利" : activeXiangqiState.value?.winnerDeviceId ? "失败" : "结束",
+})));
+const minesweeperPlayers = computed(() => activeMinesweeperState.value?.players ?? []);
+const myMinesweeperBoardState = computed(() => activeMinesweeperState.value?.boards[myDeviceId.value] ?? null);
+
+const activeMinesweeperDifficultyLabel = computed(() => {
+  const state = activeMinesweeperState.value;
+  return state
+    ? minesweeperDifficultyLabel(state.width, state.height, state.mines)
+    : minesweeperDifficultyLabel(MINESWEEPER_DEFAULT_WIDTH, MINESWEEPER_DEFAULT_HEIGHT, MINESWEEPER_DEFAULT_MINES);
+});
+const minesweeperBoardStyle = computed<Record<string, string>>(() => {
+  const width = activeMinesweeperState.value?.width ?? MINESWEEPER_DEFAULT_WIDTH;
+  const height = activeMinesweeperState.value?.height ?? MINESWEEPER_DEFAULT_HEIGHT;
+  return {
+    gridTemplateColumns: `repeat(${width}, minmax(0, 1fr))`,
+    aspectRatio: `${width} / ${height}`,
+    "--minesweeper-ratio": String(width / height),
+  };
+});
+const minesweeperSettlementRows = computed(() => minesweeperPlayers.value.map((player) => {
+  const boardState = activeMinesweeperState.value?.boards[player.deviceId];
+  return {
+    ...player,
+    boardState,
+    result: activeMinesweeperState.value?.winnerDeviceId === player.deviceId ? "胜利" : boardState?.status === "lost" ? "失败" : boardState?.status === "won" ? "完成" : "进行中",
+  };
+}));
+const leftDdzSeat = computed(() => otherDdzSeats().slice(0, 1)[0] ?? null);
+const rightDdzSeat = computed(() => otherDdzSeats().slice(1, 2)[0] ?? null);
+const roomPrimaryLabel = computed(() => {
+  const room = activeGameRoom.value;
+  if (!room) return "先创建房间";
+  if (room.gameType === "gomoku") {
+    const state = activeGomokuState.value;
+    if (!state) return "先创建房间";
+    if (!myGomokuSeat.value) return "加入房间";
+    if (state.phase === "lobby") return myGomokuSeat.value.ready ? "取消准备" : "准备";
+    if (state.phase === "ended") return isRoomHost() ? "再来一局" : "等待房主开局";
+    return isMyGomokuTurn.value ? "轮到你" : "等待中";
+  }
+  if (room.gameType === "minesweeper") {
+    const state = activeMinesweeperState.value;
+    if (!state) return "先创建房间";
+    if (!myMinesweeperSeat.value) return "加入房间";
+    if (state.phase === "lobby") return myMinesweeperSeat.value.ready ? "取消准备" : "准备";
+    if (state.phase === "ended") return isRoomHost() ? "再来一局" : "等待房主开局";
+    return myMinesweeperBoardState.value?.status === "playing" ? "扫雷中" : "等待结算";
+  }  if (room.gameType === "xiangqi") {
+    const state = activeXiangqiState.value;
+    if (!state) return "先创建房间";
+    if (!myXiangqiSeat.value) return "加入房间";
+    if (state.phase === "lobby") return myXiangqiSeat.value.ready ? "取消准备" : "准备";
+    if (state.phase === "ended") return isRoomHost() ? "再来一局" : "等待房主开局";
+    return isMyXiangqiTurn.value ? "轮到你" : "等待中";
+  }
+  if (!activeDdzState.value) return "先创建房间";
+  if (!myDdzSeat.value) return "加入房间";
+  if (activeDdzState.value.phase === "lobby") return myDdzSeat.value.ready ? "取消准备" : "准备";
+  if (activeDdzState.value.phase === "ended") return isRoomHost() ? "再来一局" : "等待房主开局";
+  return isMyDdzTurn.value ? "轮到你" : "等待中";
+});
+const listPaneAvailable = computed(() => ["chat", "devices", "games"].includes(activeSection.value));
+const listPaneToggleTitle = computed(() => listPaneCollapsed.value ? "展开列表栏" : "收起列表栏");
+const isGameStarted = computed(() => {
+  if (activeGameRoom.value?.gameType === "gomoku") return activeGomokuState.value?.phase === "playing";
+  if (activeGameRoom.value?.gameType === "xiangqi") return activeXiangqiState.value?.phase === "playing";
+  if (activeGameRoom.value?.gameType === "minesweeper") return activeMinesweeperState.value?.phase === "playing";
+  return activeDdzState.value?.phase === "bidding" || activeDdzState.value?.phase === "playing";
+});
+const gameAttentionCount = computed(() => {
+  const deviceId = myDeviceId.value;
+  if (!deviceId) return 0;
+  let count = 0;
+  for (const state of Object.values(doudizhuRooms.value)) {
+    if ((state.phase === "bidding" || state.phase === "playing") && state.turnDeviceId === deviceId) count += 1;
+  }
+  for (const state of Object.values(gomokuRooms.value)) {
+    if (state.phase !== "playing") continue;
+    const shouldRemind = state.turnDeviceId === deviceId || (!!state.pendingUndo && state.pendingUndo.requesterId !== deviceId);
+    if (shouldRemind) count += 1;
+  }
+  for (const state of Object.values(xiangqiRooms.value)) {
+    if (state.phase !== "playing") continue;
+    const shouldRemind = state.turnDeviceId === deviceId || (!!state.pendingUndo && state.pendingUndo.requesterId !== deviceId);
+    if (shouldRemind) count += 1;
+  }
+  return count;
+});
+function gameRoomTrayTitle(roomId: string) {
+  const room = gameRoomsState.value.find((item) => item.roomId === roomId);
+  if (!room) return "游戏房间";
+  return `${room.roomName} · ${gameDefinitionOf(room.gameType).name}`;
+}
+function buildTrayAttentionItems(): TrayAttentionItem[] {
+  const chatItems = sortedConversations.value
+    .map((conversation) => ({
+      id: conversation.id,
+      kind: "chat",
+      title: conversation.title,
+      count: unreadByConversation.value[conversation.id] ?? 0,
+    }))
+    .filter((item) => item.count > 0);
+  const deviceId = myDeviceId.value;
+  const gameItems: TrayAttentionItem[] = [];
+  if (deviceId) {
+    for (const state of Object.values(doudizhuRooms.value)) {
+      if ((state.phase === "bidding" || state.phase === "playing") && state.turnDeviceId === deviceId) {
+        gameItems.push({ id: state.roomId, kind: "game", title: gameRoomTrayTitle(state.roomId), count: 1 });
+      }
+    }
+    for (const state of Object.values(gomokuRooms.value)) {
+      if (state.phase !== "playing") continue;
+      if (state.turnDeviceId === deviceId || (!!state.pendingUndo && state.pendingUndo.requesterId !== deviceId)) {
+        gameItems.push({ id: state.roomId, kind: "game", title: gameRoomTrayTitle(state.roomId), count: 1 });
+      }
+    }
+    for (const state of Object.values(xiangqiRooms.value)) {
+      if (state.phase !== "playing") continue;
+      if (state.turnDeviceId === deviceId || (!!state.pendingUndo && state.pendingUndo.requesterId !== deviceId)) {
+        gameItems.push({ id: state.roomId, kind: "game", title: gameRoomTrayTitle(state.roomId), count: 1 });
+      }
+    }
+  }
+  return [...chatItems, ...gameItems].slice(0, 12);
+}
+async function syncTrayAttention() {
+  try {
+    await api.updateTrayAttention(buildTrayAttentionItems());
+  } catch {
+    // 浏览器预览时没有 Tauri 后端。
+  }
+}
+async function scrollActiveChatToBottom() {
+  await nextTick();
+  if (typeof window !== "undefined") {
+    window.requestAnimationFrame(() => {
+      if (messagePane.value) {
+        messagePane.value.scrollTop = messagePane.value.scrollHeight;
+      }
+    });
+    return;
+  }
+  if (messagePane.value) {
+    messagePane.value.scrollTop = messagePane.value.scrollHeight;
+  }
+}
+async function openTrayTarget(target: TrayAttentionItem) {
+  if (target.kind === "game") {
+    openGameRoom(target.id);
+  } else {
+    activeSection.value = "chat";
+    await store.selectConversation(target.id);
+  }
+  await syncTrayAttention();
+}
+const showGameAttention = computed(() => activeSection.value !== "games" && gameAttentionCount.value > 0);
+const shortDeviceId = computed(() => {
+  const id = profile.value?.device_id ?? "";
+  if (id.length <= 18) return id;
+  return `${id.slice(0, 10)}...${id.slice(-6)}`;
+});
+const DESKTOP_PET_STATE_ORDER: PetStateKind[] = ["Idle", "Alert", "Move", "Interact", "Life"];
+function desktopPetSourceLabel(source: PetPackageSource) {
+  if (source === "built_in") return "内置";
+  if (source === "portable") return "绿色版";
+  return "用户导入";
+}
+function desktopPetFrameCount(pet: DesktopPetPackage, state: PetStateKind) {
+  return (pet.states[state] ?? []).reduce((total, clip) => total + clip.frames.length, 0);
+}
+function desktopPetPreview(pet: DesktopPetPackage) {
+  if (!pet.preview_path) return "";
+  try {
+    return convertFileSrc(pet.preview_path);
+  } catch {
+    return "";
+  }
+}
+async function importDesktopPetPackage() {
+  const selected = await openFileDialog({ directory: true, multiple: false, title: "选择桌宠资源包目录" });
+  if (typeof selected !== "string") return;
+  await desktopPetStore.importPackage(selected).catch(() => undefined);
+}
+async function selectDesktopPetPackage(pet: DesktopPetPackage) {
+  await desktopPetStore.selectPackage(pet.manifest.id).catch(() => undefined);
+}
+async function removeDesktopPetPackage(pet: DesktopPetPackage) {
+  if (pet.source !== "user") return;
+  if (typeof window !== "undefined" && !window.confirm(`确定删除桌宠“${pet.manifest.name}”吗？`)) return;
+  await desktopPetStore.removePackage(pet).catch(() => undefined);
+}
+async function updateDesktopPetBehavior(key: "randomMoveEnabled" | "randomLifeEnabled", value: boolean) {
+  if (!desktopPetSettings.value) return;
+  await desktopPetStore.updateSettings({ ...desktopPetSettings.value, [key]: value }).catch(() => undefined);
+  await syncNativeFrogPet();
+}
+onMounted(async () => {
+  if (isPetWindow && typeof document !== "undefined") {
+    document.body.classList.add(frogPetBodyClass);
+    document.documentElement.classList.add(frogPetBodyClass);
+    if (!frogAlertEnabled.value) {
+      frogAlertEnabled.value = true;
+    }
+    await syncFrogPetWindowSize(false);
+  }
+  await store.initialize();
+  if (!isPetWindow) {
+    await desktopPetStore.initialize();
+    if (desktopPetSettings.value) {
+      frogAlertEnabled.value = desktopPetSettings.value.enabled;
+    }
+  }
+  nicknameDraft.value = profile.value?.nickname ?? "";
+  portDraft.value = profile.value?.listen_port ?? 18145;
+  avatarDraft.value = profile.value?.avatar ?? "";
+  if (!isPetWindow) {
+    await api.setDesktopPetEnabled(frogAlertEnabled.value).catch(() => undefined);
+    await registerFrogStopHotkey();
+    await syncNativeFrogPet();
+  }
+  try {
+    unlistenTrayOpenTarget = await listen<TrayAttentionItem>("tray_open_target", (event) => {
+      void openTrayTarget(event.payload);
+    });
+    unlistenNativeFrogAction = await listen<{ action: string; alert_id?: string | null }>("desktop_pet_action", (event) => {
+      if (event.payload.action === "quick_alert") {
+        void sendFrogQuickAlert(frogAlertMode.value);
+      } else if (event.payload.action === "broadcast_disco_alert") {
+        void sendFrogQuickAlert("disco");
+      } else if (event.payload.action === "stop_visuals") {
+        stopFrogAlertVisuals();
+      } else if (event.payload.action === "feedback_real" || event.payload.action === "feedback_false") {
+        const target = alertRecords.value.find((item) => item.alertId === event.payload.alert_id) ?? latestPendingAlert.value;
+        if (target) {
+          void feedbackFrogAlert(target, event.payload.action === "feedback_real" ? "real" : "false");
+        }
+      }
+    });
+    unlistenFrogStopHotkey = await listen("frog_stop_hotkey_received", () => {
+      stopFrogAlertVisuals();
+    });
+    unlistenDesktopPetRegistry = await listen<DesktopPetRegistrySnapshot>("desktop_pet_registry_changed", (event) => {
+      desktopPetStore.applySnapshot(event.payload);
+    });
+  } catch {
+    // 浏览器预览时没有 Tauri 事件通道。
+  }
+  await syncTrayAttention();
+  if (typeof window !== "undefined") {
+    window.addEventListener("keydown", handleFrogStopHotkey);
+    turnTicker = window.setInterval(() => {
+      nowTick.value = Date.now();
+    }, 1000);
+  }
+});
+onUnmounted(() => {
+  if (isPetWindow && typeof document !== "undefined") {
+    document.body.classList.remove(frogPetBodyClass);
+    document.documentElement.classList.remove(frogPetBodyClass);
+  }
+  stopPaneResize();
+  unlistenTrayOpenTarget?.();
+  unlistenTrayOpenTarget = null;
+  unlistenNativeFrogAction?.();
+  unlistenNativeFrogAction = null;
+  unlistenFrogStopHotkey?.();
+  unlistenFrogStopHotkey = null;
+  unlistenDesktopPetRegistry?.();
+  unlistenDesktopPetRegistry = null;
+  if (turnTicker !== null && typeof window !== "undefined") {
+    window.clearInterval(turnTicker);
+    turnTicker = null;
+  }
+  if (typeof window !== "undefined") {
+    window.removeEventListener("keydown", handleFrogStopHotkey);
+  }
+  if (discoMoveTimer !== null && typeof window !== "undefined") {
+    window.clearInterval(discoMoveTimer);
+    discoMoveTimer = null;
+  }
+});
+watch(profile, (next) => {
+  nicknameDraft.value = next?.nickname ?? "";
+  portDraft.value = next?.listen_port ?? 18145;
+  avatarDraft.value = next?.avatar ?? "";
+});
+watch(activeMessages, () => {
+  void scrollActiveChatToBottom();
+});
+watch(() => activeConversationId.value, () => {
+  void scrollActiveChatToBottom();
+});
+watch(activeSection, (section) => {
+  if (section === "chat") {
+    void scrollActiveChatToBottom();
+  }
+});
+watch(activeRoomChatMessages, async () => {
+  await nextTick();
+  if (roomChatPane.value) {
+    roomChatPane.value.scrollTop = roomChatPane.value.scrollHeight;
+  }
+});
+watch(selectedTheme, (next) => {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem("lanchat-ui-theme", next);
+  }
+  void syncNativeFrogPet();
+});
+watch(selectedLanguage, (next) => {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem("lanchat-language", next);
+  }
+});
+watch(latestIncomingMessage, async (message) => {
+  if (!message || message.sender_device_id === profile.value?.device_id) return;
+  if (activeSection.value !== "chat" && message.conversation_id === activeConversationId.value) {
+    unreadByConversation.value = {
+      ...unreadByConversation.value,
+      [message.conversation_id]: (unreadByConversation.value[message.conversation_id] ?? 0) + 1,
+    };
+  }
+  await notifyIncomingActivity();
+});
+watch(activeTurnRemainingSeconds, async (remaining) => {
+  const state = activeDdzState.value;
+  if (!state || remaining > 0 || autoTurnRunning) return;
+  await handleTurnTimeout(state);
+});
+watch(activeGomokuTurnRemainingSeconds, async (remaining) => {
+  const state = activeGomokuState.value;
+  if (!state || remaining > 0 || autoTurnRunning) return;
+  await handleGomokuTurnTimeout(state);
+});
+watch(latestGameFrame, (frame) => {
+  if (!frame) return;
+  processGameFrame(frame);
+});
+watch(latestChannelNotice, (payload) => {
+  if (!payload) return;
+  channelNotices.value = {
+    ...channelNotices.value,
+    [payload.conversation_id]: payload.notice || DEFAULT_CHANNEL_NOTICE,
+  };
+});
+watch(latestQuickAlert, async (alert) => {
+  if (!alert || !frogAlertEnabled.value) return;
+  applyQuickAlert(alert);
+  if (alert.sender_device_id !== profile.value?.device_id) {
+    await notifyIncomingActivity();
+  }
+});
+watch(latestQuickAlertFeedback, (feedback) => {
+  if (!feedback || !frogAlertEnabled.value) return;
+  applyQuickAlertFeedback(feedback);
+});
+watch(latestQuickAlertTrustReset, (reset) => {
+  if (!reset || !frogAlertEnabled.value) return;
+  applyQuickAlertTrustReset(reset);
+});
+watch(latestAdminDiscoMode, (mode) => {
+  if (!mode || !frogAlertEnabled.value) return;
+  applyAdminDiscoMode(mode);
+});
+watch(latestAdminAlertMode, (mode) => {
+  if (!mode || !frogAlertEnabled.value) return;
+  applyAdminAlertMode(mode);
+});
+watch([frogAlertEnabled, pendingAlertCount, activePetAlert, petAlertProbability, discoModeActive, latestPendingAlert], () => {
+  void syncNativeFrogPet();
+});
+watch(isGameStarted, (started) => {
+  if (activeSection.value === "games" && started) {
+    listPaneCollapsed.value = true;
+  }
+});
+watch(navExpanded, (next) => {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem("lanchat-nav-expanded", String(next));
+  }
+});
+watch(listPaneWidth, (next) => {
+  savePaneWidth("lanchat-list-pane-width", next);
+});
+watch(groupInspectorWidth, (next) => {
+  savePaneWidth("lanchat-group-inspector-width", next);
+});
+watch(() => activeConversation.value?.id, () => {
+  channelNoticeEditing.value = false;
+  channelNoticeDraft.value = activeChannelNotice.value;
+});
+watch(channelNotices, saveChannelNotices, { deep: true });
+watch(publicChannelMutedIds, savePublicChannelMutedIds, { deep: true });
+watch(handledPrivateChannelInvites, savePrivateChannelInviteStates, { deep: true });
+watch(frogAlertEnabled, (next) => {
+  saveFrogAlertEnabled(next);
+  if (!isPetWindow) {
+    void desktopPetStore.setEnabled(next).catch(() => undefined);
+  }
+  if (!next && activeSection.value === "alerts") {
+    activeSection.value = "settings";
+  }
+});
+watch(pendingAlertCount, (count) => {
+  if (count === 0) frogAlertPanelOpen.value = false;
+});
+watch(frogAlertPanelOpen, () => {
+  void syncFrogPetWindowSize();
+});
+watch(frogPetScale, () => {
+  saveFrogPetScale(frogPetScale.value);
+  if (!frogAlertPanelOpen.value) {
+    void syncFrogPetWindowSize(false);
+  }
+});
+watch(quickAlertDraft, (next) => {
+  saveQuickAlertText(next);
+});
+watch(frogAlertMode, (next) => {
+  saveFrogAlertMode(next);
+});
+watch(frogStopHotkey, (next) => {
+  saveFrogStopHotkey(next);
+  if (!isPetWindow) {
+    void registerFrogStopHotkey(next);
+  }
+});
+watch(alertRecords, saveAlertRecords, { deep: true });
+watch(
+  [unreadByConversation, conversations, gameRoomsState, doudizhuRooms, gomokuRooms, xiangqiRooms],
+  () => {
+    void syncTrayAttention();
+  },
+  { deep: true },
+);
+function readSavedTheme(): UiThemeKey {
+  if (typeof window === "undefined") return "theme-dingtalk";
+  const saved = window.localStorage.getItem("lanchat-ui-theme") as UiThemeKey | null;
+  return themeOptions.some((item) => item.key === saved) ? saved! : "theme-dingtalk";
+}
+function readSavedLanguage() {
+  if (typeof window === "undefined") return "zh-CN";
+  const saved = window.localStorage.getItem("lanchat-language");
+  return languageOptions.some((item) => item.key === saved) ? saved! : "zh-CN";
+}
+function readSavedNavExpanded() {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem("lanchat-nav-expanded") === "true";
+}
+function clampPaneWidth(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+function readSavedPaneWidth(key: string, fallback: number, min: number, max: number) {
+  if (typeof window === "undefined") return fallback;
+  const saved = window.localStorage.getItem(key);
+  if (!saved) return fallback;
+  const parsed = Number(saved);
+  return Number.isFinite(parsed) ? clampPaneWidth(parsed, min, max) : fallback;
+}
+function savePaneWidth(key: string, value: number) {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(key, String(value));
+  }
+}
+function startPaneResize(kind: ResizePaneKind, event: MouseEvent) {
+  if (typeof window === "undefined") return;
+  event.preventDefault();
+  event.stopPropagation();
+  stopPaneResize();
+  paneResizeState.value = {
+    kind,
+    startX: event.clientX,
+    startWidth: kind === "list" ? listPaneWidth.value : groupInspectorWidth.value,
+  };
+  window.addEventListener("mousemove", handlePaneResize);
+  window.addEventListener("mouseup", stopPaneResize, { once: true });
+  if (typeof document !== "undefined") {
+    document.body.classList.add("pane-resizing");
+  }
+}
+function handlePaneResize(event: MouseEvent) {
+  const state = paneResizeState.value;
+  if (!state) return;
+  if (state.kind === "list") {
+    listPaneWidth.value = clampPaneWidth(state.startWidth + event.clientX - state.startX, 240, 380);
+  } else {
+    groupInspectorWidth.value = clampPaneWidth(state.startWidth + state.startX - event.clientX, 210, 340);
+  }
+}
+function stopPaneResize() {
+  if (typeof window !== "undefined") {
+    window.removeEventListener("mousemove", handlePaneResize);
+    window.removeEventListener("mouseup", stopPaneResize);
+  }
+  paneResizeState.value = null;
+  if (typeof document !== "undefined") {
+    document.body.classList.remove("pane-resizing");
+  }
+}
+function readSavedGameStatsRecords(): GameStatsRecord[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem("lanchat-game-stats-v1");
+    return raw ? upsertGameStatsRecords([], JSON.parse(raw) as GameStatsRecord[]) : [];
+  } catch {
+    return [];
+  }
+}
+function saveGameStatsRecords() {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem("lanchat-game-stats-v1", JSON.stringify(gameStatsRecords.value));
+  }
+}
+function readSavedMinesweeperLeaderboardRecords(): MinesweeperLeaderboardRecord[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem("lanchat-minesweeper-leaderboard-v1");
+    return raw ? upsertMinesweeperLeaderboardRecords([], JSON.parse(raw) as MinesweeperLeaderboardRecord[]) : [];
+  } catch {
+    return [];
+  }
+}
+function saveMinesweeperLeaderboardRecords() {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem("lanchat-minesweeper-leaderboard-v1", JSON.stringify(minesweeperLeaderboardRecords.value));
+  }
+}
+function readSavedPrivateChannelInviteStates(): Record<string, "accepted" | "rejected"> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem("lanchat-private-channel-invite-states-v1");
+    return raw ? JSON.parse(raw) as Record<string, "accepted" | "rejected"> : {};
+  } catch {
+    return {};
+  }
+}
+function savePrivateChannelInviteStates() {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem("lanchat-private-channel-invite-states-v1", JSON.stringify(handledPrivateChannelInvites.value));
+  }
+}
+function readSavedChannelNotices(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem("lanchat-channel-notices-v1");
+    return raw ? JSON.parse(raw) as Record<string, string> : {};
+  } catch {
+    return {};
+  }
+}
+function saveChannelNotices() {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem("lanchat-channel-notices-v1", JSON.stringify(channelNotices.value));
+  }
+}
+function readSavedPublicChannelMutedIds(): Record<string, boolean> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem("lanchat-public-channel-muted-v1");
+    return raw ? JSON.parse(raw) as Record<string, boolean> : {};
+  } catch {
+    return {};
+  }
+}
+function savePublicChannelMutedIds() {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem("lanchat-public-channel-muted-v1", JSON.stringify(publicChannelMutedIds.value));
+  }
+}
+function readSavedFrogAlertEnabled() {
+  if (typeof window === "undefined") return true;
+  return window.localStorage.getItem("lanchat-frog-alert-enabled") !== "false";
+}
+function saveFrogAlertEnabled(value: boolean) {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem("lanchat-frog-alert-enabled", String(value));
+  }
+}
+function readSavedQuickAlertText() {
+  if (typeof window === "undefined") return "呱呱~呱~~";
+  return window.localStorage.getItem("lanchat-frog-alert-text") || "呱呱~呱~~";
+}
+function saveQuickAlertText(value: string) {
+  if (typeof window !== "undefined") {
+    const text = value.trim() || "呱呱~呱~~";
+    window.localStorage.setItem("lanchat-frog-alert-text", text);
+  }
+}
+function readSavedFrogAlertMode(): FrogAlertMode {
+  if (typeof window === "undefined") return "normal";
+  return window.localStorage.getItem("lanchat-frog-alert-mode") === "disco" ? "disco" : "normal";
+}
+function saveFrogAlertMode(value: FrogAlertMode) {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem("lanchat-frog-alert-mode", value === "disco" ? "disco" : "normal");
+  }
+}
+function normalizeFrogAlertMode(value: unknown): FrogAlertMode {
+  return value === "disco" ? "disco" : "normal";
+}
+function readSavedFrogStopHotkey() {
+  if (typeof window === "undefined") return "";
+  return window.localStorage.getItem("lanchat-frog-stop-hotkey") || "";
+}
+function saveFrogStopHotkey(value: string) {
+  if (typeof window !== "undefined") {
+    const text = value.trim();
+    if (text) {
+      window.localStorage.setItem("lanchat-frog-stop-hotkey", text);
+    } else {
+      window.localStorage.removeItem("lanchat-frog-stop-hotkey");
+    }
+  }
+}
+function hotkeyFromEvent(event: KeyboardEvent) {
+  const key = event.key.length === 1 ? event.key.toUpperCase() : event.key;
+  if (["Control", "Shift", "Alt", "Meta"].includes(key)) return "";
+  return [
+    event.ctrlKey ? "Ctrl" : "",
+    event.altKey ? "Alt" : "",
+    event.shiftKey ? "Shift" : "",
+    event.metaKey ? "Meta" : "",
+    key,
+  ].filter(Boolean).join("+");
+}
+function captureFrogStopHotkey(event: KeyboardEvent) {
+  const hotkey = hotkeyFromEvent(event);
+  if (!hotkey) return;
+  event.preventDefault();
+  frogStopHotkey.value = hotkey;
+}
+function clearFrogStopHotkey() {
+  frogStopHotkey.value = "";
+}
+async function registerFrogStopHotkey(value = frogStopHotkey.value) {
+  await api.registerFrogStopHotkey(value).catch(() => undefined);
+}
+function handleFrogStopHotkey(event: KeyboardEvent) {
+  if (!frogStopHotkey.value) return;
+  if (hotkeyFromEvent(event) !== frogStopHotkey.value) return;
+  event.preventDefault();
+  stopFrogAlertVisuals();
+}
+function readSavedFrogPetScale() {
+  if (typeof window === "undefined") return 1;
+  const saved = Number(window.localStorage.getItem("lanchat-frog-pet-scale"));
+  if (!Number.isFinite(saved)) return 1;
+  return Math.min(1.6, Math.max(0.5, saved));
+}
+function saveFrogPetScale(value: number) {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem("lanchat-frog-pet-scale", String(value));
+  }
+}
+function normalizeAlertRecords(records: AlertRecord[]) {
+  return records
+    .filter((item) => item.alertId && item.senderDeviceId)
+    .map((item) => ({
+      ...item,
+      content: item.content || "呱呱~呱~~",
+      mode: normalizeFrogAlertMode(item.mode),
+      feedbacks: Array.isArray(item.feedbacks) ? item.feedbacks : [],
+      handled: Boolean(item.handled),
+      incoming: Boolean(item.incoming),
+    }))
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, 200);
+}
+function readSavedAlertRecords(): AlertRecord[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem("lanchat-frog-alert-records-v1");
+    return raw ? normalizeAlertRecords(JSON.parse(raw) as AlertRecord[]) : [];
+  } catch {
+    return [];
+  }
+}
+function saveAlertRecords() {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem("lanchat-frog-alert-records-v1", JSON.stringify(normalizeAlertRecords(alertRecords.value)));
+  }
+}
+function alertDisplayTemperature(alert?: AlertRecord | null) {
+  if (!alert) return 0;
+  return alertTemperature(senderCredibility(alertRecords.value, alert.senderDeviceId, nowTick.value));
+}
+function selectTheme(key: string | number) {
+  if (themeOptions.some((item) => item.key === key)) {
+    selectedTheme.value = key as UiThemeKey;
+  }
+}
+function selectLanguage(key: string | number) {
+  if (languageOptions.some((item) => item.key === key)) {
+    selectedLanguage.value = String(key);
+  }
+}
+
+function selectCreateRoomGame(type: GameType) {
+  selectedGameType.value = type;
+  createRoomGameMenuOpen.value = false;
+}
+function openBuiltinGame(type: GameType) {
+  selectedGameType.value = type;
+  activeGameRoomId.value = "";
+  selectedCardIds.value = [];
+  selectedXiangqiPoint.value = null;
+  activeSection.value = "games";
+  void broadcastLeaderboardSync();
+}
+async function selectMinesweeperDifficulty(key: string | number) {
+  if (!profile.value || activeGameRoom.value?.gameType !== "minesweeper" || activeMinesweeperState.value?.phase !== "lobby" || !isRoomHost()) return;
+  const difficulty = difficultyByKey(String(key));
+  await sendRoomAction({
+    action: "difficulty",
+    playerId: profile.value.device_id,
+    width: difficulty.width,
+    height: difficulty.height,
+    mines: difficulty.mines,
+  });
+}
+async function createGameRoom() {
+  if (!profile.value) return;
+  const room = createGameRoomShell(
+    selectedGameType.value,
+    roomNameDraft.value,
+    profile.value.device_id,
+    profile.value.nickname,
+    profile.value.avatar,
+  );
+  const state = createInitialGameState(room);
+  upsertGameRoom(room);
+  if (room.gameType === "gomoku") {
+    gomokuRooms.value = { ...gomokuRooms.value, [room.roomId]: state as GomokuTableState };
+  } else if (room.gameType === "minesweeper") {
+    minesweeperRooms.value = { ...minesweeperRooms.value, [room.roomId]: state as MinesweeperTableState };
+  } else if (room.gameType === "xiangqi") {
+    xiangqiRooms.value = { ...xiangqiRooms.value, [room.roomId]: state as XiangqiTableState };
+  } else {
+    doudizhuRooms.value = { ...doudizhuRooms.value, [room.roomId]: state as DdzTableState };
+  }
+  activeGameRoomId.value = room.roomId;
+  selectedCardIds.value = [];
+  selectedXiangqiPoint.value = null;
+  createRoomOpen.value = false;
+  activeSection.value = "games";
+  await broadcastGameFrame("room_created", { room, state }, room.roomId);
+}
+function openGameRoom(roomId: string) {
+  activeGameRoomId.value = roomId;
+  selectedCardIds.value = [];
+  selectedXiangqiPoint.value = null;
+  activeSection.value = "games";
+}
+function createInitialGameState(room: GameRoomShell): DdzTableState | GomokuTableState | XiangqiTableState | MinesweeperTableState {
+  if (room.gameType === "gomoku") return createInitialGomokuState(room);
+  if (room.gameType === "minesweeper") return createInitialMinesweeperState(room);
+  if (room.gameType === "xiangqi") return createInitialXiangqiState(room);
+  return createInitialDdzState(room);
+}
+function createInitialDdzState(room: GameRoomShell): DdzTableState {
+  return {
+    roomId: room.roomId,
+    phase: "lobby",
+    players: room.players.map((player) => ({ ...player, handCount: 0 })),
+    landlordCards: [],
+    hands: {},
+    bidOrder: [],
+    bidIndex: 0,
+    bids: {},
+    lastPlay: null,
+    passCount: 0,
+    chatMessages: [],
+    logs: [`${room.hostName} 创建了 ${gameDefinitionOf(room.gameType).name} 房间`],
+    updatedAt: Date.now(),
+  };
+}
+function createInitialGomokuState(room: GameRoomShell): GomokuTableState {
+  return {
+    roomId: room.roomId,
+    phase: "lobby",
+    players: room.players.map((player) => ({ ...player, stone: undefined })),
+    board: createGomokuBoard(),
+    moves: [],
+    winLine: [],
+    chatMessages: [],
+    logs: [`${room.hostName} 创建了 ${gameDefinitionOf(room.gameType).name} 房间`],
+    updatedAt: Date.now(),
+  };
+}
+function createInitialMinesweeperState(room: GameRoomShell): MinesweeperTableState {
+  const difficulty = MINESWEEPER_DIFFICULTIES[0];
+  return {
+    roomId: room.roomId,
+    phase: "lobby",
+    players: room.players.map((player) => ({ ...player })),
+    width: difficulty.width,
+    height: difficulty.height,
+    mines: difficulty.mines,
+    seed: Date.now(),
+    boards: {},
+    chatMessages: [],
+    logs: [`${room.hostName} 创建了 ${gameDefinitionOf(room.gameType).name} 房间`],
+    updatedAt: Date.now(),
+  };
+}
+function createInitialXiangqiState(room: GameRoomShell): XiangqiTableState {
+  return {
+    roomId: room.roomId,
+    phase: "lobby",
+    players: room.players.map((player) => ({ ...player, side: undefined })),
+    board: createXiangqiBoard(),
+    moves: [],
+    chatMessages: [],
+    logs: [`${room.hostName} 创建了 ${gameDefinitionOf(room.gameType).name} 房间`],
+    updatedAt: Date.now(),
+  };
+}
+function currentGomokuPlayer(): GomokuSeat | null {
+  if (!profile.value) return null;
+  return {
+    deviceId: profile.value.device_id,
+    nickname: profile.value.nickname,
+    avatar: profile.value.avatar,
+    online: true,
+    ready: false,
+  };
+}
+function currentMinesweeperPlayer(): MinesweeperSeat | null {
+  if (!profile.value) return null;
+  return {
+    deviceId: profile.value.device_id,
+    nickname: profile.value.nickname,
+    avatar: profile.value.avatar,
+    online: true,
+    ready: false,
+  };
+}
+function currentXiangqiPlayer(): XiangqiSeat | null {
+  if (!profile.value) return null;
+  return {
+    deviceId: profile.value.device_id,
+    nickname: profile.value.nickname,
+    avatar: profile.value.avatar,
+    online: true,
+    ready: false,
+  };
+}
+function currentDdzPlayer(): DdzSeat | null {
+  if (!profile.value) return null;
+  return {
+    deviceId: profile.value.device_id,
+    nickname: profile.value.nickname,
+    avatar: profile.value.avatar,
+    online: true,
+    ready: false,
+    handCount: 0,
+  };
+}
+function otherDdzSeats() {
+  const state = activeDdzState.value;
+  if (!state) return [];
+  return state.players.filter((player) => player.deviceId !== myDeviceId.value);
+}
+function isRoomHost(room = activeGameRoom.value) {
+  return !!room && room.hostDeviceId === myDeviceId.value;
+}
+function upsertGameRoom(room: GameRoomShell) {
+  const next = gameRoomsState.value.filter((item) => item.roomId !== room.roomId);
+  next.unshift(room);
+  gameRoomsState.value = next.sort((a, b) => b.updatedAt - a.updatedAt);
+}
+function removeGameRoom(roomId: string) {
+  gameRoomsState.value = gameRoomsState.value.filter((room) => room.roomId !== roomId);
+  const { [roomId]: _removed, ...rest } = doudizhuRooms.value;
+  doudizhuRooms.value = rest;
+  const { [roomId]: _removedGomoku, ...gomokuRest } = gomokuRooms.value;
+  gomokuRooms.value = gomokuRest;
+  const { [roomId]: _removedXiangqi, ...xiangqiRest } = xiangqiRooms.value;
+  xiangqiRooms.value = xiangqiRest;
+  const { [roomId]: _removedMinesweeper, ...minesweeperRest } = minesweeperRooms.value;
+  minesweeperRooms.value = minesweeperRest;
+  if (activeGameRoomId.value === roomId) {
+    activeGameRoomId.value = gameRoomsState.value[0]?.roomId ?? "";
+    selectedCardIds.value = [];
+    selectedXiangqiPoint.value = null;
+    roomChatDraft.value = "";
+  }
+}
+function updateRoomFromState(roomId: string, state: { players: Array<{ deviceId: string; nickname: string; avatar?: string | null; online: boolean; ready: boolean }>; updatedAt: number }) {
+  const room = gameRoomsState.value.find((item) => item.roomId === roomId);
+  if (!room) return;
+  const updated: GameRoomShell = {
+    ...room,
+    players: state.players.map((player) => ({
+      deviceId: player.deviceId,
+      nickname: player.nickname,
+      avatar: player.avatar,
+      online: player.online,
+      ready: player.ready,
+    })),
+    updatedAt: state.updatedAt,
+  };
+  upsertGameRoom(updated);
+}
+function makeGameFrame(kind: string, payload: unknown, roomId = activeGameRoomId.value, game: GameType = activeGameRoom.value?.gameType ?? selectedGameType.value): GameFrame {
+  return {
+    frame_id: `game-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    game,
+    room_id: roomId,
+    sender_device_id: profile.value?.device_id ?? "",
+    sender_nickname: profile.value?.nickname ?? "局域网用户",
+    kind,
+    payload,
+    created_at: Date.now(),
+  };
+}
+async function broadcastGameFrame(kind: string, payload: unknown, roomId = activeGameRoomId.value) {
+  await store.sendGameFrame(null, makeGameFrame(kind, payload, roomId));
+}
+function ownLeaderboardSyncPayload(): LeaderboardSyncPayload {
+  const deviceId = myDeviceId.value;
+  if (!deviceId) return {};
+  return {
+    gameStatsRecords: gameStatsRecords.value.filter((record) => record.deviceId === deviceId),
+    minesweeperLeaderboardRecords: minesweeperLeaderboardRecords.value.filter((record) => record.deviceId === deviceId),
+  };
+}
+async function broadcastLeaderboardSync() {
+  const payload = ownLeaderboardSyncPayload();
+  if ((payload.gameStatsRecords?.length ?? 0) + (payload.minesweeperLeaderboardRecords?.length ?? 0) === 0) return;
+  await store.sendGameFrame(null, makeGameFrame("leaderboard_sync", payload, "leaderboard", "doudizhu"));
+}
+function applyLeaderboardSync(payload: LeaderboardSyncPayload) {
+  let changed = false;
+  if (payload.gameStatsRecords?.length) {
+    const next = upsertGameStatsRecords(gameStatsRecords.value, payload.gameStatsRecords);
+    changed = changed || JSON.stringify(next) !== JSON.stringify(gameStatsRecords.value);
+    gameStatsRecords.value = next;
+    saveGameStatsRecords();
+  }
+  if (payload.minesweeperLeaderboardRecords?.length) {
+    const next = upsertMinesweeperLeaderboardRecords(minesweeperLeaderboardRecords.value, payload.minesweeperLeaderboardRecords);
+    changed = changed || JSON.stringify(next) !== JSON.stringify(minesweeperLeaderboardRecords.value);
+    minesweeperLeaderboardRecords.value = next;
+    saveMinesweeperLeaderboardRecords();
+  }
+  if (changed) {
+    void store.addSystemNotice(DEFAULT_GROUP_ID, `${payload.gameStatsRecords?.[0]?.nickname ?? payload.minesweeperLeaderboardRecords?.[0]?.nickname ?? "局域网玩家"} 同步了游戏排行榜`);
+  }
+}
+async function sendRoomAction(action: GameActionPayload) {
+  const room = activeGameRoom.value;
+  if (!room) return;
+  if (isRoomHost(room)) {
+    const changed = applyRoomAction(room.roomId, action);
+    if (changed) await broadcastSnapshot(room.roomId);
+    return;
+  }
+  await store.sendGameFrame(room.hostDeviceId, makeGameFrame("room_action", { roomId: room.roomId, action }, room.roomId, room.gameType));
+}
+async function broadcastSnapshot(roomId: string) {
+  const room = gameRoomsState.value.find((item) => item.roomId === roomId);
+  const state = roomStateForSnapshot(roomId);
+  if (!room || !state) return;
+  maybeRecordGameResult(room, state);
+  await broadcastGameFrame("room_snapshot", { room, state }, roomId);
+}
+function roomStateForSnapshot(roomId: string) {
+  const room = gameRoomsState.value.find((item) => item.roomId === roomId);
+  if (!room) return null;
+  if (room.gameType === "gomoku") return gomokuRooms.value[roomId] ?? null;
+  if (room.gameType === "xiangqi") return xiangqiRooms.value[roomId] ?? null;
+  if (room.gameType === "minesweeper") return minesweeperRooms.value[roomId] ?? null;
+  return doudizhuRooms.value[roomId] ?? null;
+}
+function applyRoomAction(roomId: string, action: GameActionPayload) {
+  const room = gameRoomsState.value.find((item) => item.roomId === roomId);
+  if (!room) return false;
+  if (room.gameType === "gomoku") return applyGomokuAction(roomId, action as GomokuActionPayload);
+  if (room.gameType === "xiangqi") return applyXiangqiAction(roomId, action as XiangqiActionPayload);
+  if (room.gameType === "minesweeper") return applyMinesweeperAction(roomId, action as MinesweeperActionPayload);
+  return applyDdzAction(roomId, action as DdzActionPayload);
+}
+function applyDdzAction(roomId: string, action: DdzActionPayload) {
+  const current = doudizhuRooms.value[roomId];
+  if (!current) return false;
+  const state: DdzTableState = cloneDdzState(current);
+  if (action.action === "join") {
+    if (state.players.length >= 3 || state.players.some((player) => player.deviceId === action.player.deviceId)) return false;
+    state.players.push(action.player);
+    state.logs.push(`${action.player.nickname} 加入房间`);
+  }
+  if (action.action === "ready") {
+    state.players = state.players.map((player) => player.deviceId === action.playerId ? { ...player, ready: action.ready } : player);
+    const player = state.players.find((item) => item.deviceId === action.playerId);
+    state.logs.push(`${player?.nickname ?? "玩家"}${action.ready ? "已准备" : "取消准备"}`);
+  }
+  if (action.action === "bid") {
+    applyBidAction(state, action.playerId, action.call);
+  }
+  if (action.action === "play") {
+    const ok = applyPlayAction(state, action.playerId, action.cardIds);
+    if (!ok) return false;
+  }
+  if (action.action === "pass") {
+    const ok = applyPassAction(state, action.playerId);
+    if (!ok) return false;
+  }
+  if (action.action === "leave") {
+    const leaving = state.players.find((player) => player.deviceId === action.playerId);
+    state.players = state.players.filter((player) => player.deviceId !== action.playerId);
+    delete state.hands[action.playerId];
+    state.logs.push(`${leaving?.nickname ?? "玩家"} 退出房间`);
+    if (state.phase === "bidding" || state.phase === "playing") {
+      state.phase = "ended";
+      state.turnDeviceId = undefined;
+      state.turnStartedAt = undefined;
+      state.winnerName = "房间人数不足，本局结束";
+    }
+  }
+  if (action.action === "chat") {
+    state.chatMessages.push(action.message);
+  }
+  state.updatedAt = Date.now();
+  maybeAutoStartDdz(state);
+  doudizhuRooms.value = { ...doudizhuRooms.value, [roomId]: state };
+  updateRoomFromState(roomId, state);
+  return true;
+}
+function cloneDdzState(state: DdzTableState): DdzTableState {
+  return {
+    ...state,
+    players: state.players.map((player) => ({ ...player })),
+    landlordCards: [...state.landlordCards],
+    hands: Object.fromEntries(Object.entries(state.hands).map(([id, cards]) => [id, [...cards]])),
+    bids: { ...state.bids },
+    lastPlay: state.lastPlay ? { ...state.lastPlay, cards: [...state.lastPlay.cards] } : null,
+    chatMessages: state.chatMessages.map((item) => ({ ...item })),
+    logs: [...state.logs],
+  };
+}
+function applyMinesweeperAction(roomId: string, action: MinesweeperActionPayload) {
+  const current = minesweeperRooms.value[roomId];
+  if (!current) return false;
+  const state = cloneMinesweeperState(current);
+  if (action.action === "join") {
+    if (state.phase !== "lobby" || state.players.length >= 6 || state.players.some((player) => player.deviceId === action.player.deviceId)) return false;
+    state.players.push({ ...action.player });
+    state.logs.push(`${action.player.nickname} 加入房间`);
+  }
+  if (action.action === "ready") {
+    state.players = state.players.map((player) => player.deviceId === action.playerId ? { ...player, ready: action.ready } : player);
+    const player = state.players.find((item) => item.deviceId === action.playerId);
+    state.logs.push(`${player?.nickname ?? "玩家"}${action.ready ? "已准备" : "取消准备"}`);
+  }
+  if (action.action === "difficulty") {
+    const room = gameRoomsState.value.find((item) => item.roomId === roomId);
+    const allowed = state.phase === "lobby" && room?.hostDeviceId === action.playerId;
+    if (!allowed) return false;
+    state.width = action.width;
+    state.height = action.height;
+    state.mines = action.mines;
+    state.seed = Date.now();
+    state.boards = {};
+    state.players = state.players.map((player) => ({ ...player, ready: false }));
+    state.logs.push(`难度切换为 ${minesweeperDifficultyLabel(action.width, action.height, action.mines)}，${action.mines} 雷`);
+  }
+  if (action.action === "reveal") {
+    const ok = applyMinesweeperBoardAction(state, action.playerId, "reveal", { x: action.x, y: action.y });
+    if (!ok) return false;
+  }
+  if (action.action === "flag") {
+    const ok = applyMinesweeperBoardAction(state, action.playerId, "flag", { x: action.x, y: action.y });
+    if (!ok) return false;
+  }
+  if (action.action === "chord") {
+    const ok = applyMinesweeperBoardAction(state, action.playerId, "chord", { x: action.x, y: action.y });
+    if (!ok) return false;
+  }
+  if (action.action === "leave") {
+    const leaving = state.players.find((player) => player.deviceId === action.playerId);
+    state.players = state.players.filter((player) => player.deviceId !== action.playerId);
+    delete state.boards[action.playerId];
+    state.logs.push(`${leaving?.nickname ?? "玩家"} 退出房间`);
+    if (state.phase === "playing" && !state.winnerDeviceId && state.players.filter((player) => state.boards[player.deviceId]?.status === "playing").length <= 1) {
+      const survivor = state.players.find((player) => state.boards[player.deviceId]?.status === "playing");
+      if (survivor) finishMinesweeperWithWinner(state, survivor.deviceId);
+    }
+  }
+  if (action.action === "chat") {
+    state.chatMessages.push(action.message);
+  }
+  state.updatedAt = Date.now();
+  maybeAutoStartMinesweeper(state);
+  minesweeperRooms.value = { ...minesweeperRooms.value, [roomId]: state };
+  updateRoomFromState(roomId, state);
+  return true;
+}
+function cloneMinesweeperState(state: MinesweeperTableState): MinesweeperTableState {
+  return {
+    ...state,
+    players: state.players.map((player) => ({ ...player })),
+    boards: Object.fromEntries(Object.entries(state.boards).map(([id, boardState]) => [id, {
+      ...boardState,
+      board: cloneMinesweeperBoard(boardState.board),
+    }])),
+    chatMessages: state.chatMessages.map((item) => ({ ...item })),
+    logs: [...state.logs],
+  };
+}
+function maybeAutoStartMinesweeper(state: MinesweeperTableState) {
+  if (state.phase !== "lobby" || state.players.length < 1 || !state.players.every((player) => player.ready)) return;
+  const seed = Date.now();
+  state.seed = seed;
+  state.phase = "playing";
+  state.winnerDeviceId = undefined;
+  state.winnerName = undefined;
+  state.boards = Object.fromEntries(state.players.map((player) => [player.deviceId, createMinesweeperPlayerState(state, seed)]));
+  state.logs.push(`扫雷竞速开始：${state.width}x${state.height}，${state.mines} 颗雷`);
+}
+function createMinesweeperPlayerState(state: MinesweeperTableState, seed = state.seed): MinesweeperPlayerState {
+  const board = createMinesweeperBoard({ width: state.width, height: state.height, mines: state.mines, seed });
+  const progress = getMinesweeperProgress(board);
+  return {
+    board,
+    status: "playing",
+    moves: 0,
+    startedAt: Date.now(),
+    revealedSafe: progress.revealedSafe,
+    totalSafe: progress.totalSafe,
+    flagged: progress.flagged,
+  };
+}
+function applyMinesweeperBoardAction(state: MinesweeperTableState, playerId: string, action: "reveal" | "flag" | "chord", point: MinesweeperPoint) {
+  if (state.phase !== "playing") return false;
+  const player = state.players.find((item) => item.deviceId === playerId);
+  const boardState = state.boards[playerId];
+  if (!player || !boardState || boardState.status !== "playing") return false;
+  const result = action === "reveal"
+    ? revealMinesweeperCell(boardState.board, point)
+    : action === "flag"
+      ? toggleMinesweeperFlag(boardState.board, point)
+      : chordRevealMinesweeperCell(boardState.board, point);
+  if (!result.ok || !result.changed) return false;
+  const progress = getMinesweeperProgress(result.board);
+  state.boards[playerId] = {
+    ...boardState,
+    board: result.board,
+    moves: boardState.moves + 1,
+    status: result.lost ? "lost" : result.won ? "won" : "playing",
+    finishedAt: result.lost || result.won ? Date.now() : boardState.finishedAt,
+    revealedSafe: progress.revealedSafe,
+    totalSafe: progress.totalSafe,
+    flagged: progress.flagged,
+  };
+  if (result.lost) {
+    state.logs.push(`${player.nickname} 踩雷出局`);
+    maybeFinishMinesweeperBySurvivor(state);
+    return true;
+  }
+  if (result.won) {
+    finishMinesweeperWithWinner(state, playerId);
+    return true;
+  }
+  return true;
+}
+function maybeFinishMinesweeperBySurvivor(state: MinesweeperTableState) {
+  const playing = state.players.filter((player) => state.boards[player.deviceId]?.status === "playing");
+  if (playing.length === 1) finishMinesweeperWithWinner(state, playing[0]!.deviceId);
+  if (playing.length === 0 && !state.winnerDeviceId) {
+    state.phase = "ended";
+    state.winnerName = "全部失败，本局结束";
+  }
+}
+function finishMinesweeperWithWinner(state: MinesweeperTableState, winnerId: string) {
+  const winner = state.players.find((player) => player.deviceId === winnerId);
+  if (!winner) return;
+  const boardState = state.boards[winnerId];
+  if (boardState) {
+    state.boards[winnerId] = { ...boardState, status: "won", finishedAt: boardState.finishedAt ?? Date.now() };
+  }
+  state.phase = "ended";
+  state.winnerDeviceId = winnerId;
+  state.winnerName = winner.nickname;
+  state.logs.push(`${winner.nickname} 完成扫雷，获得胜利`);
+}
+function applyGomokuAction(roomId: string, action: GomokuActionPayload) {
+  const current = gomokuRooms.value[roomId];
+  if (!current) return false;
+  const state = cloneGomokuState(current);
+  if (action.action === "join") {
+    if (state.phase !== "lobby" || state.players.length >= 2 || state.players.some((player) => player.deviceId === action.player.deviceId)) return false;
+    state.players.push({ ...action.player, stone: undefined });
+    state.logs.push(`${action.player.nickname} 加入房间`);
+  }
+  if (action.action === "ready") {
+    state.players = state.players.map((player) => player.deviceId === action.playerId ? { ...player, ready: action.ready } : player);
+    const player = state.players.find((item) => item.deviceId === action.playerId);
+    state.logs.push(`${player?.nickname ?? "玩家"}${action.ready ? "已准备" : "取消准备"}`);
+  }
+  if (action.action === "move") {
+    const ok = applyGomokuMoveAction(state, action.playerId, action.x, action.y);
+    if (!ok) return false;
+  }
+  if (action.action === "undo_request") {
+    const ok = applyGomokuUndoRequestAction(state, action.playerId);
+    if (!ok) return false;
+  }
+  if (action.action === "undo_response") {
+    const ok = applyGomokuUndoResponseAction(state, action.playerId, action.accepted);
+    if (!ok) return false;
+  }
+  if (action.action === "resign") {
+    const ok = applyGomokuResignAction(state, action.playerId);
+    if (!ok) return false;
+  }
+  if (action.action === "leave") {
+    const leaving = state.players.find((player) => player.deviceId === action.playerId);
+    state.players = state.players.filter((player) => player.deviceId !== action.playerId);
+    state.logs.push(`${leaving?.nickname ?? "玩家"} 退出房间`);
+    if (state.phase === "playing") {
+      state.phase = "ended";
+      state.turnDeviceId = undefined;
+      state.turnStartedAt = undefined;
+      state.winnerName = "对方退出，本局结束";
+    }
+  }
+  if (action.action === "chat") {
+    state.chatMessages.push(action.message);
+  }
+  state.updatedAt = Date.now();
+  maybeAutoStartGomoku(state);
+  gomokuRooms.value = { ...gomokuRooms.value, [roomId]: state };
+  updateRoomFromState(roomId, state);
+  return true;
+}
+function cloneGomokuState(state: GomokuTableState): GomokuTableState {
+  return {
+    ...state,
+    players: state.players.map((player) => ({ ...player })),
+    board: cloneGomokuBoard(state.board),
+    moves: state.moves.map((move) => ({ ...move })),
+    winLine: state.winLine.map((point) => ({ ...point })),
+    pendingUndo: state.pendingUndo ? { ...state.pendingUndo } : undefined,
+    chatMessages: state.chatMessages.map((item) => ({ ...item })),
+    logs: [...state.logs],
+  };
+}
+function maybeAutoStartGomoku(state: GomokuTableState) {
+  if (state.phase !== "lobby" || state.players.length !== 2 || !state.players.every((player) => player.ready)) return;
+  state.board = createGomokuBoard();
+  state.moves = [];
+  state.winLine = [];
+  state.winnerDeviceId = undefined;
+  state.winnerName = undefined;
+  state.winnerStone = undefined;
+  state.pendingUndo = undefined;
+  state.players = state.players.map((player, index) => ({ ...player, stone: index === 0 ? "black" : "white" }));
+  state.phase = "playing";
+  setGomokuTurn(state, state.players[0]?.deviceId);
+  state.logs.push(`${state.players[0]?.nickname ?? "玩家"} 执黑先行`);
+}
+function applyGomokuMoveAction(state: GomokuTableState, playerId: string, x: number, y: number) {
+  if (state.phase !== "playing" || state.turnDeviceId !== playerId || state.pendingUndo) return false;
+  const player = state.players.find((item) => item.deviceId === playerId);
+  if (!player?.stone) return false;
+  const result = placeGomokuStone(state.board, { x, y }, player.stone);
+  if (!result.ok) return false;
+  state.board = result.board;
+  state.moves.push({ x, y, playerId, playerName: player.nickname, stone: player.stone, createdAt: Date.now() });
+  state.logs.push(`${player.nickname} 落 ${gomokuStoneLabel(player.stone)} (${x + 1}, ${y + 1})`);
+  if (result.winner) {
+    state.phase = "ended";
+    state.turnDeviceId = undefined;
+    state.turnStartedAt = undefined;
+    state.winnerDeviceId = playerId;
+    state.winnerName = player.nickname;
+    state.winnerStone = result.winner;
+    state.winLine = result.winLine ?? [];
+    state.logs.push(`${player.nickname} 五连获胜`);
+    return true;
+  }
+  if (result.draw) {
+    state.phase = "ended";
+    state.turnDeviceId = undefined;
+    state.turnStartedAt = undefined;
+    state.winnerName = undefined;
+    state.winLine = [];
+    state.logs.push("棋盘已满，本局平局");
+    return true;
+  }
+  setGomokuTurn(state, nextGomokuPlayerId(state, playerId));
+  return true;
+}
+function applyGomokuUndoRequestAction(state: GomokuTableState, playerId: string) {
+  if (state.phase !== "playing" || state.pendingUndo || state.moves.length === 0) return false;
+  const player = state.players.find((item) => item.deviceId === playerId);
+  if (!player) return false;
+  state.pendingUndo = { requesterId: playerId, requesterName: player.nickname, createdAt: Date.now() };
+  state.logs.push(`${player.nickname} 请求悔棋`);
+  return true;
+}
+function applyGomokuUndoResponseAction(state: GomokuTableState, playerId: string, accepted: boolean) {
+  if (state.phase !== "playing" || !state.pendingUndo || state.pendingUndo.requesterId === playerId) return false;
+  const responder = state.players.find((item) => item.deviceId === playerId);
+  const requesterName = state.pendingUndo.requesterName;
+  const lastMove = state.moves[state.moves.length - 1];
+  state.pendingUndo = undefined;
+  if (!accepted) {
+    state.logs.push(`${responder?.nickname ?? "玩家"} 拒绝 ${requesterName} 的悔棋请求`);
+    return true;
+  }
+  if (!lastMove) return false;
+  state.moves = state.moves.slice(0, -1);
+  let board = createGomokuBoard();
+  let winLine: GomokuPoint[] = [];
+  let winner: GomokuStone | null = null;
+  for (const move of state.moves) {
+    const placed = placeGomokuStone(board, { x: move.x, y: move.y }, move.stone);
+    if (placed.ok) {
+      board = placed.board;
+      winner = placed.winner ?? null;
+      winLine = placed.winLine ?? [];
+    }
+  }
+  state.board = board;
+  state.winnerDeviceId = undefined;
+  state.winnerName = undefined;
+  state.winnerStone = winner ?? undefined;
+  state.winLine = winLine;
+  setGomokuTurn(state, lastMove.playerId);
+  state.logs.push(`${responder?.nickname ?? "玩家"} 同意悔棋，撤回 ${lastMove.playerName} 的落子`);
+  return true;
+}
+function applyGomokuResignAction(state: GomokuTableState, playerId: string) {
+  if (state.phase !== "playing") return false;
+  const player = state.players.find((item) => item.deviceId === playerId);
+  const winner = state.players.find((item) => item.deviceId !== playerId);
+  if (!player || !winner) return false;
+  state.phase = "ended";
+  state.turnDeviceId = undefined;
+  state.turnStartedAt = undefined;
+  state.pendingUndo = undefined;
+  state.winnerDeviceId = winner.deviceId;
+  state.winnerName = winner.nickname;
+  state.winnerStone = winner.stone;
+  state.logs.push(`${player.nickname} 投降，${winner.nickname} 获胜`);
+  return true;
+}
+function setGomokuTurn(state: GomokuTableState, playerId?: string) {
+  state.turnDeviceId = playerId;
+  state.turnStartedAt = playerId ? Date.now() : undefined;
+}
+function nextGomokuPlayerId(state: GomokuTableState, currentId: string) {
+  const index = state.players.findIndex((player) => player.deviceId === currentId);
+  return state.players[(index + 1) % state.players.length]?.deviceId;
+}
+function gomokuPointStyle(x: number, y: number) {
+  const size = Math.max((activeGomokuState.value?.board.length ?? 15) - 1, 1);
+  return {
+    "--gx": String(x / size),
+    "--gy": String(y / size),
+  } as Record<string, string>;
+}
+function canPlaceGomokuCell(x: number, y: number) {
+  const state = activeGomokuState.value;
+  return !!state && state.phase === "playing" && !state.pendingUndo && isMyGomokuTurn.value && !state.board[y]?.[x];
+}
+function isGomokuWinPoint(x: number, y: number) {
+  return gomokuWinPointKeys.value.has(`${x}:${y}`);
+}
+async function placeGomokuCell(x: number, y: number) {
+  if (!profile.value || !canPlaceGomokuCell(x, y)) return;
+  await sendRoomAction({ action: "move", playerId: profile.value.device_id, x, y });
+}
+function applyXiangqiAction(roomId: string, action: XiangqiActionPayload) {
+  const current = xiangqiRooms.value[roomId];
+  if (!current) return false;
+  const state = cloneXiangqiState(current);
+  if (action.action === "join") {
+    if (state.phase !== "lobby" || state.players.length >= 2 || state.players.some((player) => player.deviceId === action.player.deviceId)) return false;
+    state.players.push({ ...action.player, side: undefined });
+    state.logs.push(`${action.player.nickname} 加入房间`);
+  }
+  if (action.action === "ready") {
+    state.players = state.players.map((player) => player.deviceId === action.playerId ? { ...player, ready: action.ready } : player);
+    const player = state.players.find((item) => item.deviceId === action.playerId);
+    state.logs.push(`${player?.nickname ?? "玩家"}${action.ready ? "已准备" : "取消准备"}`);
+  }
+  if (action.action === "move") {
+    const ok = applyXiangqiMoveAction(state, action.playerId, action.from, action.to);
+    if (!ok) return false;
+  }
+  if (action.action === "undo_request") {
+    const ok = applyXiangqiUndoRequestAction(state, action.playerId);
+    if (!ok) return false;
+  }
+  if (action.action === "undo_response") {
+    const ok = applyXiangqiUndoResponseAction(state, action.playerId, action.accepted);
+    if (!ok) return false;
+  }
+  if (action.action === "resign") {
+    const ok = applyXiangqiResignAction(state, action.playerId);
+    if (!ok) return false;
+  }
+  if (action.action === "leave") {
+    const leaving = state.players.find((player) => player.deviceId === action.playerId);
+    state.players = state.players.filter((player) => player.deviceId !== action.playerId);
+    state.logs.push(`${leaving?.nickname ?? "玩家"} 退出房间`);
+    if (state.phase === "playing") {
+      state.phase = "ended";
+      state.turnDeviceId = undefined;
+      state.turnStartedAt = undefined;
+      state.winnerName = "对方退出，本局结束";
+    }
+  }
+  if (action.action === "chat") {
+    state.chatMessages.push(action.message);
+  }
+  state.updatedAt = Date.now();
+  maybeAutoStartXiangqi(state);
+  xiangqiRooms.value = { ...xiangqiRooms.value, [roomId]: state };
+  updateRoomFromState(roomId, state);
+  return true;
+}
+function cloneXiangqiState(state: XiangqiTableState): XiangqiTableState {
+  return {
+    ...state,
+    players: state.players.map((player) => ({ ...player })),
+    board: cloneXiangqiBoard(state.board),
+    moves: state.moves.map((move) => ({ ...move, from: { ...move.from }, to: { ...move.to }, piece: move.piece ? { ...move.piece } : undefined, captured: move.captured ? { ...move.captured } : move.captured, previousCheckSide: move.previousCheckSide })),
+    pendingUndo: state.pendingUndo ? { ...state.pendingUndo } : undefined,
+    chatMessages: state.chatMessages.map((item) => ({ ...item })),
+    logs: [...state.logs],
+  };
+}
+function maybeAutoStartXiangqi(state: XiangqiTableState) {
+  if (state.phase !== "lobby" || state.players.length !== 2 || !state.players.every((player) => player.ready)) return;
+  state.board = createXiangqiBoard();
+  state.moves = [];
+  state.winnerDeviceId = undefined;
+  state.winnerName = undefined;
+  state.winnerSide = undefined;
+  state.checkSide = undefined;
+  state.pendingUndo = undefined;
+  state.players = state.players.map((player, index) => ({ ...player, side: index === 0 ? "red" : "black" }));
+  state.phase = "playing";
+  setXiangqiTurn(state, state.players.find((player) => player.side === "red")?.deviceId);
+  state.logs.push(`${state.players.find((player) => player.side === "red")?.nickname ?? "玩家"} 执红先行`);
+}
+function applyXiangqiMoveAction(state: XiangqiTableState, playerId: string, from: XiangqiPoint, to: XiangqiPoint) {
+  if (state.phase !== "playing" || state.turnDeviceId !== playerId || state.pendingUndo) return false;
+  const player = state.players.find((item) => item.deviceId === playerId);
+  if (!player?.side) return false;
+  const movingPiece = state.board[from.y]?.[from.x] ?? null;
+  if (!movingPiece || movingPiece.side !== player.side) return false;
+  const capturedPiece = state.board[to.y]?.[to.x] ?? null;
+  const result = moveXiangqiPiece(state.board, from, to, player.side);
+  if (!result.ok) return false;
+  state.board = result.board;
+  const capturedLabel = result.captured ? xiangqiPieceLabel(result.captured) : undefined;
+  state.moves.push({
+    from: { ...from },
+    to: { ...to },
+    playerId,
+    playerName: player.nickname,
+    side: player.side,
+    piece: { ...movingPiece },
+    captured: capturedPiece ? { ...capturedPiece } : null,
+    previousCheckSide: state.checkSide,
+    pieceLabel: xiangqiPieceLabel(movingPiece),
+    capturedLabel,
+    createdAt: Date.now(),
+  });
+  state.logs.push(`${player.nickname} ${xiangqiPieceLabel(movingPiece)} ${from.x + 1},${from.y + 1} → ${to.x + 1},${to.y + 1}${capturedLabel ? `，吃 ${capturedLabel}` : ""}`);
+  if (result.winner) {
+    state.phase = "ended";
+    state.turnDeviceId = undefined;
+    state.turnStartedAt = undefined;
+    state.winnerDeviceId = playerId;
+    state.winnerName = player.nickname;
+    state.winnerSide = result.winner;
+    state.checkSide = undefined;
+    state.logs.push(`${player.nickname} 获胜`);
+    return true;
+  }
+  state.checkSide = result.check ? otherXiangqiSide(player.side) : undefined;
+  setXiangqiTurn(state, nextXiangqiPlayerId(state, playerId));
+  return true;
+}
+function applyXiangqiUndoAction(state: XiangqiTableState, playerId: string) {
+  if (state.phase !== "playing" || !state.players.some((player) => player.deviceId === playerId)) return false;
+  const lastMove = state.moves[state.moves.length - 1];
+  if (!lastMove?.piece) return false;
+  state.board = undoXiangqiMove(state.board, {
+    from: lastMove.from,
+    to: lastMove.to,
+    piece: lastMove.piece,
+    captured: lastMove.captured ?? null,
+  });
+  state.moves = state.moves.slice(0, -1);
+  state.winnerDeviceId = undefined;
+  state.winnerName = undefined;
+  state.winnerSide = undefined;
+  state.checkSide = lastMove.previousCheckSide;
+  setXiangqiTurn(state, lastMove.playerId);
+  const operator = state.players.find((player) => player.deviceId === playerId)?.nickname ?? "玩家";
+  state.pendingUndo = undefined;
+  state.logs.push(`${operator} 悔棋，撤回 ${lastMove.playerName} 的 ${lastMove.pieceLabel}`);
+  return true;
+}
+function applyXiangqiUndoRequestAction(state: XiangqiTableState, playerId: string) {
+  if (state.phase !== "playing" || state.pendingUndo || state.moves.length === 0) return false;
+  const player = state.players.find((item) => item.deviceId === playerId);
+  if (!player) return false;
+  state.pendingUndo = { requesterId: playerId, requesterName: player.nickname, createdAt: Date.now() };
+  state.logs.push(`${player.nickname} 请求悔棋`);
+  return true;
+}
+function applyXiangqiUndoResponseAction(state: XiangqiTableState, playerId: string, accepted: boolean) {
+  if (state.phase !== "playing" || !state.pendingUndo || state.pendingUndo.requesterId === playerId) return false;
+  const responder = state.players.find((item) => item.deviceId === playerId);
+  const requesterId = state.pendingUndo.requesterId;
+  const requesterName = state.pendingUndo.requesterName;
+  if (!accepted) {
+    state.pendingUndo = undefined;
+    state.logs.push(`${responder?.nickname ?? "玩家"} 拒绝 ${requesterName} 的悔棋请求`);
+    return true;
+  }
+  const ok = applyXiangqiUndoAction(state, requesterId);
+  if (ok) state.logs.push(`${responder?.nickname ?? "玩家"} 同意 ${requesterName} 的悔棋请求`);
+  return ok;
+}
+function applyXiangqiResignAction(state: XiangqiTableState, playerId: string) {
+  if (state.phase !== "playing") return false;
+  const player = state.players.find((item) => item.deviceId === playerId);
+  if (!player?.side) return false;
+  const winnerSide = resignXiangqiSide(player.side);
+  const winner = state.players.find((item) => item.side === winnerSide);
+  state.phase = "ended";
+  state.turnDeviceId = undefined;
+  state.turnStartedAt = undefined;
+  state.winnerDeviceId = winner?.deviceId;
+  state.winnerName = winner?.nickname ?? xiangqiSideLabel(winnerSide);
+  state.winnerSide = winnerSide;
+  state.checkSide = undefined;
+  state.pendingUndo = undefined;
+  state.logs.push(`${player.nickname} 投降，${state.winnerName} 获胜`);
+  return true;
+}
+function setXiangqiTurn(state: XiangqiTableState, playerId?: string) {
+  state.turnDeviceId = playerId;
+  state.turnStartedAt = playerId ? Date.now() : undefined;
+}
+function nextXiangqiPlayerId(state: XiangqiTableState, currentId: string) {
+  const index = state.players.findIndex((player) => player.deviceId === currentId);
+  return state.players[(index + 1) % state.players.length]?.deviceId;
+}
+function xiangqiSideShortLabel(side: XiangqiSide) {
+  return side === "black" ? "黑" : "红";
+}
+
+function xiangqiSeatName(seat: XiangqiSeat | null, side: XiangqiSide) {
+  if (!seat) return `等待${xiangqiSideShortLabel(side)}方`;
+  return seat.deviceId === myDeviceId.value ? `我 · ${seat.nickname}` : seat.nickname;
+}
+
+function xiangqiSeatStatus(seat: XiangqiSeat | null, side: XiangqiSide) {
+  if (seat?.ready) return "已准备";
+  if (activeXiangqiState.value?.phase === "playing") return `执${xiangqiSideShortLabel(side)}`;
+  return "未准备";
+}
+
+function isSelectedXiangqiCell(x: number, y: number) {
+  return selectedXiangqiPoint.value?.x === x && selectedXiangqiPoint.value.y === y;
+}
+function canSelectXiangqiCell(x: number, y: number) {
+  const state = activeXiangqiState.value;
+  const piece = state?.board[y]?.[x];
+  return !!state && state.phase === "playing" && !state.pendingUndo && isMyXiangqiTurn.value && !!myXiangqiSeat.value?.side && piece?.side === myXiangqiSeat.value.side;
+}
+function canMoveSelectedXiangqiTo(x: number, y: number) {
+  const state = activeXiangqiState.value;
+  const from = selectedXiangqiPoint.value;
+  const side = myXiangqiSeat.value?.side;
+  if (!state || !from || !side || state.phase !== "playing" || state.pendingUndo || !isMyXiangqiTurn.value) return false;
+  return isLegalXiangqiMove(state.board, from, { x, y }, side);
+}
+function isXiangqiCellPlayable(x: number, y: number) {
+  return canSelectXiangqiCell(x, y) || canMoveSelectedXiangqiTo(x, y);
+}
+async function clickXiangqiCell(x: number, y: number) {
+  const state = activeXiangqiState.value;
+  if (!profile.value || state?.phase !== "playing" || state.pendingUndo || !isMyXiangqiTurn.value) return;
+  if (canSelectXiangqiCell(x, y)) {
+    selectedXiangqiPoint.value = { x, y };
+    return;
+  }
+  const from = selectedXiangqiPoint.value;
+  if (from && canMoveSelectedXiangqiTo(x, y)) {
+    selectedXiangqiPoint.value = null;
+    await sendRoomAction({ action: "move", playerId: profile.value.device_id, from, to: { x, y } });
+    return;
+  }
+  selectedXiangqiPoint.value = null;
+}
+function canUseMinesweeperBoard() {
+  return activeMinesweeperState.value?.phase === "playing" && myMinesweeperBoardState.value?.status === "playing";
+}
+function minesweeperCellText(cell: MinesweeperCell) {
+  if (cell.flagged && !cell.revealed) return "⚑";
+  if (!cell.revealed) return "";
+  if (cell.mine) return "✹";
+  return cell.adjacent > 0 ? String(cell.adjacent) : "";
+}
+function minesweeperCellTone(cell: MinesweeperCell) {
+  if (!cell.revealed || cell.mine || cell.adjacent === 0) return "";
+  return `n${cell.adjacent}`;
+}
+async function revealMinesweeperAt(x: number, y: number) {
+  if (!profile.value || !canUseMinesweeperBoard()) return;
+  await sendRoomAction({ action: "reveal", playerId: profile.value.device_id, x, y });
+}
+async function flagMinesweeperAt(x: number, y: number) {
+  if (!profile.value || !canUseMinesweeperBoard()) return;
+  await sendRoomAction({ action: "flag", playerId: profile.value.device_id, x, y });
+}
+async function chordMinesweeperAt(x: number, y: number) {
+  if (!profile.value || !canUseMinesweeperBoard()) return;
+  await sendRoomAction({ action: "chord", playerId: profile.value.device_id, x, y });
+}
+function minesweeperElapsedLabel(startedAt?: number, finishedAt?: number) {
+  if (!startedAt) return "--";
+  const end = finishedAt ?? nowTick.value;
+  return `${Math.max(0, Math.floor((end - startedAt) / 1000))}s`;
+}
+function minesweeperProgressPercent(boardState?: MinesweeperPlayerState | null) {
+  if (!boardState?.totalSafe) return 0;
+  return Math.round((boardState.revealedSafe / boardState.totalSafe) * 100);
+}
+function isOpponentLastGomokuCell(x: number, y: number) {
+  const move = lastOpponentGomokuMove.value;
+  return !!move && move.x === x && move.y === y;
+}
+function isOpponentLastXiangqiCell(x: number, y: number) {
+  const move = lastOpponentXiangqiMove.value;
+  return !!move && move.to.x === x && move.to.y === y;
+}
+async function requestGomokuUndo() {
+  if (!profile.value || !canRequestUndoGomoku.value) return;
+  await sendRoomAction({ action: "undo_request", playerId: profile.value.device_id });
+}
+async function respondGomokuUndo(accepted: boolean) {
+  if (!profile.value || !canRespondGomokuUndo.value) return;
+  await sendRoomAction({ action: "undo_response", playerId: profile.value.device_id, accepted });
+}
+async function resignGomoku() {
+  if (!profile.value || !canResignGomoku.value) return;
+  await sendRoomAction({ action: "resign", playerId: profile.value.device_id });
+}
+async function requestXiangqiUndo() {
+  if (!profile.value || !canRequestUndoXiangqi.value) return;
+  selectedXiangqiPoint.value = null;
+  await sendRoomAction({ action: "undo_request", playerId: profile.value.device_id });
+}
+async function respondXiangqiUndo(accepted: boolean) {
+  if (!profile.value || !canRespondXiangqiUndo.value) return;
+  selectedXiangqiPoint.value = null;
+  await sendRoomAction({ action: "undo_response", playerId: profile.value.device_id, accepted });
+}
+async function resignXiangqi() {
+  if (!profile.value || !canResignXiangqi.value) return;
+  selectedXiangqiPoint.value = null;
+  await sendRoomAction({ action: "resign", playerId: profile.value.device_id });
+}
+function maybeAutoStartDdz(state: DdzTableState) {
+  if (state.phase !== "lobby" || state.players.length !== 3 || !state.players.every((player) => player.ready)) return;
+  const { hands, landlordCards } = dealHands(state.players);
+  state.hands = hands;
+  state.landlordCards = landlordCards;
+  state.players = state.players.map((player) => ({ ...player, handCount: hands[player.deviceId]?.length ?? 0, role: undefined }));
+  state.phase = "bidding";
+  state.bidOrder = state.players.map((player) => player.deviceId);
+  state.bidIndex = 0;
+  state.bids = {};
+  setDdzTurn(state, state.bidOrder[0]);
+  state.lastPlay = null;
+  state.passCount = 0;
+  state.winnerDeviceId = undefined;
+  state.winnerName = undefined;
+  state.logs.push("三人已准备，开始叫地主");
+}
+function applyBidAction(state: DdzTableState, playerId: string, call: boolean) {
+  if (state.phase !== "bidding" || state.turnDeviceId !== playerId) return;
+  state.bids[playerId] = call;
+  const player = state.players.find((item) => item.deviceId === playerId);
+  state.logs.push(`${player?.nickname ?? "玩家"}${call ? "叫地主" : "不叫"}`);
+  if (call || state.bidIndex >= state.bidOrder.length - 1) {
+    const landlordId = call ? playerId : state.bidOrder[0];
+    state.landlordDeviceId = landlordId;
+    state.players = state.players.map((item) => ({ ...item, role: item.deviceId === landlordId ? "landlord" : "farmer" }));
+    state.hands[landlordId] = sortCards([...(state.hands[landlordId] ?? []), ...state.landlordCards]);
+    state.players = state.players.map((item) => ({ ...item, handCount: state.hands[item.deviceId]?.length ?? 0 }));
+    state.phase = "playing";
+    setDdzTurn(state, landlordId);
+    state.logs.push(`${state.players.find((item) => item.deviceId === landlordId)?.nickname ?? "玩家"} 成为地主`);
+    return;
+  }
+  state.bidIndex += 1;
+  setDdzTurn(state, state.bidOrder[state.bidIndex]);
+}
+function applyPlayAction(state: DdzTableState, playerId: string, cardIds: string[]) {
+  if (state.phase !== "playing" || state.turnDeviceId !== playerId) return false;
+  const hand = state.hands[playerId] ?? [];
+  const cards = sortCards(hand.filter((card) => cardIds.includes(card.id)));
+  if (cards.length !== cardIds.length) return false;
+  const leading = !state.lastPlay || state.lastPlay.playerId === playerId;
+  const evaluated = evaluatePlay(cards);
+  if (!evaluated || !canBeat(cards, leading ? null : state.lastPlay)) return false;
+  const player = state.players.find((item) => item.deviceId === playerId);
+  state.hands[playerId] = hand.filter((card) => !cardIds.includes(card.id));
+  state.lastPlay = { ...evaluated, playerId, playerName: player?.nickname ?? "玩家", cards };
+  state.passCount = 0;
+  state.players = state.players.map((item) => item.deviceId === playerId ? { ...item, handCount: state.hands[playerId].length } : item);
+  state.logs.push(`${player?.nickname ?? "玩家"} 打出 ${playLabel(evaluated)}`);
+  if (state.hands[playerId].length === 0) {
+    state.phase = "ended";
+    state.turnDeviceId = undefined;
+    state.turnStartedAt = undefined;
+    state.winnerDeviceId = playerId;
+    state.winnerName = player?.nickname ?? "玩家";
+    state.logs.push(`${state.winnerName} 获胜`);
+    return true;
+  }
+  setDdzTurn(state, nextDdzPlayerId(state, playerId));
+  return true;
+}
+function applyPassAction(state: DdzTableState, playerId: string) {
+  if (state.phase !== "playing" || state.turnDeviceId !== playerId || !state.lastPlay || state.lastPlay.playerId === playerId) return false;
+  const player = state.players.find((item) => item.deviceId === playerId);
+  state.logs.push(`${player?.nickname ?? "玩家"} 不要`);
+  state.passCount += 1;
+  if (state.passCount >= state.players.length - 1) {
+    setDdzTurn(state, state.lastPlay.playerId);
+    state.lastPlay = null;
+    state.passCount = 0;
+  } else {
+    setDdzTurn(state, nextDdzPlayerId(state, playerId));
+  }
+  return true;
+}
+function setDdzTurn(state: DdzTableState, playerId?: string) {
+  state.turnDeviceId = playerId;
+  state.turnStartedAt = playerId ? Date.now() : undefined;
+}
+async function handleTurnTimeout(state: DdzTableState) {
+  if (!profile.value || state.turnDeviceId !== profile.value.device_id || !isTurnTimedOut(state.turnStartedAt, nowTick.value, DDZ_TURN_TIMEOUT_MS)) return;
+  autoTurnRunning = true;
+  try {
+    if (state.phase === "bidding") {
+      await sendRoomAction({ action: "bid", playerId: profile.value.device_id, call: false });
+      return;
+    }
+    if (state.phase === "playing") {
+      if (canPassDdz.value) {
+        selectedCardIds.value = [];
+        await sendRoomAction({ action: "pass", playerId: profile.value.device_id });
+        return;
+      }
+      const fallbackCard = myDdzHand.value[0];
+      if (fallbackCard) {
+        selectedCardIds.value = [];
+        await sendRoomAction({ action: "play", playerId: profile.value.device_id, cardIds: [fallbackCard.id] });
+      }
+    }
+  } finally {
+    autoTurnRunning = false;
+  }
+}
+async function handleGomokuTurnTimeout(state: GomokuTableState) {
+  if (!profile.value || state.pendingUndo || state.turnDeviceId !== profile.value.device_id || !isGomokuTurnTimedOut(state.turnStartedAt, nowTick.value, GOMOKU_TURN_TIMEOUT_MS)) return;
+  const point = chooseAutoGomokuPoint(state.board);
+  if (!point) return;
+  autoTurnRunning = true;
+  try {
+    await sendRoomAction({ action: "move", playerId: profile.value.device_id, x: point.x, y: point.y });
+  } finally {
+    autoTurnRunning = false;
+  }
+}
+function seatTurnLabel(seat: DdzSeat) {
+  const state = activeDdzState.value;
+  if (!state || state.turnDeviceId !== seat.deviceId || (state.phase !== "bidding" && state.phase !== "playing")) return "";
+  return `${activeTurnRemainingSeconds.value}s`;
+}
+function gomokuSeatTurnLabel(seat: GomokuSeat | null) {
+  const state = activeGomokuState.value;
+  if (!seat || !state || state.turnDeviceId !== seat.deviceId || state.phase !== "playing") return "";
+  return `${activeGomokuTurnRemainingSeconds.value}s`;
+}
+function nextDdzPlayerId(state: DdzTableState, currentId: string) {
+  const index = state.players.findIndex((player) => player.deviceId === currentId);
+  return state.players[(index + 1) % state.players.length]?.deviceId;
+}
+async function dissolveRoom() {
+  const room = activeGameRoom.value;
+  if (!room || !isRoomHost(room)) return;
+  const frame = makeGameFrame("room_dissolved", { roomId: room.roomId }, room.roomId, room.gameType);
+  removeGameRoom(room.roomId);
+  await store.sendGameFrame(null, frame);
+}
+async function leaveRoom() {
+  const room = activeGameRoom.value;
+  if (!room || !profile.value) return;
+  if (isRoomHost(room)) {
+    await dissolveRoom();
+    return;
+  }
+  const action: GameActionPayload = { action: "leave", playerId: profile.value.device_id };
+  const frame = makeGameFrame("room_action", { roomId: room.roomId, action }, room.roomId, room.gameType);
+  removeGameRoom(room.roomId);
+  await store.sendGameFrame(room.hostDeviceId, frame);
+}
+async function roomPrimaryAction() {
+  const room = activeGameRoom.value;
+  if (!room) return;
+  if (room.gameType === "gomoku") {
+    const player = currentGomokuPlayer();
+    if (!activeGomokuState.value || !player) return;
+    if (!myGomokuSeat.value) {
+      await sendRoomAction({ action: "join", player });
+      return;
+    }
+    if (activeGomokuState.value.phase === "lobby") {
+      await sendRoomAction({ action: "ready", playerId: player.deviceId, ready: !myGomokuSeat.value.ready });
+      return;
+    }
+    if (activeGomokuState.value.phase === "ended" && isRoomHost(room)) {
+      const reset = createInitialGomokuState({ ...room, players: room.players.map((item) => ({ ...item, ready: false })) });
+      gomokuRooms.value = { ...gomokuRooms.value, [room.roomId]: reset };
+      updateRoomFromState(room.roomId, reset);
+      await broadcastSnapshot(room.roomId);
+    }
+    return;
+  }
+  if (room.gameType === "minesweeper") {
+    const player = currentMinesweeperPlayer();
+    if (!activeMinesweeperState.value || !player) return;
+    if (!myMinesweeperSeat.value) {
+      await sendRoomAction({ action: "join", player });
+      return;
+    }
+    if (activeMinesweeperState.value.phase === "lobby") {
+      await sendRoomAction({ action: "ready", playerId: player.deviceId, ready: !myMinesweeperSeat.value.ready });
+      return;
+    }
+    if (activeMinesweeperState.value.phase === "ended" && isRoomHost(room)) {
+      const reset = createInitialMinesweeperState({ ...room, players: room.players.map((item) => ({ ...item, ready: false })) });
+      minesweeperRooms.value = { ...minesweeperRooms.value, [room.roomId]: reset };
+      updateRoomFromState(room.roomId, reset);
+      await broadcastSnapshot(room.roomId);
+    }
+    return;
+  }  if (room.gameType === "xiangqi") {
+    const player = currentXiangqiPlayer();
+    if (!activeXiangqiState.value || !player) return;
+    if (!myXiangqiSeat.value) {
+      await sendRoomAction({ action: "join", player });
+      return;
+    }
+    if (activeXiangqiState.value.phase === "lobby") {
+      await sendRoomAction({ action: "ready", playerId: player.deviceId, ready: !myXiangqiSeat.value.ready });
+      return;
+    }
+    if (activeXiangqiState.value.phase === "ended" && isRoomHost(room)) {
+      const reset = createInitialXiangqiState({ ...room, players: room.players.map((item) => ({ ...item, ready: false })) });
+      xiangqiRooms.value = { ...xiangqiRooms.value, [room.roomId]: reset };
+      selectedXiangqiPoint.value = null;
+      updateRoomFromState(room.roomId, reset);
+      await broadcastSnapshot(room.roomId);
+    }
+    return;
+  }
+  const player = currentDdzPlayer();
+  if (!activeDdzState.value || !player) return;
+  if (!myDdzSeat.value) {
+    await sendRoomAction({ action: "join", player });
+    return;
+  }
+  if (activeDdzState.value.phase === "lobby") {
+    await sendRoomAction({ action: "ready", playerId: player.deviceId, ready: !myDdzSeat.value.ready });
+    return;
+  }
+  if (activeDdzState.value.phase === "ended" && isRoomHost(room)) {
+    const reset = createInitialDdzState({ ...room, players: room.players.map((item) => ({ ...item, ready: false })) });
+    doudizhuRooms.value = { ...doudizhuRooms.value, [room.roomId]: reset };
+    updateRoomFromState(room.roomId, reset);
+    await broadcastSnapshot(room.roomId);
+  }
+}
+async function bidLandlord(call: boolean) {
+  if (!profile.value || activeDdzState.value?.phase !== "bidding" || !isMyDdzTurn.value) return;
+  await sendRoomAction({ action: "bid", playerId: profile.value.device_id, call });
+}
+function toggleCard(cardId: string) {
+  if (activeDdzState.value?.phase !== "playing" || !isMyDdzTurn.value) return;
+  selectedCardIds.value = selectedCardIds.value.includes(cardId)
+    ? selectedCardIds.value.filter((id) => id !== cardId)
+    : [...selectedCardIds.value, cardId];
+}
+async function playSelectedCards() {
+  if (!profile.value || !canPlaySelectedCards.value || !selectedPlay.value) return;
+  const cardIds = selectedCards.value.map((card) => card.id);
+  selectedCardIds.value = [];
+  await sendRoomAction({ action: "play", playerId: profile.value.device_id, cardIds });
+}
+async function passTurn() {
+  if (!profile.value || !canPassDdz.value) return;
+  selectedCardIds.value = [];
+  await sendRoomAction({ action: "pass", playerId: profile.value.device_id });
+}
+async function sendRoomChat() {
+  const content = roomChatDraft.value.trim();
+  if (!content || !profile.value || !activeGameRoom.value) return;
+  const message: RoomChatItem = {
+    id: `room-chat-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    senderDeviceId: profile.value.device_id,
+    sender: profile.value.nickname,
+    content,
+    mine: true,
+    createdAt: Date.now(),
+  };
+  roomChatDraft.value = "";
+  await sendRoomAction({ action: "chat", message });
+}
+function processGameFrame(frame: GameFrame) {
+  if (frame.sender_device_id === profile.value?.device_id) return;
+  if (!gameRegistry.some((game) => game.type === frame.game)) return;
+  if (frame.kind === "leaderboard_sync") {
+    applyLeaderboardSync(frame.payload as LeaderboardSyncPayload);
+    return;
+  }
+  const payload = frame.payload as { room?: GameRoomShell; state?: DdzTableState | GomokuTableState | XiangqiTableState | MinesweeperTableState; roomId?: string; action?: GameActionPayload };
+  if (frame.kind === "room_created" && payload.room && payload.state) {
+    upsertGameRoom(payload.room);
+    upsertIncomingGameState(payload.room, payload.state);
+  }
+  if (frame.kind === "room_dissolved" && payload.roomId) {
+    removeGameRoom(payload.roomId);
+    return;
+  }
+  if (frame.kind === "room_snapshot" && payload.room && payload.state) {
+    upsertGameRoom(payload.room);
+    upsertIncomingGameState(payload.room, payload.state);
+  }
+  if (frame.kind === "room_action" && payload.roomId && payload.action && isRoomHost(gameRoomsState.value.find((room) => room.roomId === payload.roomId) ?? null)) {
+    const changed = applyRoomAction(payload.roomId, payload.action);
+    if (changed) broadcastSnapshot(payload.roomId);
+  }
+}
+function upsertIncomingGameState(room: GameRoomShell, state: DdzTableState | GomokuTableState | XiangqiTableState | MinesweeperTableState) {
+  if (room.gameType === "gomoku") {
+    const normalized = normalizeIncomingState(state as GomokuTableState);
+    gomokuRooms.value = { ...gomokuRooms.value, [room.roomId]: normalized };
+    maybeRecordGameResult(room, normalized);
+    return;
+  }
+  if (room.gameType === "minesweeper") {
+    const normalized = normalizeIncomingState(state as MinesweeperTableState);
+    minesweeperRooms.value = { ...minesweeperRooms.value, [room.roomId]: normalized };
+    maybeRecordGameResult(room, normalized);
+    return;
+  }
+  if (room.gameType === "xiangqi") {
+    const normalized = normalizeIncomingState(state as XiangqiTableState);
+    xiangqiRooms.value = { ...xiangqiRooms.value, [room.roomId]: normalized };
+    selectedXiangqiPoint.value = null;
+    maybeRecordGameResult(room, normalized);
+    return;
+  }
+  const normalized = normalizeIncomingState(state as DdzTableState);
+  doudizhuRooms.value = { ...doudizhuRooms.value, [room.roomId]: normalized };
+  maybeRecordGameResult(room, normalized);
+}
+function normalizeIncomingState<T extends { chatMessages: RoomChatItem[] }>(state: T): T {
+  return {
+    ...state,
+    chatMessages: state.chatMessages.map((item) => ({ ...item, mine: item.senderDeviceId === profile.value?.device_id })),
+  };
+}
+function openLeaderboard() {
+  leaderboardOpen.value = true;
+}
+function rankedGameTypeOf(game: GameType): RankedGameType | null {
+  return game === "doudizhu" || game === "gomoku" || game === "xiangqi" ? game : null;
+}
+function encodeGameInvite(room: GameRoomShell) {
+  const payload: GameInvitePayload = {
+    roomId: room.roomId,
+    roomName: room.roomName,
+    gameType: room.gameType,
+    gameName: gameDefinitionOf(room.gameType).name,
+    hostName: room.hostName,
+    hostDeviceId: room.hostDeviceId,
+    createdAt: Date.now(),
+  };
+  return `${GAME_INVITE_PREFIX}${JSON.stringify(payload)}`;
+}
+function parseGameInvite(content: string): GameInvitePayload | null {
+  if (!content.startsWith(GAME_INVITE_PREFIX)) return null;
+  try {
+    const payload = JSON.parse(content.slice(GAME_INVITE_PREFIX.length)) as GameInvitePayload;
+    if (!payload.roomId || !payload.gameType || !payload.roomName) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+function gameInvitePayload(message: Message) {
+  return message.message_type === "text" ? parseGameInvite(message.content) : null;
+}
+function encodePrivateChannelInvite(invite: PrivateChannelInvitePayload) {
+  return `${PRIVATE_CHANNEL_INVITE_PREFIX}${JSON.stringify(invite)}`;
+}
+function parsePrivateChannelInvite(content: string): PrivateChannelInvitePayload | null {
+  if (!content.startsWith(PRIVATE_CHANNEL_INVITE_PREFIX)) return null;
+  try {
+    const payload = JSON.parse(content.slice(PRIVATE_CHANNEL_INVITE_PREFIX.length)) as PrivateChannelInvitePayload;
+    if (!payload.channel_id || !payload.title || !payload.owner_device_id || !payload.channel_key) return null;
+    return { ...payload, members: payload.members ?? [] };
+  } catch {
+    return null;
+  }
+}
+function privateChannelInvitePayload(message: Message) {
+  return message.message_type === "text" ? parsePrivateChannelInvite(message.content) : null;
+}
+function privateChannelInviteKey(invite: PrivateChannelInvitePayload) {
+  return `${invite.channel_id}:${invite.created_at || 0}`;
+}
+function latestPrivateChannelInviteTime(channelId: string) {
+  return Math.max(
+    0,
+    ...Object.values(messagesByConversation.value)
+      .flat()
+      .map((message) => privateChannelInvitePayload(message))
+      .filter((invite): invite is PrivateChannelInvitePayload => invite?.channel_id === channelId)
+      .map((invite) => invite.created_at || 0),
+  );
+}
+function privateChannelInviteState(invite: PrivateChannelInvitePayload | null) {
+  if (!invite) return "";
+  if ((invite.created_at || 0) < latestPrivateChannelInviteTime(invite.channel_id)) return "expired";
+  if (conversations.value.some((conversation) => conversation.id === invite.channel_id)) return "accepted";
+  return handledPrivateChannelInvites.value[privateChannelInviteKey(invite)] ?? "";
+}
+async function sendPrivateChannelInviteCards(conversationId: string, targetIds: string[]) {
+  const existingMemberIds = new Set((channelMembersByConversation.value[conversationId] ?? []).map((member) => member.device_id));
+  const uniqueTargetIds = [...new Set(targetIds.filter(Boolean))].filter((targetId) => !existingMemberIds.has(targetId));
+  if (uniqueTargetIds.length === 0) return;
+  const invite = await store.buildPrivateChannelInvite(conversationId, superAdminEnabled.value);
+  const content = encodePrivateChannelInvite(invite);
+  for (const targetId of uniqueTargetIds) {
+    await store.sendMessageToConversation(targetId, content);
+  }
+}
+async function acceptPrivateChannelInviteCard(invite: PrivateChannelInvitePayload | null) {
+  if (!invite) return;
+  await store.acceptPrivateChannelInvite(invite);
+  await store.addSystemNotice(invite.channel_id, `${profile.value?.nickname ?? "我"} 加入了群聊`);
+  const key = privateChannelInviteKey(invite);
+  const { [key]: _ignored, ...rest } = handledPrivateChannelInvites.value;
+  handledPrivateChannelInvites.value = rest;
+  activeSection.value = "chat";
+}
+function rejectPrivateChannelInviteCard(invite: PrivateChannelInvitePayload | null) {
+  if (!invite) return;
+  handledPrivateChannelInvites.value = {
+    ...handledPrivateChannelInvites.value,
+    [privateChannelInviteKey(invite)]: "rejected",
+  };
+}
+function openRecipientPicker(mode: RecipientPickerMode) {
+  recipientPickerMode.value = mode;
+  selectedRecipientPeerIds.value = [];
+  selectedRecipientConversationIds.value = [];
+  if (mode === "privateChannelCreate") {
+    privateChannelTitleDraft.value = "私有频道";
+  }
+  recipientPickerOpen.value = true;
+}
+function toggleRecipientPeer(deviceId: string) {
+  selectedRecipientPeerIds.value = selectedRecipientPeerIds.value.includes(deviceId)
+    ? selectedRecipientPeerIds.value.filter((id) => id !== deviceId)
+    : [...selectedRecipientPeerIds.value, deviceId];
+}
+function toggleRecipientConversation(conversationId: string) {
+  selectedRecipientConversationIds.value = selectedRecipientConversationIds.value.includes(conversationId)
+    ? selectedRecipientConversationIds.value.filter((id) => id !== conversationId)
+    : [...selectedRecipientConversationIds.value, conversationId];
+}
+async function confirmRecipientPicker() {
+  if (recipientConfirmDisabled.value) return;
+  if (recipientPickerMode.value === "gameInvite") {
+    const room = activeGameRoom.value;
+    if (!room) return;
+    const payload = encodeGameInvite(room);
+    const targets = [...selectedRecipientPeerIds.value, ...selectedRecipientConversationIds.value];
+    for (const conversationId of targets) {
+      await store.sendMessageToConversation(conversationId, payload);
+    }
+  } else if (recipientPickerMode.value === "privateChannelCreate") {
+    const selectedTargets = [...selectedRecipientPeerIds.value];
+    const conversation = await store.createPrivateChannel(privateChannelTitleDraft.value, []);
+    activeSection.value = "chat";
+    await sendPrivateChannelInviteCards(conversation.id, selectedTargets);
+  } else if (activeConversation.value?.is_private) {
+    const selectedTargets = [...selectedRecipientPeerIds.value];
+    await sendPrivateChannelInviteCards(activeConversation.value.id, selectedTargets);
+  }
+  recipientPickerOpen.value = false;
+}
+function seedInvitedRoomState(room: GameRoomShell) {
+  if (room.gameType === "gomoku" && !gomokuRooms.value[room.roomId]) {
+    gomokuRooms.value = { ...gomokuRooms.value, [room.roomId]: createInitialGameState(room) as GomokuTableState };
+    return;
+  }
+  if (room.gameType === "minesweeper" && !minesweeperRooms.value[room.roomId]) {
+    minesweeperRooms.value = { ...minesweeperRooms.value, [room.roomId]: createInitialGameState(room) as MinesweeperTableState };
+    return;
+  }
+  if (room.gameType === "xiangqi" && !xiangqiRooms.value[room.roomId]) {
+    xiangqiRooms.value = { ...xiangqiRooms.value, [room.roomId]: createInitialGameState(room) as XiangqiTableState };
+    return;
+  }
+  if (room.gameType === "doudizhu" && !doudizhuRooms.value[room.roomId]) {
+    doudizhuRooms.value = { ...doudizhuRooms.value, [room.roomId]: createInitialGameState(room) as DdzTableState };
+  }
+}
+function ensureRoomFromInvite(invite: GameInvitePayload) {
+  const existing = gameRoomsState.value.find((item) => item.roomId === invite.roomId);
+  if (existing) return existing;
+  const hostPeer = invite.hostDeviceId ? peers.value.find((peer) => peer.device_id === invite.hostDeviceId) : null;
+  const now = Date.now();
+  const room: GameRoomShell = {
+    roomId: invite.roomId,
+    roomName: invite.roomName,
+    gameType: invite.gameType,
+    hostDeviceId: invite.hostDeviceId ?? "",
+    hostName: invite.hostName || hostPeer?.nickname || "房主",
+    players: invite.hostDeviceId ? [{
+      deviceId: invite.hostDeviceId,
+      nickname: invite.hostName || hostPeer?.nickname || "房主",
+      avatar: hostPeer?.avatar,
+      online: hostPeer?.online ?? false,
+      ready: false,
+    }] : [],
+    createdAt: invite.createdAt || now,
+    updatedAt: now,
+  };
+  upsertGameRoom(room);
+  seedInvitedRoomState(room);
+  return room;
+}
+function openGameInvite(invite: GameInvitePayload | null) {
+  if (!invite) return;
+  selectedGameType.value = invite.gameType;
+  const room = ensureRoomFromInvite(invite);
+  openGameRoom(room.roomId);
+}
+function maybeRecordGameResult(room: GameRoomShell, state: DdzTableState | GomokuTableState | XiangqiTableState | MinesweeperTableState) {
+  if (state.phase !== "ended") return;
+  if (room.gameType === "minesweeper") {
+    const table = state as MinesweeperTableState;
+    const winnerId = table.winnerDeviceId;
+    const boardState = winnerId ? table.boards[winnerId] : null;
+    if (!winnerId || !boardState?.startedAt || !boardState.finishedAt) return;
+    const key = `minesweeper:${room.roomId}:${winnerId}:${boardState.finishedAt}`;
+    if (recordedGameResultIds.has(key)) return;
+    recordedGameResultIds.add(key);
+    const winner = table.players.find((player) => player.deviceId === winnerId);
+    const record = createMinesweeperLeaderboardRecord({
+      deviceId: winnerId,
+      nickname: winner?.nickname ?? table.winnerName ?? "局域网玩家",
+      width: table.width,
+      height: table.height,
+      mines: table.mines,
+      elapsedMs: boardState.finishedAt - boardState.startedAt,
+      moves: boardState.moves,
+      finishedAt: boardState.finishedAt,
+    });
+    minesweeperLeaderboardRecords.value = upsertMinesweeperLeaderboardRecords(minesweeperLeaderboardRecords.value, [record]);
+    saveMinesweeperLeaderboardRecords();
+    return;
+  }
+  const game = rankedGameTypeOf(room.gameType);
+  if (!game) return;
+  const rankedState = state as DdzTableState | GomokuTableState | XiangqiTableState;
+  const players = rankedState.players.map((player) => ({ deviceId: player.deviceId, nickname: player.nickname }));
+  const winnerId = rankedState.winnerDeviceId;
+  const key = `${game}:${room.roomId}:${rankedState.updatedAt}:${winnerId ?? "draw"}`;
+  if (recordedGameResultIds.has(key)) return;
+  recordedGameResultIds.add(key);
+  let nextRecords = gameStatsRecords.value;
+  for (const player of players) {
+    nextRecords = incrementGameStats(nextRecords, {
+      game,
+      deviceId: player.deviceId,
+      nickname: player.nickname,
+      won: !!winnerId && player.deviceId === winnerId,
+      updatedAt: rankedState.updatedAt,
+    });
+  }
+  gameStatsRecords.value = upsertGameStatsRecords([], nextRecords);
+  saveGameStatsRecords();
+}
+async function notifyIncomingActivity() {
+  await syncTrayAttention();
+  try {
+    await getCurrentWindow().requestUserAttention(UserAttentionType.Critical);
+  } catch {
+    // 浏览器预览时没有 Tauri 窗口对象。
+  }
+}
+function alertRecordFromFrame(alert: QuickAlert): AlertRecord {
+  return {
+    alertId: alert.alert_id,
+    senderDeviceId: alert.sender_device_id,
+    senderNickname: alert.sender_nickname,
+    content: alert.content || "呱呱~呱~~",
+    mode: normalizeFrogAlertMode(alert.mode),
+    createdAt: alert.created_at,
+    incoming: alert.sender_device_id !== profile.value?.device_id,
+    handled: alert.sender_device_id === profile.value?.device_id,
+    feedbacks: [],
+  };
+}
+function applyQuickAlert(alert: QuickAlert) {
+  const nextStopped = new Set(visuallyStoppedAlertIds.value);
+  nextStopped.delete(alert.alert_id);
+  visuallyStoppedAlertIds.value = nextStopped;
+  const current = alertRecords.value.find((item) => item.alertId === alert.alert_id);
+  if (current) {
+    alertRecords.value = alertRecords.value.map((item) =>
+      item.alertId === alert.alert_id
+        ? {
+            ...item,
+            senderNickname: alert.sender_nickname,
+            content: alert.content || item.content,
+            mode: normalizeFrogAlertMode(alert.mode || item.mode),
+            createdAt: alert.created_at || item.createdAt,
+          }
+        : item,
+    );
+    return;
+  }
+  alertRecords.value = normalizeAlertRecords([alertRecordFromFrame(alert), ...alertRecords.value]);
+  if (normalizeFrogAlertMode(alert.mode) === "disco") {
+    discoModeUntil.value = Math.max(discoModeUntil.value, Date.now() + FROG_DISCO_ALERT_DURATION_MS);
+    void startDiscoWindowDance();
+  }
+}
+function applyQuickAlertFeedback(feedback: QuickAlertFeedback) {
+  const result = feedback.result === "real" ? "real" : "false";
+  alertRecords.value = normalizeAlertRecords(alertRecords.value.map((alert) => {
+    if (alert.alertId !== feedback.alert_id) return alert;
+    const nextFeedbacks = alert.feedbacks.filter((item) => item.responderDeviceId !== feedback.responder_device_id);
+    nextFeedbacks.push({
+      responderDeviceId: feedback.responder_device_id,
+      responderNickname: feedback.responder_nickname,
+      result,
+      createdAt: feedback.created_at,
+    });
+    return { ...alert, feedbacks: nextFeedbacks };
+  }));
+}
+function applyQuickAlertTrustReset(reset: QuickAlertTrustReset) {
+  if (reset.target_device_id === QUICK_ALERT_TRUST_RESET_ALL_TARGET) {
+    alertRecords.value = [];
+    visuallyStoppedAlertIds.value = new Set();
+    ownAlertFlashUntil.value = 0;
+    nowTick.value = Date.now();
+    return;
+  }
+  alertRecords.value = normalizeAlertRecords(alertRecords.value.map((alert) =>
+    alert.senderDeviceId !== reset.target_device_id
+      ? alert
+      : { ...alert, feedbacks: [], localFeedback: undefined },
+  ));
+}
+function applyAdminDiscoMode(mode: AdminDiscoMode) {
+  if (mode.target_device_id !== profile.value?.device_id) return;
+  discoModeUntil.value = Math.max(discoModeUntil.value, Date.now() + mode.duration_ms);
+  nowTick.value = Date.now();
+  void startDiscoWindowDance();
+}
+function applyAdminAlertMode(mode: AdminAlertMode) {
+  if (mode.target_device_id !== profile.value?.device_id) return;
+  frogAlertMode.value = normalizeFrogAlertMode(mode.mode);
+}
+async function sendFrogQuickAlert(mode: FrogAlertMode = frogAlertMode.value) {
+  if (!frogAlertEnabled.value) return;
+  const now = Date.now();
+  if (now - lastOwnAlertSentAt.value < ALERT_SEND_COOLDOWN_MS) return;
+  const alert = await store.sendQuickAlert(quickAlertDraft.value || "呱呱~呱~~", mode);
+  if (alert) {
+    applyQuickAlert(alert);
+    lastOwnAlertSentAt.value = now;
+    ownAlertFlashUntil.value = Date.now();
+    nowTick.value = Date.now();
+  }
+}
+function handleFrogPetDoubleClick(event: MouseEvent) {
+  void sendFrogQuickAlert(event.ctrlKey ? "disco" : frogAlertMode.value);
+}
+async function resetAlertCredibilityForPeer() {
+  if (!superAdminEnabled.value || !alertTrustResetTargetId.value) return;
+  const reset = await store.resetQuickAlertCredibility(alertTrustResetTargetId.value);
+  if (reset) applyQuickAlertTrustReset(reset);
+}
+async function resetAllAlertCredibilityRecords() {
+  if (!superAdminEnabled.value) return;
+  const reset = await store.resetQuickAlertCredibility(QUICK_ALERT_TRUST_RESET_ALL_TARGET);
+  if (reset) applyQuickAlertTrustReset(reset);
+}
+async function sendAdminAlertModeToPeer() {
+  if (!superAdminEnabled.value || !adminAlertModeTargetId.value) return;
+  const mode = await store.sendAdminAlertMode(adminAlertModeTargetId.value, adminAlertModeDraft.value);
+  if (mode && mode.target_device_id === profile.value?.device_id) {
+    applyAdminAlertMode(mode);
+  }
+}
+function stopFrogAlertVisuals() {
+  if (activePetAlert.value) {
+    visuallyStoppedAlertIds.value = new Set([...visuallyStoppedAlertIds.value, activePetAlert.value.alertId]);
+  }
+  ownAlertFlashUntil.value = 0;
+  lastOwnAlertSentAt.value = 0;
+  discoModeUntil.value = 0;
+  nowTick.value = Date.now();
+  void syncNativeFrogPet();
+}
+async function syncFrogPetWindowSize(open = frogAlertPanelOpen.value) {
+  if (!isPetWindow) return;
+  const scale = frogPetScale.value;
+  const width = open ? Math.round(FROG_PET_DETAIL_WIDTH * Math.max(1, scale * 0.92)) : Math.round(FROG_PET_BASE_WIDTH * scale);
+  const height = open ? Math.round(FROG_PET_DETAIL_HEIGHT * Math.max(1, scale * 0.9)) : Math.round(FROG_PET_BASE_HEIGHT * scale);
+  try {
+    await getCurrentWindow().setSize(new LogicalSize(width, height));
+  } catch {
+    // 浏览器预览和部分窗口管理器可能不支持动态调整，保持桌宠本体可用即可。
+  }
+}
+async function syncNativeFrogPet() {
+  if (isPetWindow) return;
+  const alert = activePetAlert.value;
+  const alertSenderPeer = alert ? peers.value.find((peer) => peer.device_id === alert.senderDeviceId) : null;
+  const nativeState: NativeFrogPetState = {
+    enabled: frogAlertEnabled.value,
+    pending_count: pendingAlertCount.value,
+    temperature: Number(petAlertProbability.value),
+    latest_alert_id: alert?.alertId ?? null,
+    latest_sender: alert?.senderNickname ?? null,
+    latest_sender_address: alertSenderPeer ? `${alertSenderPeer.address}:${alertSenderPeer.port}` : null,
+    latest_content: alert?.content ?? null,
+    latest_created_at: alert?.createdAt ?? null,
+    feedbackable: !!latestPendingAlert.value,
+    flashing: !!alert,
+    disco: discoModeActive.value && !!alert,
+    theme_accent: currentTheme.value.accent,
+    random_move_enabled: desktopPetSettings.value?.randomMoveEnabled ?? true,
+    random_life_enabled: desktopPetSettings.value?.randomLifeEnabled ?? true,
+  };
+  await api.updateDesktopPetState(nativeState).catch(() => undefined);
+}
+function resizeFrogPet(event: WheelEvent) {
+  if (frogAlertPanelOpen.value) return;
+  const direction = event.deltaY < 0 ? 1 : -1;
+  const next = frogPetScale.value + direction * 0.08;
+  frogPetScale.value = Number(Math.min(1.6, Math.max(0.5, next)).toFixed(2));
+  void syncFrogPetWindowSize(false);
+}
+async function startDiscoWindowDance() {
+  if (!isPetWindow || discoMoveTimer !== null) return;
+  const petWindow = getCurrentWindow();
+  const move = async () => {
+    if (!discoModeActive.value || !activePetAlert.value) {
+      if (discoMoveTimer !== null && typeof window !== "undefined") {
+        window.clearInterval(discoMoveTimer);
+      }
+      discoMoveTimer = null;
+      return;
+    }
+    try {
+      const monitors = await availableMonitors();
+      const monitor = monitors[Math.floor(Math.random() * Math.max(1, monitors.length))] ?? monitors[0];
+      if (!monitor) return;
+      const scale = monitor?.scaleFactor || 1;
+      const outerSize = await petWindow.outerSize();
+      const monitorX = Math.floor(monitor.position.x / scale);
+      const monitorY = Math.floor(monitor.position.y / scale);
+      const width = Math.max(260, Math.floor(monitor.size.width / scale));
+      const height = Math.max(220, Math.floor(monitor.size.height / scale));
+      const petWidth = Math.max(132, Math.floor(outerSize.width / scale));
+      const petHeight = Math.max(118, Math.floor(outerSize.height / scale));
+      const x = monitorX + Math.floor(Math.random() * Math.max(1, width - petWidth));
+      const y = monitorY + Math.floor(Math.random() * Math.max(1, height - petHeight));
+      await petWindow.setPosition(new LogicalPosition(x, y));
+    } catch {
+      // 移动桌宠窗口是尽力而为；CSS 动画仍会保留蹦迪感。
+    }
+  };
+  await move();
+  if (typeof window !== "undefined") {
+    discoMoveTimer = window.setInterval(move, 260);
+  }
+}
+function toggleFrogAlertPanel() {
+  if (!latestPendingAlert.value) {
+    frogAlertPanelOpen.value = false;
+    return;
+  }
+  frogAlertPanelOpen.value = !frogAlertPanelOpen.value;
+}
+async function feedbackFrogAlert(alert: AlertRecord | null, result: AlertFeedbackResult) {
+  if (!alert || alert.localFeedback) return;
+  alertRecords.value = alertRecords.value.map((item) =>
+    item.alertId === alert.alertId ? { ...item, handled: true, localFeedback: result } : item,
+  );
+  const feedback = await store.sendQuickAlertFeedback(alert.alertId, alert.senderDeviceId, result);
+  if (feedback) {
+    applyQuickAlertFeedback(feedback);
+  }
+}
+function alertProbabilityLabel(alert?: AlertRecord | null) {
+  if (!alert) return "0°C";
+  const score = alertTruthScore(alert, nowTick.value);
+  return score.feedbackCount === 0 ? `${alertDisplayTemperature(alert)}°C` : `${score.probability}%`;
+}
+function openSection(section: MainSection) {
+  if (section === "alerts" && !frogAlertEnabled.value) {
+    activeSection.value = "settings";
+    return;
+  }
+  activeSection.value = section;
+  if (section === "chat") {
+    unreadByConversation.value = { ...unreadByConversation.value, [activeConversationId.value]: 0 };
+    void scrollActiveChatToBottom();
+  }
+  if (section === "games") {
+    void broadcastLeaderboardSync();
+  }
+  if (section !== "games") {
+    listPaneCollapsed.value = false;
+  }
+}
+function toggleListPane() {
+  listPaneCollapsed.value = !listPaneCollapsed.value;
+}
+function toggleNav() {
+  navExpanded.value = !navExpanded.value;
+}
+function appendEmojiToDraft(emoji: string) {
+  draft.value += emoji;
+  chatEmojiOpen.value = false;
+}
+function appendEmojiToRoomDraft(emoji: string) {
+  roomChatDraft.value += emoji;
+  roomEmojiOpen.value = false;
+}
+function openDevice(peer: Peer) {
+  selectedPeerId.value = peer.device_id;
+  selectedDeviceChannelId.value = "";
+  adminNicknameDraft.value = peer.nickname;
+}
+async function openDeviceChannel(conversation: Conversation) {
+  selectedDeviceChannelId.value = conversation.id;
+  selectedPeerId.value = "";
+  if (conversation.is_private) {
+    await store.loadChannelMembers(conversation.id);
+  }
+}
+async function enterSelectedDeviceChannel() {
+  const conversation = selectedDeviceChannelDetail.value;
+  if (!conversation) return;
+  activeSection.value = "chat";
+  await store.selectConversation(conversation.id);
+}
+async function inviteSelectedDeviceChannelMembers() {
+  const conversation = selectedDeviceChannelDetail.value;
+  if (!conversation?.is_private) return;
+  await store.selectConversation(conversation.id);
+  openRecipientPicker("privateChannelInvite");
+}
+function startEditChannelNotice() {
+  channelNoticeDraft.value = activeChannelNotice.value;
+  channelNoticeEditing.value = true;
+}
+function cancelEditChannelNotice() {
+  channelNoticeDraft.value = activeChannelNotice.value;
+  channelNoticeEditing.value = false;
+}
+async function saveActiveChannelNotice() {
+  const conversationId = activeConversation.value?.id;
+  if (!conversationId) return;
+  const text = channelNoticeDraft.value.trim();
+  const notice = text || DEFAULT_CHANNEL_NOTICE;
+  channelNotices.value = {
+    ...channelNotices.value,
+    [conversationId]: notice,
+  };
+  channelNoticeEditing.value = false;
+  await api.broadcastChannelNotice(conversationId, notice);
+  await store.addSystemNotice(conversationId, `${profile.value?.nickname ?? "管理员"} 更新了群公告`);
+}
+function isChannelOwnerMember(member: ChannelMember | Peer) {
+  return "is_owner" in member && member.is_owner;
+}
+function channelMemberMuted(member: ChannelMember | Peer) {
+  if (member.device_id === profile.value?.device_id && activeConversation.value?.kind === "group") {
+    return channelMutedByConversation.value[activeConversation.value.id] === true;
+  }
+  return "muted" in member ? member.muted : publicChannelMutedIds.value[member.device_id] === true;
+}
+function channelMemberPresenceLabel(member: ChannelMember | Peer) {
+  return member.device_id === profile.value?.device_id || member.online ? "在线" : "离线";
+}
+function canManageChannelMember(member: ChannelMember | Peer) {
+  if (member.device_id === profile.value?.device_id) return false;
+  if (activeConversation.value?.is_private) return canManageActivePrivateChannel.value && !isChannelOwnerMember(member);
+  return canManageActivePublicChannel.value;
+}
+async function toggleActiveChannelMemberMute(member: ChannelMember | Peer) {
+  const conversation = activeConversation.value;
+  if (!conversation || !canManageChannelMember(member)) return;
+  const muted = !channelMemberMuted(member);
+  if (conversation.is_private) {
+    await store.setPrivateChannelMemberMuted(conversation.id, member.device_id, muted, superAdminEnabled.value);
+    await store.addSystemNotice(conversation.id, `${member.nickname} ${muted ? "已被禁言" : "已解除禁言"}`);
+    return;
+  }
+  await store.adminMuteChannelMember(conversation.id, member.device_id, muted);
+  await store.addSystemNotice(conversation.id, `${member.nickname} ${muted ? "已被禁言" : "已解除禁言"}`);
+  publicChannelMutedIds.value = {
+    ...publicChannelMutedIds.value,
+    [member.device_id]: muted,
+  };
+}
+async function removeActivePrivateChannelMember(member: ChannelMember | Peer) {
+  const conversation = activeConversation.value;
+  if (!conversation?.is_private || !canManageActivePrivateChannel.value || isChannelOwnerMember(member)) return;
+  if (typeof window !== "undefined" && !window.confirm(`确定将 ${member.nickname} 移出频道吗？`)) return;
+  await store.removePrivateChannelMember(conversation.id, member.device_id, superAdminEnabled.value);
+  await store.addSystemNotice(conversation.id, `${member.nickname} 已被移出群聊`);
+}
+async function dissolveActivePrivateChannel() {
+  const conversation = activeConversation.value;
+  if (!conversation?.is_private || !canManageActivePrivateChannel.value) return;
+  if (typeof window !== "undefined" && !window.confirm(`确定解散「${conversation.title}」吗？解散后成员将无法继续在此频道聊天。`)) return;
+  await store.dissolvePrivateChannel(conversation.id, superAdminEnabled.value);
+}
+async function dissolveSelectedDeviceChannel() {
+  const conversation = selectedDeviceChannelDetail.value;
+  if (!conversation?.is_private || !canManageSelectedDeviceChannel.value) return;
+  if (typeof window !== "undefined" && !window.confirm(`确定解散「${conversation.title}」吗？`)) return;
+  await store.dissolvePrivateChannel(conversation.id, superAdminEnabled.value);
+  selectedDeviceChannelId.value = "";
+}
+async function startDirectChat(peer = selectedPeerDetail.value) {
+  if (!peer) return;
+  activeSection.value = "chat";
+  await store.openDirect(peer);
+}
+async function deleteSelectedPeer() {
+  const peer = selectedPeerDetail.value;
+  if (!peer) return;
+  await store.deletePeer(peer.device_id);
+  selectedPeerId.value = "";
+}
+async function adminRenameSelectedPeer() {
+  const peer = selectedPeerDetail.value;
+  const nickname = adminNicknameDraft.value.trim();
+  if (!peer || !nickname) return;
+  const updated = await store.adminRenamePeer(peer.device_id, nickname);
+  selectedPeerId.value = updated.device_id;
+  adminNicknameDraft.value = updated.nickname;
+}
+function peerLastSeenLabel(peer?: Peer | null) {
+  if (!peer?.last_seen_at) return "未知";
+  const diff = Date.now() - peer.last_seen_at;
+  if (diff < 60_000) return "刚刚";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
+  return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(peer.last_seen_at));
+}
+function readSavedSuperAdminEnabled() {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem("lanchat-super-admin-enabled") === "true";
+}
+function setSavedSuperAdminEnabled(enabled: boolean) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem("lanchat-super-admin-enabled", enabled ? "true" : "false");
+}
+function disableSuperAdmin() {
+  superAdminEnabled.value = false;
+  superAdminTapCount.value = 0;
+  superAdminAuthOpen.value = false;
+  superAdminPasswordDraft.value = "";
+  superAdminPasswordError.value = "";
+  setSavedSuperAdminEnabled(false);
+}
+function handleSuperAdminTap() {
+  if (superAdminEnabled.value) {
+    disableSuperAdmin();
+    return;
+  }
+  superAdminTapCount.value += 1;
+  if (superAdminTapCount.value >= 8) {
+    superAdminAuthOpen.value = true;
+    superAdminTapCount.value = 0;
+    superAdminPasswordDraft.value = "";
+    superAdminPasswordError.value = "";
+  }
+}
+function confirmSuperAdminPassword() {
+  const actual = CryptoJS.MD5(superAdminPasswordDraft.value).toString().toUpperCase();
+  if (actual !== SUPER_ADMIN_PASSWORD_MD5.toUpperCase()) {
+    superAdminPasswordError.value = "验证失败";
+    return;
+  }
+  superAdminEnabled.value = true;
+  superAdminAuthOpen.value = false;
+  superAdminPasswordDraft.value = "";
+  superAdminPasswordError.value = "";
+  setSavedSuperAdminEnabled(true);
+}
+async function openManualDevice() {
+  activeSection.value = "chat";
+  await store.connectManualPeer();
+}
+function formatTime(value: number) {
+  if (!value) return "";
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+function formatDebugTime(value: number) {
+  if (!value) return "";
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(value));
+}
+function conversationPeer(conversation: Conversation) {
+  if (conversation.kind !== "direct") return null;
+  const peerId = conversation.peer_device_id ?? conversation.id;
+  return peers.value.find((peer) => peer.device_id === peerId) ?? null;
+}
+function conversationBadge(conversation: Conversation) {
+  if (conversation.kind === "group") return conversation.is_private ? "私有" : "频道";
+  return conversationPeer(conversation)?.online ? "在线" : "离线";
+}
+function conversationTagType(conversation: Conversation) {
+  if (conversation.kind === "group") return conversation.is_private ? "warning" : "success";
+  return conversationPeer(conversation)?.online ? "success" : "default";
+}
+function conversationSubtitle(conversation: Conversation) {
+  if (conversation.kind === "group") return conversation.is_private ? "私有加密频道" : `${onlinePeers.value.length} 台设备在线`;
+  const peer = conversationPeer(conversation);
+  return peer ? `${peer.address}:${peer.port}` : "设备未在列表中";
+}
+function messageClass(message: Message) {
+  if (message.message_type === "system") return "system";
+  return message.sender_device_id === profile.value?.device_id ? "mine" : "theirs";
+}
+function senderName(message: Message) {
+  if (message.sender_device_id === profile.value?.device_id) {
+    return profile.value?.nickname || "我";
+  }
+  return peers.value.find((peer) => peer.device_id === message.sender_device_id)?.nickname || "局域网用户";
+}
+function messageSenderTitle(message: Message) {
+  if (message.message_type === "system") return "";
+  return messageClass(message) === "mine" ? `我 · ${senderName(message)}` : senderName(message);
+}
+function canRecallMessage(message?: Message | null) {
+  return !!message && message.sender_device_id === profile.value?.device_id && message.message_type !== "system" && message.status !== "failed";
+}
+async function recallMessage(message: Message) {
+  if (!canRecallMessage(message)) return;
+  await store.recallMessage(message.id);
+}
+function openMessageContextMenu(message: Message, event: MouseEvent) {
+  if (!canRecallMessage(message)) return;
+  event.preventDefault();
+  messageContextMessage.value = message;
+  messageContextMenuX.value = event.clientX;
+  messageContextMenuY.value = event.clientY;
+  messageContextMenuOpen.value = true;
+}
+async function selectMessageContextAction(key: string | number) {
+  const message = messageContextMessage.value;
+  messageContextMenuOpen.value = false;
+  if (key === "recall" && message) {
+    await recallMessage(message);
+  }
+}
+function peerSubtitle(peer: Peer) {
+  return `${peer.address}:${peer.port}`;
+}
+function memberSubtitle(member: ChannelMember | Peer) {
+  if ("address" in member) return peerSubtitle(member);
+  return [channelMemberPresenceLabel(member), isChannelOwnerMember(member) ? "群主" : "成员", channelMemberMuted(member) ? "已禁言" : ""].filter(Boolean).join(" · ");
+}
+function openMemberDevice(member: ChannelMember | Peer) {
+  const peer = peers.value.find((item) => item.device_id === member.device_id);
+  if (!peer) return;
+  openDevice(peer);
+  activeSection.value = "devices";
+}
+function statusText(status: Message["status"]) {
+  const map = {
+    sending: "发送中",
+    sent: "已发送",
+    delivered: "已送达",
+    failed: "失败",
+  } satisfies Record<Message["status"], string>;
+  return map[status];
+}
+function statusIcon(status: Message["status"]) {
+  const map = {
+    sending: "◷",
+    sent: "✓",
+    delivered: "✓",
+    failed: "!",
+  } satisfies Record<Message["status"], string>;
+  return map[status];
+}
+function firstLetter(value: string | undefined) {
+  return value?.trim().slice(0, 1).toUpperCase() || "L";
+}
+function avatarLabel(value: string | undefined | null, fallback?: string) {
+  const text = value?.trim() || fallback?.trim() || "L";
+  return text.slice(0, 1).toUpperCase();
+}
+function avatarImage(value: string | undefined | null) {
+  const trimmed = value?.trim() ?? "";
+  return trimmed.startsWith("data:image/") ? trimmed : undefined;
+}
+function peerAvatar(deviceId: string | undefined | null) {
+  if (!deviceId) return undefined;
+  if (deviceId === profile.value?.device_id) return profile.value.avatar;
+  return peers.value.find((peer) => peer.device_id === deviceId)?.avatar;
+}
+function senderAvatar(message: Message) {
+  return peerAvatar(message.sender_device_id);
+}
+function conversationAvatar(conversation: Conversation) {
+  const peer = conversationPeer(conversation);
+  return peer?.avatar;
+}
+function triggerProfileAvatarSelect() {
+  profileAvatarInput.value?.click();
+}
+function clearProfileAvatar() {
+  avatarDraft.value = "";
+  if (profileAvatarInput.value) profileAvatarInput.value.value = "";
+}
+function handleProfileAvatarSelected(event: Event) {
+  const input = event.target as HTMLInputElement | null;
+  const file = input?.files?.[0];
+  if (!file) return;
+  if (!file.type.startsWith("image/")) {
+    store.error = "请选择图片作为头像";
+    input.value = "";
+    return;
+  }
+  if (file.size > AVATAR_MAX_BYTES) {
+    store.error = "头像图片不能超过 500KB";
+    input.value = "";
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    avatarDraft.value = typeof reader.result === "string" ? reader.result : "";
+  };
+  reader.onerror = () => {
+    store.error = "读取头像图片失败";
+  };
+  reader.readAsDataURL(file);
+}
+function formatFileSize(size?: number | null) {
+  if (!size) return "0 B";
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+function fileExtension(name?: string) {
+  return name?.split(".").pop()?.toLowerCase() ?? "";
+}
+function isImageFile(message: Message) {
+  const meta = message.file_meta;
+  const ext = fileExtension(meta?.name);
+  return Boolean(meta?.mime_type?.startsWith("image/")) || ["png", "jpg", "jpeg", "gif", "webp", "bmp"].includes(ext);
+}
+function isAudioFile(message: Message) {
+  const meta = message.file_meta;
+  const ext = fileExtension(meta?.name);
+  return message.message_type === "voice" || Boolean(meta?.mime_type?.startsWith("audio/")) || ["mp3", "wav", "ogg", "m4a", "webm"].includes(ext);
+}
+async function saveProfile() {
+  await store.saveProfile(nicknameDraft.value, portDraft.value, avatarDraft.value);
+}
+async function chooseAndSendFile() {
+  if (!canSendActive.value) return;
+  const selected = await openFileDialog({ multiple: false, directory: false });
+  const path = Array.isArray(selected) ? selected[0] : selected;
+  if (typeof path === "string" && path) {
+    await store.sendFile(path);
+  }
+}
+async function toggleVoiceRecording() {
+  if (!canSendActive.value) return;
+  if (isRecording.value) {
+    mediaRecorder?.stop();
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    recordingChunks = [];
+    mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+    recordingStartedAt.value = Date.now();
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) recordingChunks.push(event.data);
+    };
+    mediaRecorder.onstop = async () => {
+      const durationMs = Date.now() - recordingStartedAt.value;
+      stream.getTracks().forEach((track) => track.stop());
+      isRecording.value = false;
+      if (recordingTimer !== null) {
+        window.clearTimeout(recordingTimer);
+        recordingTimer = null;
+      }
+      const blob = new Blob(recordingChunks, { type: "audio/webm" });
+      const bytes = Array.from(new Uint8Array(await blob.arrayBuffer()));
+      await store.sendVoice(`voice-${Date.now()}.webm`, bytes, durationMs);
+    };
+    mediaRecorder.start();
+    isRecording.value = true;
+    recordingTimer = window.setTimeout(() => mediaRecorder?.stop(), 60_000);
+  } catch (err) {
+    store.error = err instanceof Error ? err.message : String(err);
+  }
+}
+async function handleEnter(event: KeyboardEvent) {
+  if (event.shiftKey) return;
+  event.preventDefault();
+  await store.sendActiveMessage();
+}
+function handleRoomChatEnter(event: KeyboardEvent) {
+  if (event.shiftKey) return;
+  event.preventDefault();
+  sendRoomChat();
+}
+async function startWindowDrag(event: MouseEvent) {
+  if (event.button !== 0) return;
+  const target = event.target as HTMLElement | null;
+  if (target?.closest("button, input, textarea, .titlebar-actions")) return;
+  try {
+    await api.startMainWindowDrag();
+  } catch {
+    try {
+      await getCurrentWindow().startDragging();
+    } catch {
+      // 浏览器预览时没有 Tauri 窗口对象。
+    }
+  }
+}
+async function minimizeWindow() {
+  try {
+    await api.minimizeMainWindow();
+  } catch {
+    try {
+      await getCurrentWindow().minimize();
+    } catch {
+      // 浏览器预览时没有 Tauri 窗口对象。
+    }
+  }
+}
+async function toggleMaximizeWindow() {
+  try {
+    await api.toggleMainWindowMaximized();
+  } catch {
+    try {
+      await getCurrentWindow().toggleMaximize();
+    } catch {
+      // 浏览器预览时没有 Tauri 窗口对象。
+    }
+  }
+}
+async function closeWindow() {
+  await syncTrayAttention();
+  try {
+    await api.hideToTray();
+  } catch {
+    try {
+      await getCurrentWindow().close();
+    } catch {
+      // 浏览器预览时没有 Tauri 窗口对象。
+    }
+  }
+}
+</script>
+<template>
+  <NConfigProvider :theme-overrides="themeOverrides" :class="['provider-root', selectedTheme, { 'pet-provider': isPetWindow }]">
+    <NMessageProvider>
+      <div v-if="isPetWindow" class="frog-pet-window" data-tauri-drag-region>
+        <div
+          v-if="frogAlertEnabled"
+          class="frog-alert-pet detached"
+          :class="frogPetClass"
+          :style="frogPetStyle"
+          title="双击发送呱呱告警，滚轮缩放青蛙"
+          data-tauri-drag-region
+          @wheel.prevent="resizeFrogPet"
+          @dblclick.stop.prevent="handleFrogPetDoubleClick"
+        >
+          <span v-if="activePetAlert" class="frog-alert-temp">{{ petTemperatureLabel }}</span>
+          <button class="frog-alert-body" type="button" @click.stop="stopFrogAlertVisuals">
+            <span class="frog-alert-eye left"></span>
+            <span class="frog-alert-eye right"></span>
+            <span class="frog-alert-mouth"></span>
+            <span class="frog-alert-foot left"></span>
+            <span class="frog-alert-foot right"></span>
+          </button>
+          <button class="frog-alert-mark" type="button" title="查看待处理告警" @click.stop="toggleFrogAlertPanel">
+            {{ pendingAlertCount > 0 ? (pendingAlertCount > 9 ? '9+' : pendingAlertCount) : '!' }}
+          </button>
+          <div v-if="frogAlertPanelOpen && latestPendingAlert" class="frog-alert-popover">
+            <p><b>{{ latestPendingAlert.senderNickname }}</b><span>{{ latestPendingAlert.content }}</span></p>
+            <div class="frog-alert-actions">
+              <NButton size="small" type="success" @click="feedbackFrogAlert(latestPendingAlert, 'real')">真实</NButton>
+              <NButton size="small" type="error" secondary @click="feedbackFrogAlert(latestPendingAlert, 'false')">误报</NButton>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div v-else class="desktop-frame">
+        <header class="app-titlebar" @mousedown="startWindowDrag">
+          <div class="titlebar-brand">
+            <span class="app-mark">L</span>
+            <strong>LanChat</strong>
+            <span>局域网聊天</span>
+          </div>
+          <div class="titlebar-actions" @mousedown.stop.prevent>
+            <button class="window-btn" title="最小化" @mousedown.stop.prevent @click.stop="minimizeWindow">─</button>
+            <button class="window-btn" title="最大化" @mousedown.stop.prevent @click.stop="toggleMaximizeWindow">□</button>
+            <button class="window-btn close" title="关闭" @mousedown.stop.prevent @click.stop="closeWindow">×</button>
+          </div>
+        </header>
+        <NLayout class="app-shell" has-sider>
+          <NLayoutSider class="rail" :class="{ expanded: navExpanded }" :width="navExpanded ? 176 : 64" bordered>
+            <div class="rail-inner">
+              <button class="rail-action profile-entry" title="个人资料" @click="openSection('settings')">
+                <NAvatar class="self-avatar" :src="avatarImage(profile?.avatar)">{{ avatarLabel(profile?.avatar, profile?.nickname) }}</NAvatar>
+                <span v-if="navExpanded" class="nav-label">{{ profile?.nickname ?? "个人资料" }}</span>
+              </button>
+              <button class="rail-collapse-toggle" :title="navExpanded ? '收起侧栏' : '展开侧栏'" @click="toggleNav">
+                {{ navExpanded ? "‹" : "›" }}
+              </button>
+              <button
+                class="rail-action"
+                :class="{ active: activeSection === 'chat' }"
+                title="聊天"
+                @click="openSection('chat')"
+              >
+                <span class="nav-icon">💬</span>
+                <span v-if="navExpanded" class="nav-label">聊天</span>
+                <span v-if="totalUnread > 0" class="nav-unread">{{ totalUnread > 99 ? "99+" : totalUnread }}</span>
+              </button>
+              <button
+                class="rail-action"
+                :class="{ active: activeSection === 'devices' }"
+                title="设备列表"
+                @click="openSection('devices')"
+              >
+                <span class="nav-icon">🖥</span>
+                <span v-if="navExpanded" class="nav-label">设备列表</span>
+              </button>
+              <button
+                class="rail-action"
+                :class="{ active: activeSection === 'games' }"
+                title="游戏"
+                @click="openSection('games')"
+              >
+                <span class="nav-icon">🎮</span>
+                <span v-if="navExpanded" class="nav-label">游戏</span>
+                <span v-if="showGameAttention" class="nav-unread">{{ gameAttentionCount > 9 ? "9+" : gameAttentionCount }}</span>
+              </button>
+              <button
+                v-if="frogAlertEnabled"
+                class="rail-action"
+                :class="{ active: activeSection === 'alerts' }"
+                title="狼来了排行榜"
+                @click="openSection('alerts')"
+              >
+                <span class="nav-icon">🐸</span>
+                <span v-if="navExpanded" class="nav-label">狼来了</span>
+              </button>
+              <button class="rail-action add" title="添加设备" @click="openSection('devices')">
+                <span class="nav-icon">＋</span>
+                <span v-if="navExpanded" class="nav-label">添加设备</span>
+              </button>
+              <div class="rail-spacer"></div>
+              <NTooltip trigger="hover" placement="right">
+                <template #trigger>
+                  <button
+                    class="rail-action"
+                    :class="{ active: activeSection === 'settings' }"
+                    title="设置"
+                    @click="openSection('settings')"
+                  >
+                    <span class="nav-icon">⚙</span>
+                    <span v-if="navExpanded" class="nav-label">设置</span>
+                  </button>
+                </template>
+                设置
+              </NTooltip>
+            </div>
+          </NLayoutSider>
+          <button
+            v-if="listPaneAvailable"
+            class="list-pane-toggle"
+            :class="{ collapsed: listPaneCollapsed }"
+            :title="listPaneToggleTitle"
+            @click="toggleListPane"
+          >
+            {{ listPaneCollapsed ? "›" : "‹" }}
+          </button>
+          <NLayoutSider v-if="activeSection === 'chat' && !listPaneCollapsed" class="list-pane" :width="listPaneWidth" bordered>
+            <div class="pane-header">
+              <div class="pane-title-row">
+                <strong>聊天</strong>
+                <div class="pane-actions">
+                  <NButton quaternary circle size="small" title="新建私有频道" @click="openRecipientPicker('privateChannelCreate')">＋</NButton>
+                  <NButton quaternary circle size="small" title="刷新发现" @click="store.refreshPeers">↻</NButton>
+                </div>
+              </div>
+              <NInput v-model:value="conversationSearch" size="small" clearable placeholder="搜索聊天" />
+            </div>
+            <NScrollbar class="list-scroll">
+              <NList hoverable clickable class="conversation-list">
+                <NListItem
+                  v-for="conversation in sortedConversations"
+                  :key="conversation.id"
+                  class="conversation-item"
+                  :class="{ active: conversation.id === activeConversationId }"
+                  @click="store.selectConversation(conversation.id)"
+                >
+                  <NThing :title="conversation.title">
+                    <template #avatar>
+                      <NAvatar v-if="conversation.kind === 'group'" class="conversation-avatar">
+                        {{ conversation.is_private ? "私" : "局" }}
+                      </NAvatar>
+                      <NAvatar v-else class="conversation-avatar" :src="avatarImage(conversationAvatar(conversation))">{{ firstLetter(conversation.title) }}</NAvatar>
+                    </template>
+                    <template #description>
+                      <div class="conversation-desc">
+                        <NTag v-if="conversation.kind === 'group'" size="small" :bordered="false" :type="conversationTagType(conversation)">
+                          {{ conversationBadge(conversation) }}
+                        </NTag>
+                        <span v-else class="conversation-status-dot" :class="{ online: conversationPeer(conversation)?.online }"></span>
+                        <span>{{ conversationSubtitle(conversation) }}</span>
+                      </div>
+                    </template>
+                    <template #header-extra>
+                      <span class="conversation-time">{{ formatTime(conversation.updated_at) }}</span>
+                      <NBadge v-if="(unreadByConversation[conversation.id] ?? 0) > 0" :value="unreadByConversation[conversation.id]" :max="99" type="error" />
+                    </template>
+                  </NThing>
+                </NListItem>
+              </NList>
+            </NScrollbar>
+            <button class="pane-resize-handle left-list" type="button" aria-label="拖动调整列表宽度" title="拖动调整宽度" @mousedown="startPaneResize('list', $event)"></button>
+          </NLayoutSider>
+          <NLayoutSider v-else-if="activeSection === 'games' && !listPaneCollapsed" class="list-pane" :width="listPaneWidth" bordered>
+            <div class="pane-header">
+              <div class="pane-title-row">
+                <strong>游戏</strong>
+                <NButton quaternary circle size="small" title="创建房间" @click="createRoomOpen = true">＋</NButton>
+              </div>
+              <NInput size="small" clearable placeholder="搜索游戏或房间" />
+            </div>
+            <NScrollbar class="list-scroll">
+              <div class="section-label">内置游戏</div>
+              <div
+                v-for="game in gameRegistry"
+                :key="game.type"
+                class="game-list-card"
+                :class="{ active: selectedGameType === game.type }"
+                @click="openBuiltinGame(game.type)"
+              >
+                <div class="game-list-icon">{{ game.icon }}</div>
+                <div>
+                  <div class="game-list-title">{{ game.name }}</div>
+                  <div class="game-list-sub">{{ game.minPlayers }}-{{ game.maxPlayers }} 人房间 · 支持房间聊天</div>
+                </div>
+                <NTag size="small" :bordered="false" type="success">可用</NTag>
+              </div>
+              <div class="section-label">房间</div>
+              <div
+                v-for="room in gameRoomsState"
+                :key="room.roomId"
+                class="game-list-card"
+                :class="{ active: room.roomId === activeGameRoomId }"
+                @click="openGameRoom(room.roomId)"
+              >
+                <div class="game-list-icon">{{ gameDefinitionOf(room.gameType).icon }}</div>
+                <div>
+                  <div class="game-list-title">{{ room.roomName }}</div>
+                  <div class="game-list-sub">{{ gameDefinitionOf(room.gameType).name }} · {{ room.players.length }}/{{ gameDefinitionOf(room.gameType).maxPlayers }} 人</div>
+                </div>
+                <NTag size="small" :bordered="false">{{ room.hostDeviceId === profile?.device_id ? "我创建" : "可加入" }}</NTag>
+              </div>
+              <NEmpty v-if="gameRoomsState.length === 0" description="还没有游戏房间" class="list-empty">
+                <template #extra>
+                  <NText depth="3">点击创建后先选择游戏类型。</NText>
+                </template>
+              </NEmpty>
+              <div class="create-game-box">
+                <NButton block type="primary" @click="createRoomOpen = true">创建房间</NButton>
+                <NText depth="3">先选择游戏，再创建对应房间；不同游戏会进入不同交互界面。</NText>
+              </div>
+            </NScrollbar>
+            <button class="pane-resize-handle left-list" type="button" aria-label="拖动调整列表宽度" title="拖动调整宽度" @mousedown="startPaneResize('list', $event)"></button>
+          </NLayoutSider>
+          <NLayoutSider v-else-if="activeSection === 'devices' && !listPaneCollapsed" class="list-pane" :width="listPaneWidth" bordered>
+            <div class="pane-header">
+              <div class="pane-title-row">
+                <strong>设备列表</strong>
+                <NButton quaternary circle size="small" title="刷新发现" @click="store.refreshPeers">↻</NButton>
+              </div>
+              <NInput v-model:value="deviceSearch" size="small" clearable placeholder="搜索设备、IP" />
+            </div>
+            <NScrollbar class="list-scroll">
+              <div class="add-device-box">
+                <div>
+                  <strong>添加设备</strong>
+                  <span>输入 IP 和端口建立单聊</span>
+                </div>
+                <NSpace vertical :size="8">
+                  <NInput v-model:value="manualAddress" placeholder="192.168.1.23" clearable />
+                  <NInputNumber v-model:value="manualPort" :min="1" :max="65535" style="width: 100%" />
+                  <NButton block type="primary" @click="openManualDevice">连接</NButton>
+                </NSpace>
+              </div>
+              <div class="section-label">频道</div>
+              <NEmpty v-if="deviceChannelConversations.length === 0" description="暂无频道" class="list-empty compact" />
+              <NList v-else hoverable clickable class="device-list channel-category-list">
+                <NListItem
+                  v-for="conversation in deviceChannelConversations"
+                  :key="conversation.id"
+                  class="device-item"
+                  :class="{ active: conversation.id === selectedDeviceChannelId }"
+                  @click="openDeviceChannel(conversation)"
+                >
+                  <NThing :title="conversation.title" :description="conversation.is_private ? '私有加密频道' : '局域网公开频道'">
+                    <template #avatar>
+                      <NAvatar class="conversation-avatar">{{ conversation.is_private ? "私" : "局" }}</NAvatar>
+                    </template>
+                    <template #header-extra>
+                      <NTag size="small" :bordered="false" :type="conversation.is_private ? 'warning' : 'success'">{{ conversation.is_private ? "私有" : "公有" }}</NTag>
+                    </template>
+                  </NThing>
+                </NListItem>
+              </NList>
+              <div class="section-label">已发现设备</div>
+              <NEmpty v-if="filteredPeers.length === 0" description="暂未发现设备" class="list-empty">
+                <template #extra>
+                  <NText depth="3">可点击上方添加设备。</NText>
+                </template>
+              </NEmpty>
+              <NList v-else hoverable clickable class="device-list">
+                <NListItem v-for="peer in filteredPeers" :key="peer.device_id" class="device-item" :class="{ active: peer.device_id === selectedPeerId }" @click="openDevice(peer)">
+                  <NThing :title="peer.nickname">
+                    <template #avatar>
+                      <NAvatar class="peer-avatar" :src="avatarImage(peer.avatar)">{{ firstLetter(peer.nickname) }}</NAvatar>
+                    </template>
+                    <template #description>
+                      <div class="conversation-desc">
+                        <span class="conversation-status-dot" :class="{ online: peer.online }"></span>
+                        <span>{{ peerSubtitle(peer) }}</span>
+                      </div>
+                    </template>
+                  </NThing>
+                </NListItem>
+              </NList>
+            </NScrollbar>
+            <button class="pane-resize-handle left-list" type="button" aria-label="拖动调整列表宽度" title="拖动调整宽度" @mousedown="startPaneResize('list', $event)"></button>
+          </NLayoutSider>
+          <NLayout class="content-panel">
+            <section v-if="activeSection === 'chat'" class="chat-view">
+              <header class="chat-header" data-tauri-drag-region>
+                <div class="chat-title">
+                  <h2>{{ activeConversation?.title ?? "局域网频道" }}</h2>
+                  <p v-if="activeConversation?.kind === 'group'">{{ activeConversation?.is_private ? `${activePrivateChannelMembers.length} 名成员 · 私有加密频道` : `${onlinePeers.length} 台设备在线 · 频道广播` }}</p>
+                  <p v-else class="peer-status-line">
+                    <NTag size="small" :bordered="false" :type="activePeerStatusType">{{ activePeerStatusLabel }}</NTag>
+                    <span>{{ activePeer ? `${activePeer.address}:${activePeer.port}` : "点对点单聊" }}</span>
+                  </p>
+                </div>
+              </header>
+              <div ref="messagePane" class="messages-pane">
+                <NSpin :show="loading">
+                  <NEmpty v-if="!loading && activeMessages.length === 0" description="还没有消息" class="empty-state">
+                    <template #extra>
+                      <span>选择在线设备单聊，或在局域网频道里发第一句。</span>
+                    </template>
+                  </NEmpty>
+                  <article
+                    v-for="message in activeMessages"
+                    :key="message.id"
+                    class="message-row"
+                    :class="messageClass(message)"
+                    @contextmenu="openMessageContextMenu(message, $event)"
+                  >
+                    <div v-if="message.message_type === 'system'" class="system-message">
+                      <span>{{ message.content }}</span>
+                    </div>
+                    <template v-else>
+                    <NAvatar class="message-avatar" :src="avatarImage(senderAvatar(message))">{{ firstLetter(senderName(message)) }}</NAvatar>
+                    <div class="message-stack">
+                      <div class="message-meta">
+                        <span class="message-meta-name">{{ messageSenderTitle(message) }}</span>
+                        <span class="message-meta-time">{{ formatTime(message.created_at) }}</span>
+                      </div>
+                      <div class="message-content-line">
+                        <div class="message-bubble" :class="{ 'message-card-bubble': privateChannelInvitePayload(message) || gameInvitePayload(message) }">
+                          <template v-if="privateChannelInvitePayload(message)">
+                            <div class="channel-invite-card invite-message-card">
+                              <span class="channel-invite-icon">私</span>
+                              <span class="channel-invite-copy">
+                                <strong>{{ privateChannelInvitePayload(message)?.title }}</strong>
+                                <small>{{ privateChannelInvitePayload(message)?.owner_nickname }} 邀请你加入私有频道</small>
+                              </span>
+                              <span class="channel-invite-actions">
+                                <NTag v-if="privateChannelInviteState(privateChannelInvitePayload(message)) === 'accepted'" size="small" :bordered="false" type="success">已加入</NTag>
+                                <NTag v-else-if="privateChannelInviteState(privateChannelInvitePayload(message)) === 'rejected'" size="small" :bordered="false" type="default">已拒绝</NTag>
+                                <NTag v-else-if="privateChannelInviteState(privateChannelInvitePayload(message)) === 'expired'" size="small" :bordered="false" type="default">已过期</NTag>
+                                <template v-else-if="messageClass(message) !== 'mine'">
+                                  <NButton size="tiny" type="primary" @click="acceptPrivateChannelInviteCard(privateChannelInvitePayload(message))">加入</NButton>
+                                  <NButton size="tiny" secondary @click="rejectPrivateChannelInviteCard(privateChannelInvitePayload(message))">拒绝</NButton>
+                                </template>
+                                <NTag v-else size="small" :bordered="false" type="success">已发送</NTag>
+                              </span>
+                            </div>
+                          </template>
+                          <template v-else-if="gameInvitePayload(message)">
+                            <button class="game-invite-card invite-message-card" type="button" @click="openGameInvite(gameInvitePayload(message))">
+                              <span class="game-invite-icon">{{ gameDefinitionOf(gameInvitePayload(message)?.gameType ?? 'doudizhu').icon }}</span>
+                              <span class="game-invite-copy">
+                                <strong>{{ gameInvitePayload(message)?.roomName }}</strong>
+                                <small>{{ gameInvitePayload(message)?.gameName }} · {{ gameInvitePayload(message)?.hostName }} 邀请加入</small>
+                              </span>
+                            </button>
+                          </template>
+                          <template v-else-if="message.message_type === 'text'">
+                            <p>{{ message.content }}</p>
+                          </template>
+                          <div v-else-if="message.file_meta" class="file-message">
+                            <img v-if="isImageFile(message)" class="file-preview-image" :src="message.file_meta.url" :alt="message.file_meta.name" />
+                            <audio v-else-if="isAudioFile(message)" class="voice-player" controls :src="message.file_meta.url"></audio>
+                            <a v-else class="file-info file-link" :href="message.file_meta.url">
+                              <strong>{{ message.file_meta.name }}</strong>
+                              <span>{{ formatFileSize(message.file_meta.size) }}</span>
+                            </a>
+                          </div>
+                          <p v-else>{{ message.content }}</p>
+                        </div>
+                        <span
+                          v-if="messageClass(message) === 'mine'"
+                          class="message-status-outside"
+                          :class="`status-${message.status}`"
+                          :title="statusText(message.status)"
+                          aria-label="消息状态"
+                        >{{ statusIcon(message.status) }}</span>
+                      </div>
+                    </div>
+                    </template>
+                  </article>
+                </NSpin>
+                <NDropdown
+                  placement="bottom-start"
+                  trigger="manual"
+                  :x="messageContextMenuX"
+                  :y="messageContextMenuY"
+                  :show="messageContextMenuOpen"
+                  :options="messageContextOptions"
+                  @clickoutside="messageContextMenuOpen = false"
+                  @select="selectMessageContextAction"
+                />
+              </div>
+              <footer class="composer work-composer">
+                <div class="composer-tools">
+                  <button class="composer-tool" title="发送文件" :disabled="!canSendActive" @click="chooseAndSendFile">📎</button>
+                  <button class="composer-tool" :class="{ recording: isRecording }" :disabled="!canSendActive" :title="isRecording ? '停止录音' : '发送语音'" @click="toggleVoiceRecording">🎙</button>
+                  <div class="emoji-wrap">
+                    <button class="composer-tool" title="表情" :disabled="!canSendActive" @click="chatEmojiOpen = !chatEmojiOpen">☺</button>
+                    <div v-if="chatEmojiOpen" class="emoji-panel">
+                      <button v-for="emoji in emojiOptions" :key="emoji" @click="appendEmojiToDraft(emoji)">{{ emoji }}</button>
+                    </div>
+                  </div>
+                  <button class="composer-tool" title="清空输入" @click="draft = ''">⌫</button>
+                </div>
+                <div class="composer-input-frame">
+                  <NInput
+                    v-model:value="draft"
+                    class="composer-textarea"
+                    type="textarea"
+                    :autosize="{ minRows: 3, maxRows: 3 }"
+                    :disabled="!canSendActive"
+                    :placeholder="composerPlaceholder"
+                    @keydown.enter="handleEnter"
+                  />
+                  <div class="composer-footer">
+                    <span>Enter 发送 · Shift+Enter 换行</span>
+                    <NButton type="primary" size="medium" :disabled="!canSendActive" @click="store.sendActiveMessage">发送</NButton>
+                  </div>
+                </div>
+              </footer>
+            </section>
+            <section v-else-if="activeSection === 'games'" class="game-workspace" :class="{ 'gomoku-workspace': activeGameRoom?.gameType === 'gomoku', 'xiangqi-workspace': activeGameRoom?.gameType === 'xiangqi', 'minesweeper-workspace': activeGameRoom?.gameType === 'minesweeper' }">
+              <header class="game-header" data-tauri-drag-region>
+                <div>
+                  <h2>{{ activeGameDefinition.name }} · {{ activeGameRoom?.roomName ?? "排行榜" }}</h2>
+                  <p>{{ activeGameDefinition.description }} · 房间类型：{{ activeGameDefinition.name }}</p>
+                </div>
+                <div class="game-header-actions">
+                  <NButton v-if="activeGameRoom" secondary @click="openRecipientPicker('gameInvite')">邀请</NButton>
+                  <NButton v-if="activeGameRoom" secondary @click="openLeaderboard">排行榜</NButton>
+                  <NButton v-if="!activeGameRoom" secondary @click="createRoomOpen = true">创建房间</NButton>
+                  <NButton v-if="activeGameRoom && isRoomHost()" secondary type="error" @click="dissolveRoom">解散房间</NButton>
+                  <NButton v-else-if="activeGameRoom && myGameSeat" secondary type="warning" @click="leaveRoom">退出房间</NButton>
+                  <NButton v-if="activeGameRoom" type="primary" :disabled="activeGameRoom?.gameType === 'doudizhu' ? activeDdzState?.phase === 'playing' || activeDdzState?.phase === 'bidding' : activeGameRoom?.gameType === 'xiangqi' ? activeXiangqiState?.phase === 'playing' : activeGameRoom?.gameType === 'minesweeper' ? activeMinesweeperState?.phase === 'playing' : activeGomokuState?.phase === 'playing'" @click="roomPrimaryAction">{{ roomPrimaryLabel }}</NButton>
+                </div>
+              </header>
+              <div v-if="activeGameRoom?.gameType === 'doudizhu'" class="doudizhu-layout">
+                <main class="doudizhu-table">
+                  <div class="landlord-cards">
+                    <div v-for="(card, index) in visibleLandlordCards" :key="card ? card.id : `back-${index}`" class="poker-card" :class="card ? { red: card.red } : { back: true }">{{ card ? card.label : "牌" }}</div>
+                  </div>
+                  <div class="desk-surface">
+                    <div class="desk-center">
+                      <div class="played-cards">
+                        <div v-for="card in tableLastCards" :key="card.id" class="poker-card" :class="{ red: card.red }">{{ card.label }}</div>
+                      </div>
+                      <div class="turn-note">上家出牌：{{ activeDdzState?.lastPlay ? `${activeDdzState.lastPlay.playerName} · ${playLabel(activeDdzState.lastPlay)}` : "无" }} · {{ playHint }}</div>
+                    </div>
+                  </div>
+                  <div v-if="leftDdzSeat" class="table-player left">
+                    <NAvatar class="table-avatar">{{ firstLetter(leftDdzSeat.nickname) }}</NAvatar>
+                    <div>
+                      <div class="table-player-name">{{ leftDdzSeat.nickname }} <span v-if="seatTurnLabel(leftDdzSeat)" class="turn-countdown">{{ seatTurnLabel(leftDdzSeat) }}</span> <NTag v-if="leftDdzSeat.role === 'landlord'" size="small" :bordered="false" type="warning">地主</NTag></div>
+                      <div class="table-player-meta">{{ leftDdzSeat.online ? "在线" : "离线" }} · 剩余 {{ leftDdzSeat.handCount }} 张</div>
+                    </div>
+                  </div>
+                  <div v-if="rightDdzSeat" class="table-player right">
+                    <NAvatar class="table-avatar">{{ firstLetter(rightDdzSeat.nickname) }}</NAvatar>
+                    <div>
+                      <div class="table-player-name">{{ rightDdzSeat.nickname }} <span v-if="seatTurnLabel(rightDdzSeat)" class="turn-countdown">{{ seatTurnLabel(rightDdzSeat) }}</span> <NTag v-if="rightDdzSeat.role === 'landlord'" size="small" :bordered="false" type="warning">地主</NTag></div>
+                      <div class="table-player-meta">{{ rightDdzSeat.online ? "在线" : "离线" }} · 剩余 {{ rightDdzSeat.handCount }} 张</div>
+                    </div>
+                  </div>
+                  <div v-if="myDdzSeat" class="table-player me">
+                    <NAvatar class="table-avatar">{{ firstLetter(myDdzSeat.nickname) }}</NAvatar>
+                    <div>
+                      <div class="table-player-name">我 · {{ myDdzSeat.nickname }} <span v-if="seatTurnLabel(myDdzSeat)" class="turn-countdown">{{ seatTurnLabel(myDdzSeat) }}</span> <NTag v-if="myDdzSeat.role === 'landlord'" size="small" :bordered="false" type="warning">地主</NTag></div>
+                      <div class="table-player-meta">{{ myDdzSeat.role === "landlord" ? "地主" : myDdzSeat.role === "farmer" ? "农民" : myDdzSeat.ready ? "已准备" : "未准备" }} · {{ isMyDdzTurn ? "轮到你" : "等待" }}</div>
+                    </div>
+                  </div>
+                  <div v-if="activeDdzState?.phase === 'ended'" class="settlement-overlay">
+                    <div class="settlement-panel">
+                      <div class="settlement-kicker">本局结算</div>
+                      <h3>{{ settlementWinnerLabel }} 获胜</h3>
+                      <div class="settlement-list">
+                        <div v-for="player in settlementRows" :key="player.deviceId" class="settlement-row" :class="{ winner: player.deviceId === activeDdzState?.winnerDeviceId }">
+                          <div class="settlement-player">
+                            <NAvatar :size="28" class="table-avatar">{{ firstLetter(player.nickname) }}</NAvatar>
+                            <span>{{ player.deviceId === myDeviceId ? `我 · ${player.nickname}` : player.nickname }}</span>
+                          </div>
+                          <NTag v-if="player.role" size="small" :bordered="false" :type="player.role === 'landlord' ? 'warning' : 'info'">
+                            {{ player.role === "landlord" ? "地主" : "农民" }}
+                          </NTag>
+                          <strong>剩余 {{ player.remaining }} 张</strong>
+                        </div>
+                      </div>
+                      <div class="settlement-actions">
+                        <NButton v-if="activeGameRoom && isRoomHost()" type="primary" @click="roomPrimaryAction">再来一局</NButton>
+                        <NButton secondary @click="leaveRoom">退出房间</NButton>
+                      </div>
+                    </div>
+                  </div>                </main>
+                <aside class="game-room-panel">
+                  <div class="room-chat-panel">
+                    <div class="room-chat-head">房间聊天</div>
+                    <div ref="roomChatPane" class="room-chat-list">
+                      <div v-for="item in activeRoomChatMessages" :key="item.id" class="room-chat-msg" :class="{ mine: item.mine }">
+                        <div class="room-chat-name">{{ item.sender }}</div>
+                        <div class="room-chat-bubble">{{ item.content }}</div>
+                      </div>
+                    </div>
+                    <div class="room-chat-composer">
+                      <div class="emoji-wrap">
+                        <button class="emoji-trigger" title="表情" @click="roomEmojiOpen = !roomEmojiOpen">☺</button>
+                        <div v-if="roomEmojiOpen" class="emoji-panel room-emoji-panel">
+                          <button v-for="emoji in emojiOptions" :key="emoji" @click="appendEmojiToRoomDraft(emoji)">{{ emoji }}</button>
+                        </div>
+                      </div>
+                      <NInput v-model:value="roomChatDraft" placeholder="房间聊天" @keydown.enter="handleRoomChatEnter" />
+                      <NButton type="primary" @click="sendRoomChat">发</NButton>
+                    </div>
+                  </div>
+                </aside>
+              </div>
+              <div v-else-if="activeGameRoom?.gameType === 'minesweeper'" class="minesweeper-layout">
+                <main class="minesweeper-table">
+
+                  <div class="minesweeper-race-area">
+                    <aside class="minesweeper-player-list">
+                      <div v-for="player in minesweeperSettlementRows" :key="player.deviceId" class="minesweeper-player" :class="{ me: player.deviceId === myDeviceId, winner: activeMinesweeperState?.winnerDeviceId === player.deviceId, lost: player.boardState?.status === 'lost' }">
+                        <NAvatar class="table-avatar">{{ firstLetter(player.nickname) }}</NAvatar>
+                        <div class="minesweeper-player-main">
+                          <strong>{{ player.deviceId === myDeviceId ? `我 · ${player.nickname}` : player.nickname }}</strong>
+                          <span>{{ player.result }} · {{ minesweeperProgressPercent(player.boardState) }}% · {{ minesweeperElapsedLabel(player.boardState?.startedAt, player.boardState?.finishedAt) }}</span>
+                          <div class="minesweeper-progress"><i :style="{ width: `${minesweeperProgressPercent(player.boardState)}%` }"></i></div>
+                        </div>
+                      </div>
+                    </aside>
+
+                    <div class="minesweeper-board-wrap">
+                      <div class="minesweeper-board-meta">
+                        <NDropdown
+                          v-if="activeMinesweeperState?.phase === 'lobby' && activeGameRoom && isRoomHost()"
+                          trigger="click"
+                          :options="minesweeperDifficultyOptions"
+                          @select="selectMinesweeperDifficulty"
+                        >
+                          <button class="minesweeper-meta-chip difficulty" type="button">{{ activeMinesweeperDifficultyLabel }}</button>
+                        </NDropdown>
+                        <span v-else class="minesweeper-meta-chip">{{ activeMinesweeperDifficultyLabel }}</span>
+                        <span class="minesweeper-meta-chip">{{ activeMinesweeperState?.mines ?? 40 }} 雷</span>
+                        <span class="minesweeper-meta-chip">旗 {{ myMinesweeperBoardState?.flagged ?? 0 }}</span>
+                      </div>
+                      <div
+                        class="minesweeper-board"
+                        :style="minesweeperBoardStyle"
+                        aria-label="扫雷棋盘"
+                      >
+                        <template v-for="(row, y) in myMinesweeperBoardState?.board ?? []" :key="`mine-row-${y}`">
+                          <button
+                            v-for="(cell, x) in row"
+                            :key="`mine-cell-${x}-${y}`"
+                            class="minesweeper-cell"
+                            :class="[{ revealed: cell.revealed, flagged: cell.flagged, mine: cell.mine && cell.revealed, exploded: cell.exploded }, minesweeperCellTone(cell)]"
+                            :disabled="!canUseMinesweeperBoard()"
+                            @click="revealMinesweeperAt(x, y)"
+                            @dblclick="chordMinesweeperAt(x, y)"
+                            @contextmenu.prevent="flagMinesweeperAt(x, y)"
+                          >
+                            {{ minesweeperCellText(cell) }}
+                          </button>
+                        </template>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div v-if="activeMinesweeperState?.phase === 'ended'" class="settlement-overlay minesweeper-settlement">
+                    <div class="settlement-panel">
+                      <div class="settlement-kicker">竞速结算</div>
+                      <h3>{{ activeMinesweeperState?.winnerDeviceId ? `${activeMinesweeperState.winnerName} 获胜` : activeMinesweeperState?.winnerName ?? '本局结束' }}</h3>
+                      <div class="settlement-list">
+                        <div v-for="player in minesweeperSettlementRows" :key="player.deviceId" class="settlement-row" :class="{ winner: activeMinesweeperState?.winnerDeviceId === player.deviceId }">
+                          <div class="settlement-player">
+                            <NAvatar :size="28" class="table-avatar">{{ firstLetter(player.nickname) }}</NAvatar>
+                            <span>{{ player.deviceId === myDeviceId ? `我 · ${player.nickname}` : player.nickname }}</span>
+                          </div>
+                          <NTag size="small" :bordered="false" :type="player.boardState?.status === 'lost' ? 'error' : player.boardState?.status === 'won' ? 'success' : 'info'">{{ player.result }}</NTag>
+                          <strong>{{ minesweeperProgressPercent(player.boardState) }}%</strong>
+                        </div>
+                      </div>
+                      <div class="settlement-actions">
+                        <NButton v-if="activeGameRoom && isRoomHost()" type="primary" @click="roomPrimaryAction">再来一局</NButton>
+                        <NButton secondary @click="leaveRoom">退出房间</NButton>
+                      </div>
+                    </div>
+                  </div>
+                </main>
+                <aside class="game-room-panel minesweeper-room-panel">
+                  <div class="room-chat-panel">
+                    <div class="room-chat-head">房间聊天</div>
+                    <div ref="roomChatPane" class="room-chat-list">
+                      <div v-for="item in activeRoomChatMessages" :key="item.id" class="room-chat-msg" :class="{ mine: item.mine }">
+                        <div class="room-chat-name">{{ item.sender }}</div>
+                        <div class="room-chat-bubble">{{ item.content }}</div>
+                      </div>
+                    </div>
+                    <div class="room-chat-composer">
+                      <div class="emoji-wrap">
+                        <button class="emoji-trigger" title="表情" @click="roomEmojiOpen = !roomEmojiOpen">☺</button>
+                        <div v-if="roomEmojiOpen" class="emoji-panel room-emoji-panel">
+                          <button v-for="emoji in emojiOptions" :key="emoji" @click="appendEmojiToRoomDraft(emoji)">{{ emoji }}</button>
+                        </div>
+                      </div>
+                      <NInput v-model:value="roomChatDraft" placeholder="房间聊天" @keydown.enter="handleRoomChatEnter" />
+                      <NButton type="primary" @click="sendRoomChat">发</NButton>
+                    </div>
+                  </div>
+                </aside>
+              </div>              <div v-else-if="activeGameRoom?.gameType === 'gomoku'" class="gomoku-layout">
+                <main class="gomoku-table">
+                  <div class="gomoku-arena">
+                    <div class="gomoku-player-card gomoku-side-player" :class="{ active: activeGomokuState?.turnDeviceId === blackGomokuSeat?.deviceId, winner: activeGomokuState?.winnerDeviceId === blackGomokuSeat?.deviceId }">
+                      <span class="gomoku-stone black"></span>
+                      <div>
+                        <strong class="gomoku-player-name">
+                          <span class="gomoku-player-name-text">{{ blackGomokuSeat?.deviceId === myDeviceId ? `我 · ${blackGomokuSeat?.nickname}` : blackGomokuSeat?.nickname ?? '等待黑棋' }}</span>
+                          <span v-if="gomokuSeatTurnLabel(blackGomokuSeat)" class="turn-countdown">{{ gomokuSeatTurnLabel(blackGomokuSeat) }}</span>
+                        </strong>
+                        <small>{{ blackGomokuSeat?.ready ? '已准备' : activeGomokuState?.phase === 'playing' ? '执黑' : '未准备' }}</small>
+                      </div>
+                    </div>
+                    <div class="gomoku-board-shell">
+                      <div class="gomoku-board" aria-label="五子棋棋盘">
+                        <div class="gomoku-grid-lines"></div>
+                        <button
+                          v-for="point in gomokuBoardPoints"
+                          :key="`gomoku-cell-${point.x}-${point.y}`"
+                          class="gomoku-cell"
+                          :class="{ occupied: !!point.cell, black: point.cell === 'black', white: point.cell === 'white', win: isGomokuWinPoint(point.x, point.y), opponentLast: isOpponentLastGomokuCell(point.x, point.y), playable: canPlaceGomokuCell(point.x, point.y) }"
+                          :style="gomokuPointStyle(point.x, point.y)"
+                          :disabled="!canPlaceGomokuCell(point.x, point.y)"
+                          @click="placeGomokuCell(point.x, point.y)"
+                        >
+                          <span v-if="point.cell" class="gomoku-stone" :class="point.cell"></span>
+                          <span v-if="isGomokuWinPoint(point.x, point.y)" class="gomoku-win-dot"></span>
+                          <span v-if="isOpponentLastGomokuCell(point.x, point.y)" class="gomoku-last-move-ring"></span>
+                        </button>
+                      </div>
+                    </div>
+                    <div class="gomoku-player-card gomoku-side-player" :class="{ active: activeGomokuState?.turnDeviceId === whiteGomokuSeat?.deviceId, winner: activeGomokuState?.winnerDeviceId === whiteGomokuSeat?.deviceId }">
+                      <span class="gomoku-stone white"></span>
+                      <div>
+                        <strong class="gomoku-player-name">
+                          <span class="gomoku-player-name-text">{{ whiteGomokuSeat?.deviceId === myDeviceId ? `我 · ${whiteGomokuSeat?.nickname}` : whiteGomokuSeat?.nickname ?? '等待白棋' }}</span>
+                          <span v-if="gomokuSeatTurnLabel(whiteGomokuSeat)" class="turn-countdown">{{ gomokuSeatTurnLabel(whiteGomokuSeat) }}</span>
+                        </strong>
+                        <small>{{ whiteGomokuSeat?.ready ? '已准备' : activeGomokuState?.phase === 'playing' ? '执白' : '未准备' }}</small>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="gomoku-action-strip">
+                    <template v-if="activeGomokuState?.pendingUndo">
+                      <span class="undo-request-note">
+                        {{ activeGomokuState.pendingUndo.requesterId === myDeviceId ? '已发起悔棋，等待对方同意' : `${activeGomokuState.pendingUndo.requesterName} 请求悔棋` }}
+                      </span>
+                      <NButton v-if="canRespondGomokuUndo" size="small" type="primary" @click="respondGomokuUndo(true)">同意</NButton>
+                      <NButton v-if="canRespondGomokuUndo" size="small" secondary @click="respondGomokuUndo(false)">拒绝</NButton>
+                    </template>
+                    <template v-else>
+                      <NButton size="small" secondary :disabled="!canRequestUndoGomoku" @click="requestGomokuUndo">悔棋</NButton>
+                      <NButton size="small" secondary type="error" :disabled="!canResignGomoku" @click="resignGomoku">投降</NButton>
+                    </template>
+                  </div>
+                  <div class="gomoku-log-strip">
+                    <span v-for="move in activeGomokuState?.moves.slice(-6) ?? []" :key="`${move.playerId}-${move.createdAt}`">
+                      {{ move.playerName }} {{ gomokuStoneLabel(move.stone) }} {{ move.x + 1 }},{{ move.y + 1 }}
+                    </span>
+                  </div>
+                  <div v-if="activeGomokuState?.phase === 'ended'" class="settlement-overlay gomoku-settlement">
+                    <div class="settlement-panel">
+                      <div class="settlement-kicker">本局结算</div>
+                      <h3>{{ activeGomokuState?.winnerName ? `${activeGomokuState.winnerName} 获胜` : '平局' }}</h3>
+                      <div class="settlement-list">
+                        <div v-for="player in gomokuSettlementRows" :key="player.deviceId" class="settlement-row" :class="{ winner: activeGomokuState?.winnerDeviceId === player.deviceId }">
+                          <div class="settlement-player">
+                            <span class="gomoku-stone" :class="player.stone"></span>
+                            <span>{{ player.deviceId === myDeviceId ? `我 · ${player.nickname}` : player.nickname }}</span>
+                          </div>
+                          <NTag size="small" :bordered="false" :type="player.stone === 'black' ? 'default' : 'info'">{{ gomokuStoneLabel(player.stone) }}</NTag>
+                          <strong>{{ player.result }}</strong>
+                        </div>
+                      </div>
+                      <div class="settlement-actions">
+                        <NButton v-if="activeGameRoom && isRoomHost()" type="primary" @click="roomPrimaryAction">再来一局</NButton>
+                        <NButton secondary @click="leaveRoom">退出房间</NButton>
+                      </div>
+                    </div>
+                  </div>
+                </main>
+                <aside class="game-room-panel gomoku-room-panel">
+                  <div class="room-chat-panel">
+                    <div class="room-chat-head">房间聊天</div>
+                    <div ref="roomChatPane" class="room-chat-list">
+                      <div v-for="item in activeRoomChatMessages" :key="item.id" class="room-chat-msg" :class="{ mine: item.mine }">
+                        <div class="room-chat-name">{{ item.sender }}</div>
+                        <div class="room-chat-bubble">{{ item.content }}</div>
+                      </div>
+                    </div>
+                    <div class="room-chat-composer">
+                      <div class="emoji-wrap">
+                        <button class="emoji-trigger" title="表情" @click="roomEmojiOpen = !roomEmojiOpen">☺</button>
+                        <div v-if="roomEmojiOpen" class="emoji-panel room-emoji-panel">
+                          <button v-for="emoji in emojiOptions" :key="emoji" @click="appendEmojiToRoomDraft(emoji)">{{ emoji }}</button>
+                        </div>
+                      </div>
+                      <NInput v-model:value="roomChatDraft" placeholder="房间聊天" @keydown.enter="handleRoomChatEnter" />
+                      <NButton type="primary" @click="sendRoomChat">发</NButton>
+                    </div>
+                  </div>
+                </aside>
+              </div>
+              <div v-else-if="activeGameRoom?.gameType === 'xiangqi'" class="xiangqi-layout">
+                <main class="xiangqi-table">
+                  <div class="xiangqi-arena">
+                    <div class="xiangqi-player-card" :class="{ active: activeXiangqiState?.turnDeviceId === leftXiangqiSeat?.deviceId, winner: activeXiangqiState?.winnerDeviceId === leftXiangqiSeat?.deviceId }">
+                      <div class="xiangqi-side-mark" :class="leftXiangqiSide">{{ xiangqiSideShortLabel(leftXiangqiSide) }}</div>
+                      <div>
+                        <strong>{{ xiangqiSeatName(leftXiangqiSeat, leftXiangqiSide) }}</strong>
+                        <small>{{ xiangqiSeatStatus(leftXiangqiSeat, leftXiangqiSide) }}</small>
+                      </div>
+                    </div>
+
+                    <div class="xiangqi-board-shell">
+                      <div class="xiangqi-board" :class="{ 'black-perspective': xiangqiPerspectiveSide === 'black' }" aria-label="中国象棋棋盘">
+                        <div class="xiangqi-river">楚河　　　　汉界</div>
+                        <div v-if="activeXiangqiState?.checkSide" class="xiangqi-check-flash" :class="{ mine: isMyXiangqiChecked }">将</div>
+                        <div v-for="(row, displayY) in xiangqiDisplayRows" :key="`xiangqi-row-${displayY}`" class="xiangqi-row">
+                          <button
+                            v-for="point in row"
+                            :key="`xiangqi-cell-${point.x}-${point.y}`"
+                            class="xiangqi-cell"
+                            :class="{ selected: isSelectedXiangqiCell(point.x, point.y), playable: isXiangqiCellPlayable(point.x, point.y), target: canMoveSelectedXiangqiTo(point.x, point.y), opponentLast: isOpponentLastXiangqiCell(point.x, point.y), red: point.cell?.side === 'red', black: point.cell?.side === 'black' }"
+                            :disabled="!isXiangqiCellPlayable(point.x, point.y)"
+                            @click="clickXiangqiCell(point.x, point.y)"
+                          >
+                            <span v-if="point.cell" class="xiangqi-piece" :class="point.cell.side"><span>{{ xiangqiPieceLabel(point.cell) }}</span></span>
+                            <span v-else-if="canMoveSelectedXiangqiTo(point.x, point.y)" class="xiangqi-move-dot"></span>
+                            <span v-if="isOpponentLastXiangqiCell(point.x, point.y)" class="xiangqi-last-move-ring"></span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="xiangqi-player-card" :class="{ active: activeXiangqiState?.turnDeviceId === rightXiangqiSeat?.deviceId, winner: activeXiangqiState?.winnerDeviceId === rightXiangqiSeat?.deviceId }">
+                      <div class="xiangqi-side-mark" :class="rightXiangqiSide">{{ xiangqiSideShortLabel(rightXiangqiSide) }}</div>
+                      <div>
+                        <strong>{{ xiangqiSeatName(rightXiangqiSeat, rightXiangqiSide) }}</strong>
+                        <small>{{ xiangqiSeatStatus(rightXiangqiSeat, rightXiangqiSide) }}</small>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="xiangqi-action-strip">
+                    <template v-if="activeXiangqiState?.pendingUndo">
+                      <span class="undo-request-note">
+                        {{ activeXiangqiState.pendingUndo.requesterId === myDeviceId ? '已发起悔棋，等待对方同意' : `${activeXiangqiState.pendingUndo.requesterName} 请求悔棋` }}
+                      </span>
+                      <NButton v-if="canRespondXiangqiUndo" size="small" type="primary" @click="respondXiangqiUndo(true)">同意</NButton>
+                      <NButton v-if="canRespondXiangqiUndo" size="small" secondary @click="respondXiangqiUndo(false)">拒绝</NButton>
+                    </template>
+                    <template v-else>
+                      <NButton size="small" secondary :disabled="!canRequestUndoXiangqi" @click="requestXiangqiUndo">悔棋</NButton>
+                      <NButton size="small" secondary type="error" :disabled="!canResignXiangqi" @click="resignXiangqi">投降</NButton>
+                    </template>
+                  </div>
+
+                  <div class="xiangqi-log-strip">
+                    <span v-for="move in activeXiangqiState?.moves.slice(-6) ?? []" :key="`${move.playerId}-${move.createdAt}`">
+                      {{ move.playerName }} {{ move.pieceLabel }} {{ move.from.x + 1 }},{{ move.from.y + 1 }} → {{ move.to.x + 1 }},{{ move.to.y + 1 }}{{ move.capturedLabel ? ` 吃${move.capturedLabel}` : '' }}
+                    </span>
+                  </div>
+                  <div v-if="activeXiangqiState?.phase === 'ended'" class="settlement-overlay xiangqi-settlement">
+                    <div class="settlement-panel">
+                      <div class="settlement-kicker">本局结算</div>
+                      <h3>{{ activeXiangqiState?.winnerName ? `${activeXiangqiState.winnerName} 获胜` : '本局结束' }}</h3>
+                      <div class="settlement-list">
+                        <div v-for="player in xiangqiSettlementRows" :key="player.deviceId" class="settlement-row" :class="{ winner: activeXiangqiState?.winnerDeviceId === player.deviceId }">
+                          <div class="settlement-player">
+                            <span class="xiangqi-mini-piece" :class="player.side">{{ player.side === 'black' ? '黑' : '红' }}</span>
+                            <span>{{ player.deviceId === myDeviceId ? `我 · ${player.nickname}` : player.nickname }}</span>
+                          </div>
+                          <NTag size="small" :bordered="false" :type="player.side === 'red' ? 'error' : 'default'">{{ xiangqiSideLabel(player.side) }}</NTag>
+                          <strong>{{ player.result }}</strong>
+                        </div>
+                      </div>
+                      <div class="settlement-actions">
+                        <NButton v-if="activeGameRoom && isRoomHost()" type="primary" @click="roomPrimaryAction">再来一局</NButton>
+                        <NButton secondary @click="leaveRoom">退出房间</NButton>
+                      </div>
+                    </div>
+                  </div>
+                </main>
+                <aside class="game-room-panel xiangqi-room-panel">
+                  <div class="room-chat-panel">
+                    <div class="room-chat-head">房间聊天</div>
+                    <div ref="roomChatPane" class="room-chat-list">
+                      <div v-for="item in activeRoomChatMessages" :key="item.id" class="room-chat-msg" :class="{ mine: item.mine }">
+                        <div class="room-chat-name">{{ item.sender }}</div>
+                        <div class="room-chat-bubble">{{ item.content }}</div>
+                      </div>
+                    </div>
+                    <div class="room-chat-composer">
+                      <div class="emoji-wrap">
+                        <button class="emoji-trigger" title="表情" @click="roomEmojiOpen = !roomEmojiOpen">☺</button>
+                        <div v-if="roomEmojiOpen" class="emoji-panel room-emoji-panel">
+                          <button v-for="emoji in emojiOptions" :key="emoji" @click="appendEmojiToRoomDraft(emoji)">{{ emoji }}</button>
+                        </div>
+                      </div>
+                      <NInput v-model:value="roomChatDraft" placeholder="房间聊天" @keydown.enter="handleRoomChatEnter" />
+                      <NButton type="primary" @click="sendRoomChat">发</NButton>
+                    </div>
+                  </div>
+                </aside>
+              </div>
+              <div v-else class="game-catalog-board">
+                <section class="game-catalog-hero">
+                  <div class="game-catalog-icon">{{ activeGameDefinition.icon }}</div>
+                  <div>
+                    <h3>{{ activeGameDefinition.name }}排行榜</h3>
+                    <p>{{ activeGameDefinition.description }}</p>
+                  </div>
+                  <NButton type="primary" @click="createRoomOpen = true">创建{{ activeGameDefinition.name }}房间</NButton>
+                </section>
+                <section class="game-catalog-leaderboard">
+                  <NTabs
+                    v-if="activeGameRoom?.gameType === 'minesweeper' || selectedGameType === 'minesweeper'"
+                    v-model:value="selectedMinesweeperLeaderboardKey"
+                    type="segment"
+                    animated
+                    class="minesweeper-leaderboard-tabs"
+                  >
+                    <NTabPane
+                      v-for="difficulty in MINESWEEPER_DIFFICULTIES"
+                      :key="difficulty.key"
+                      :name="difficulty.key"
+                      :tab="`${difficulty.label} · ${difficulty.mines} 雷`"
+                    >
+                      <div class="leaderboard-list minesweeper-rank-list">
+                        <div class="leaderboard-table-head">
+                          <span>名次</span>
+                          <span>昵称</span>
+                          <span>耗时</span>
+                          <span>步数</span>
+                        </div>
+                        <div v-if="minesweeperLeaderboardRows.length === 0" class="leaderboard-empty">暂无记录</div>
+                        <div v-for="(record, index) in minesweeperLeaderboardRows" :key="record.id" class="leaderboard-row">
+                          <span class="leaderboard-rank">{{ index + 1 }}</span>
+                          <strong>{{ record.nickname }}</strong>
+                          <span>{{ formatMinesweeperElapsed(record.elapsedMs) }}</span>
+                          <small>{{ record.moves }} 步</small>
+                        </div>
+                      </div>
+                    </NTabPane>
+                  </NTabs>
+                  <div v-else class="leaderboard-list catalog-stats-list">
+                    <div v-if="activeGameStatsRows.length === 0" class="leaderboard-empty">暂无战绩，完成一局后会出现在这里</div>
+                    <div v-for="(record, index) in activeGameStatsRows" :key="record.id" class="leaderboard-row">
+                      <span class="leaderboard-rank">{{ index + 1 }}</span>
+                      <strong>{{ record.nickname }}</strong>
+                      <span>{{ record.totalGames }} 局</span>
+                      <small>{{ record.wins }} 胜 · 胜率 {{ formatWinRate(record) }}</small>
+                    </div>
+                  </div>
+                </section>
+              </div>
+              <footer v-if="activeGameRoom?.gameType === 'doudizhu'" class="hand-zone">
+                <div class="hand-actions">
+                  <template v-if="activeDdzState?.phase === 'bidding'">
+                    <NButton secondary :disabled="!isMyDdzTurn" @click="bidLandlord(false)">不叫</NButton>
+                    <NButton type="primary" :disabled="!isMyDdzTurn" @click="bidLandlord(true)">叫地主</NButton>
+                  </template>
+                  <template v-else>
+                    <NButton secondary :disabled="!canPassDdz" @click="passTurn">不要</NButton>
+                    <NButton type="primary" :disabled="!canPlaySelectedCards" @click="playSelectedCards">出牌</NButton>
+                  </template>
+                </div>
+                <div class="hand-cards">
+                  <div
+                    v-for="card in myDdzHand"
+                    :key="card.id"
+                    class="poker-card hand-card"
+                    :class="{ red: card.red, selected: selectedCardIds.includes(card.id) }"
+                    @click="toggleCard(card.id)"
+                  >
+                    {{ card.label }}
+                  </div>
+                </div>
+              </footer>
+            </section>
+            <section v-else-if="activeSection === 'devices'" class="workspace-view device-address-book">
+              <div class="workspace-header">
+                <h2>设备通讯录</h2>
+                <p>左侧选择设备或频道，在这里查看详细信息和操作。</p>
+              </div>
+              <div class="device-detail-shell">
+                <div v-if="selectedPeerDetail" class="device-profile-panel">
+                  <div class="device-detail-head large">
+                    <NAvatar :size="56" class="peer-avatar">{{ firstLetter(selectedPeerDetail.nickname) }}</NAvatar>
+                    <div>
+                      <h3>{{ selectedPeerDetail.nickname }}</h3>
+                      <p><span class="presence-dot" :class="{ online: selectedPeerDetail.online }"></span>{{ selectedPeerDetail.online ? "在线" : "离线" }}</p>
+                    </div>
+                  </div>
+                  <div class="device-detail-grid wide">
+                    <span>IP 地址</span><strong>{{ selectedPeerDetail.address }}</strong>
+                    <span>端口</span><strong>{{ selectedPeerDetail.port }}</strong>
+                    <span>MAC 地址</span><strong>{{ selectedPeerDetail.device_id }}</strong>
+                    <span>昵称</span><strong>{{ selectedPeerDetail.nickname }}</strong>
+                    <span>最近在线</span><strong>{{ peerLastSeenLabel(selectedPeerDetail) }}</strong>
+                  </div>
+                  <div v-if="superAdminEnabled" class="admin-rename-box">
+                    <NFormItem label="超管修改设备昵称">
+                      <NInput v-model:value="adminNicknameDraft" maxlength="24" clearable />
+                    </NFormItem>
+                    <NButton block type="warning" :disabled="!selectedPeerDetail.online || !adminNicknameDraft.trim()" @click="adminRenameSelectedPeer">
+                      下发昵称修改
+                    </NButton>
+                    <NText depth="3">目标设备在线时会立即更新本机昵称，并通过在线广播同步给局域网。</NText>
+                  </div>
+                  <div class="device-detail-actions">
+                    <NButton type="primary" :disabled="!selectedPeerDetail.online" @click="startDirectChat(selectedPeerDetail)">发起单聊</NButton>
+                    <NButton secondary type="error" @click="deleteSelectedPeer">删除设备</NButton>
+                  </div>
+                </div>
+                <div v-else-if="selectedDeviceChannelDetail" class="device-profile-panel">
+                  <div class="device-detail-head large">
+                    <NAvatar :size="56" class="conversation-avatar">{{ selectedDeviceChannelDetail.is_private ? "私" : "局" }}</NAvatar>
+                    <div>
+                      <h3>{{ selectedDeviceChannelDetail.title }}</h3>
+                      <p>{{ selectedDeviceChannelDetail.is_private ? "私有加密频道" : "局域网公开频道" }}</p>
+                    </div>
+                  </div>
+                  <div class="device-detail-grid wide">
+                    <span>频道类型</span><strong>{{ selectedDeviceChannelDetail.is_private ? "私有频道" : "公开频道" }}</strong>
+                    <span>创建人</span><strong>{{ selectedDeviceChannelOwnerName }}</strong>
+                    <span>频道 ID</span><strong>{{ selectedDeviceChannelDetail.id }}</strong>
+                    <span>成员数量</span><strong>{{ selectedDeviceChannelMembers.length }}</strong>
+                    <span>更新时间</span><strong>{{ formatTime(selectedDeviceChannelDetail.updated_at) }}</strong>
+                  </div>
+                  <div class="channel-detail-members">
+                    <div class="channel-detail-title">
+                      <strong>频道成员</strong>
+                      <span>{{ selectedDeviceChannelMembers.length }} 人</span>
+                    </div>
+                    <NEmpty v-if="selectedDeviceChannelMembers.length === 0" description="暂无成员" class="list-empty compact" />
+                    <NList v-else hoverable clickable class="channel-member-list embedded">
+                      <NListItem v-for="member in selectedDeviceChannelMembers" :key="member.device_id" class="device-item" @click="openMemberDevice(member)">
+                        <NThing :title="member.nickname" :description="memberSubtitle(member)">
+                          <template #avatar>
+                            <NAvatar class="peer-avatar">{{ firstLetter(member.nickname) }}</NAvatar>
+                          </template>
+                          <template #header-extra>
+                            <NTag v-if="'is_owner' in member && member.is_owner" size="small" :bordered="false" type="warning">群主</NTag>
+                          </template>
+                        </NThing>
+                      </NListItem>
+                    </NList>
+                  </div>
+                  <div class="device-detail-actions">
+                    <NButton secondary @click="enterSelectedDeviceChannel">进入频道</NButton>
+                    <NButton v-if="canManageSelectedDeviceChannel" type="primary" @click="inviteSelectedDeviceChannelMembers">邀请成员</NButton>
+                    <NButton v-if="canManageSelectedDeviceChannel" secondary type="error" @click="dissolveSelectedDeviceChannel">解散频道</NButton>
+                  </div>
+                </div>
+                <NEmpty v-else description="从左侧选择设备或频道" class="device-detail-empty">
+                  <template #extra>
+                    <NText depth="3">设备会自动发现；频道包含局域网公开频道和私有频道。</NText>
+                  </template>
+                </NEmpty>
+              </div>
+            </section>
+            <section v-else-if="activeSection === 'alerts'" class="workspace-view alert-dashboard-view">
+              <div class="workspace-header">
+                <h2>狼来了排行榜</h2>
+                <p>按别人反馈后的真实概率排行，真实概率也会作为青蛙温度展示。</p>
+              </div>
+              <div class="alert-dashboard-grid">
+                <NCard title="呱呱告警" size="small" class="frog-alert-card">
+                  <NSpace vertical>
+                    <NText depth="3">双击桌面青蛙也可以发送呱呱告警。当前告警会广播给在线设备，后续接入 LanChat Hub 后由 Hub 转发。</NText>
+                    <NInput v-model:value="quickAlertDraft" maxlength="60" clearable placeholder="例如：快来处理一下" />
+                    <NButton type="error" block @click="sendFrogQuickAlert(frogAlertMode)">{{ quickAlertDraft || "呱呱~呱~~" }}</NButton>
+                  </NSpace>
+                </NCard>
+                <NCard title="狼来了排行" size="small" class="alert-rank-card">
+                  <div class="alert-rank-list">
+                    <div class="alert-rank-head">
+                      <span>名次</span>
+                      <span>人员</span>
+                      <span>真实度</span>
+                      <span>反馈</span>
+                    </div>
+                    <div v-if="alertRankingRows.length === 0" class="leaderboard-empty">暂无告警反馈，收到或发送告警后会出现在这里</div>
+                    <div v-for="(row, index) in alertRankingRows" :key="row.deviceId" class="alert-rank-row">
+                      <span class="leaderboard-rank">{{ index + 1 }}</span>
+                      <strong>{{ row.deviceId === profile?.device_id ? `我 · ${row.nickname}` : row.nickname }}</strong>
+                      <span class="alert-temperature">{{ row.probability === null ? '待确认' : `${row.probability}%` }}</span>
+                      <small>{{ row.real }} 真 / {{ row.falseCount }} 假 · {{ row.total }} 次告警</small>
+                    </div>
+                  </div>
+                </NCard>
+                <NCard title="最近告警" size="small" class="alert-history-card">
+                  <div class="alert-history-list">
+                    <div v-if="alertRecords.length === 0" class="leaderboard-empty">暂无告警记录</div>
+                    <div v-for="alert in alertRecords.slice(0, 10)" :key="alert.alertId" class="alert-history-row" :class="{ pending: alert.incoming && !alert.handled }">
+                      <div>
+                        <strong>{{ alert.senderDeviceId === profile?.device_id ? `我 · ${alert.senderNickname}` : alert.senderNickname }}</strong>
+                        <span>{{ alert.content }}</span>
+                      </div>
+                      <div class="alert-history-meta">
+                        <NTag size="small" :bordered="false" :type="alertTruthScore(alert, nowTick).feedbackCount === 0 ? 'default' : alertTruthScore(alert, nowTick).probability >= 60 ? 'success' : 'error'">
+                          {{ alertProbabilityLabel(alert) }}
+                        </NTag>
+                        <small>{{ formatTime(alert.createdAt) }}</small>
+                      </div>
+                    </div>
+                  </div>
+                </NCard>
+              </div>
+            </section>
+            <section v-else class="workspace-view settings-view">
+              <div class="settings-layout">
+                <nav class="settings-subnav" aria-label="设置分类">
+                  <button
+                    type="button"
+                    :class="{ active: settingsCategory === 'basic' }"
+                    :aria-current="settingsCategory === 'basic' ? 'page' : undefined"
+                    @click="settingsCategory = 'basic'"
+                  >
+                    基础设置
+                  </button>
+                  <button
+                    type="button"
+                    :class="{ active: settingsCategory === 'pet' }"
+                    :aria-current="settingsCategory === 'pet' ? 'page' : undefined"
+                    @click="settingsCategory = 'pet'"
+                  >
+                    桌宠设置
+                  </button>
+                </nav>
+                <div class="settings-content">
+                  <div class="workspace-header">
+                    <h2 class="settings-title">设置<button class="settings-secret-trigger" type="button" aria-label="设置" @click="handleSuperAdminTap">✦</button></h2>
+                    <p>{{ settingsCategory === 'basic' ? '管理本机资料、网络、主题和语言。' : '管理桌宠资源、行为与告警能力。' }}</p>
+                  </div>
+                  <div class="settings-grid">
+                <NCard v-if="settingsCategory === 'basic' && profile" title="本机资料" size="small">
+                  <NSpace vertical>
+                    <NFormItem label="昵称" :show-feedback="false">
+                      <NInput v-model:value="nicknameDraft" maxlength="24" clearable />
+                    </NFormItem>
+                    <NFormItem label="监听端口" :show-feedback="false">
+                      <NInputNumber v-model:value="portDraft" :min="1" :max="65535" style="width: 100%" />
+                    </NFormItem>
+                    <NFormItem label="头像" :show-feedback="false">
+                      <div class="profile-avatar-picker">
+                        <NAvatar :size="56" class="self-avatar" :src="avatarImage(avatarDraft)">{{ avatarLabel(avatarDraft, nicknameDraft) }}</NAvatar>
+                        <div class="profile-avatar-actions">
+                          <input ref="profileAvatarInput" class="hidden-file-input" type="file" accept="image/*" @change="handleProfileAvatarSelected" />
+                          <NSpace :size="8">
+                            <NButton size="small" secondary @click="triggerProfileAvatarSelect">选择图片</NButton>
+                            <NButton size="small" quaternary @click="clearProfileAvatar">清除</NButton>
+                          </NSpace>
+                          <NText depth="3">仅支持 500KB 以内图片，保存后会转成 base64 通知在线设备。</NText>
+                        </div>
+                      </div>
+                    </NFormItem>
+                    <NText depth="3">设备标识：{{ shortDeviceId }}</NText>
+                    <NButton block secondary type="primary" @click="saveProfile">保存资料</NButton>
+                  </NSpace>
+                </NCard>
+                <NCard v-if="settingsCategory === 'basic'" title="网络修复" size="small">
+                  <NSpace vertical>
+                    <NText depth="3">当 Windows 专用网络或公用网络下发现不到局域网设备时，可一键放行 LanChat 的局域网通信。</NText>
+                    <NText depth="3">会请求管理员权限，并放行 LanChat.exe、TCP 18145、UDP 18146、UDP 5353。</NText>
+                    <NButton block type="primary" :loading="networkRepairing" @click="store.repairNetwork">网络修复</NButton>
+                    <NAlert v-if="networkRepairStatus" type="success" title="已打开修复窗口">
+                      {{ networkRepairStatus }}
+                    </NAlert>
+                  </NSpace>
+                </NCard>
+                <NCard v-if="settingsCategory === 'pet'" title="桌宠与青蛙告警器" size="small" class="desktop-pet-settings-card">
+                  <NSpace vertical>
+                    <div class="desktop-pet-toolbar">
+                      <NButton size="small" type="primary" :loading="desktopPetLoading" @click="importDesktopPetPackage">导入桌宠</NButton>
+                      <NButton size="small" secondary :loading="desktopPetLoading" @click="desktopPetStore.refresh">刷新</NButton>
+                      <NButton size="small" quaternary @click="api.openDesktopPetFolder">打开资源目录</NButton>
+                    </div>
+                    <NAlert v-if="desktopPetError" type="error" title="桌宠资源操作失败">{{ desktopPetError }}</NAlert>
+                    <div v-if="desktopPetPackages.length > 0" class="desktop-pet-package-list">
+                      <div
+                        v-for="pet in desktopPetPackages"
+                        :key="pet.source + '-' + pet.manifest.id"
+                        class="desktop-pet-package-row"
+                        :class="{ active: selectedDesktopPetPackage?.manifest.id === pet.manifest.id }"
+                        role="button"
+                        tabindex="0"
+                        @click="selectDesktopPetPackage(pet)"
+                        @keydown.enter="selectDesktopPetPackage(pet)"
+                      >
+                        <NAvatar :size="42" class="desktop-pet-preview" :src="desktopPetPreview(pet)">
+                          {{ pet.manifest.name.slice(0, 1) }}
+                        </NAvatar>
+                        <div class="desktop-pet-package-main">
+                          <div>
+                            <strong>{{ pet.manifest.name }}</strong>
+                            <NTag size="small" :bordered="false">{{ desktopPetSourceLabel(pet.source) }}</NTag>
+                            <NTag v-if="selectedDesktopPetPackage?.manifest.id === pet.manifest.id" size="small" type="success" :bordered="false">使用中</NTag>
+                          </div>
+                          <span>{{ pet.manifest.id }} · v{{ pet.manifest.version }} · {{ pet.manifest.resolution }}px</span>
+                          <small>
+                            <template v-for="state in DESKTOP_PET_STATE_ORDER" :key="state">
+                              {{ state }} {{ desktopPetFrameCount(pet, state) }}
+                            </template>
+                          </small>
+                          <em v-if="pet.warnings.length > 0">{{ pet.warnings.length }} 条资源警告</em>
+                        </div>
+                        <NButton
+                          v-if="pet.source === 'user'"
+                          size="tiny"
+                          quaternary
+                          type="error"
+                          @click.stop="removeDesktopPetPackage(pet)"
+                        >
+                          删除
+                        </NButton>
+                      </div>
+                    </div>
+                    <NEmpty v-else size="small" description="尚未导入桌宠资源包；当前继续使用内置青蛙兜底。" />
+                    <NAlert v-if="desktopPetIssues.length > 0" type="warning" title="发现无法使用的资源包">
+                      <div v-for="issue in desktopPetIssues.slice(0, 3)" :key="issue.root + issue.error">
+                        {{ issue.root }}：{{ issue.error }}
+                      </div>
+                    </NAlert>
+                    <div class="setting-switch-row">
+                      <div>
+                        <strong>启用桌面桌宠告警器</strong>
+                        <p>开启后左侧显示告警入口，并允许桌宠接收、反馈和展示告警真实度。</p>
+                      </div>
+                      <NSwitch v-model:value="frogAlertEnabled" />
+                    </div>
+                    <div class="setting-switch-row">
+                      <div>
+                        <strong>随机巡逻</strong>
+                        <p>空闲时轮换播放 Move 动作，后续资源包可提供左右方向动画。</p>
+                      </div>
+                      <NSwitch
+                        :value="desktopPetSettings?.randomMoveEnabled ?? true"
+                        @update:value="updateDesktopPetBehavior('randomMoveEnabled', $event)"
+                      />
+                    </div>
+                    <div class="setting-switch-row">
+                      <div>
+                        <strong>随机生活动作</strong>
+                        <p>空闲时低频播放 Life 动作，完成后自动回到 Idle。</p>
+                      </div>
+                      <NSwitch
+                        :value="desktopPetSettings?.randomLifeEnabled ?? true"
+                        @update:value="updateDesktopPetBehavior('randomLifeEnabled', $event)"
+                      />
+                    </div>
+                    <NText depth="3">收到告警时青蛙会在红色和绿色之间交叉闪烁，右上角显示感叹号；反馈真实/误报后会更新排行榜。</NText>
+                    <NFormItem label="默认告警文案" :show-feedback="false">
+                      <NInput v-model:value="quickAlertDraft" maxlength="60" clearable placeholder="呱呱~呱~~" />
+                    </NFormItem>
+                    <NFormItem label="本机报警模式" :show-feedback="false">
+                      <NRadioGroup v-model:value="frogAlertMode" name="frog-alert-mode">
+                        <NSpace>
+                          <NRadioButton value="normal">普通报警</NRadioButton>
+                          <NRadioButton value="disco">蹦迪报警</NRadioButton>
+                        </NSpace>
+                      </NRadioGroup>
+                    </NFormItem>
+                    <NFormItem label="停止快捷键" :show-feedback="false">
+                      <NSpace vertical :size="6" style="width: 100%">
+                        <NInput v-model:value="frogStopHotkey" readonly clearable placeholder="点击后按下快捷键，例如 Ctrl+Alt+F" @keydown="captureFrogStopHotkey" @clear="clearFrogStopHotkey" />
+                        <NText depth="3">收到告警或蹦迪时，按该快捷键等同于点击一次青蛙本体，会停止闪烁和蹦迪。</NText>
+                      </NSpace>
+                    </NFormItem>
+                    <NButton v-if="frogAlertEnabled" block type="error" @click="sendFrogQuickAlert(frogAlertMode)">发送一次测试告警</NButton>
+                  </NSpace>
+                </NCard>
+                <NCard v-if="settingsCategory === 'pet' && superAdminEnabled" title="告警真实度" size="small">
+                  <NSpace vertical>
+                    <NText depth="3">选择某个告警发送人后，会清空所有在线设备里该人员的可信度反馈记录。</NText>
+                    <NSelect v-model:value="alertTrustResetTargetId" :options="adminDeviceOptions" filterable clearable placeholder="选择要清空可信度的人员" />
+                    <NButton secondary type="error" :disabled="!alertTrustResetTargetId" @click="resetAlertCredibilityForPeer">清空该用户可信度</NButton>
+                    <NButton type="error" @click="resetAllAlertCredibilityRecords">一键清空狼来了排行榜</NButton>
+                  </NSpace>
+                </NCard>
+                <NCard v-if="settingsCategory === 'pet' && superAdminEnabled" title="报警模式下发" size="small">
+                  <NSpace vertical>
+                    <NText depth="3">给指定设备下发本机报警模式。普通报警只闪烁提醒；蹦迪报警会在收到告警时满屏跳动。</NText>
+                    <NSelect v-model:value="adminAlertModeTargetId" :options="adminDeviceOptions" filterable clearable placeholder="选择要下发报警模式的设备" />
+                    <NRadioGroup v-model:value="adminAlertModeDraft" name="admin-alert-mode">
+                      <NSpace>
+                        <NRadioButton value="normal">普通报警</NRadioButton>
+                        <NRadioButton value="disco">蹦迪报警</NRadioButton>
+                      </NSpace>
+                    </NRadioGroup>
+                    <NButton secondary type="warning" :disabled="!adminAlertModeTargetId" @click="sendAdminAlertModeToPeer">下发报警模式</NButton>
+                  </NSpace>
+                </NCard>
+                <NCard v-if="settingsCategory === 'basic'" title="LanChat Hub 演进" size="small">
+                  <NSpace vertical>
+                    <NText depth="3">当前仍使用局域网点对点 TCP 广播；青蛙告警、反馈和排行榜同步已经设计成独立事件帧，后续 Hub 只需要转发这些事件。</NText>
+                    <div class="hub-evolution-list">
+                      <span>1. 客户端发现 Hub 后优先连接 Hub</span>
+                      <span>2. 告警和反馈由 Hub 转发给在线设备</span>
+                      <span>3. 无 Hub 时自动回退当前 P2P 模式</span>
+                    </div>
+                  </NSpace>
+                </NCard>
+                <NCard v-if="settingsCategory === 'basic'" title="Debug 日志" size="small" class="debug-card">
+                  <NSpace vertical>
+                    <NText depth="3">打开后会记录设备发现、UDP 广播、mDNS、TCP 连接、在线/离线判定和前端事件。</NText>
+                    <NSpace>
+                      <NButton :type="debugEnabled ? 'primary' : 'default'" @click="store.setDebugEnabled(!debugEnabled)">
+                        {{ debugEnabled ? "关闭 Debug" : "开启 Debug" }}
+                      </NButton>
+                      <NButton secondary :disabled="debugLogs.length === 0" @click="store.clearDebugLogs">清空日志</NButton>
+                    </NSpace>
+                    <div v-if="debugEnabled" class="debug-log-panel">
+                      <div v-if="debugLogs.length === 0" class="debug-empty">暂无日志，等待设备发现或点击刷新发现。</div>
+                      <div v-for="log in debugLogs" :key="`${log.ts}-${log.scope}-${log.message}`" class="debug-line" :class="`level-${log.level}`">
+                        <span>{{ formatDebugTime(log.ts) }}</span>
+                        <strong>{{ log.level }}</strong>
+                        <em>{{ log.scope }}</em>
+                        <p>{{ log.message }}</p>
+                        <small v-if="log.detail">{{ log.detail }}</small>
+                      </div>
+                    </div>
+                  </NSpace>
+                </NCard>
+                <NCard v-if="settingsCategory === 'basic'" title="外观" size="small">
+                  <NSpace vertical>
+                    <NFormItem label="主题" :show-feedback="false">
+                      <NDropdown trigger="click" :options="themeMenuOptions" @select="selectTheme">
+                        <NButton block>{{ selectedThemeLabel }}</NButton>
+                      </NDropdown>
+                    </NFormItem>
+                    <NFormItem label="语言" :show-feedback="false">
+                      <NDropdown trigger="click" :options="languageOptions" @select="selectLanguage">
+                        <NButton block>{{ selectedLanguageLabel }}</NButton>
+                      </NDropdown>
+                    </NFormItem>
+                  </NSpace>
+                </NCard>
+                <NAlert v-if="error" type="error" title="操作失败">
+                  {{ error }}
+                </NAlert>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </NLayout>
+          <NLayoutSider v-if="groupInspectorAvailable" class="group-inspector" :width="groupInspectorWidth" bordered>
+            <button class="pane-resize-handle right-group" type="button" aria-label="拖动调整群成员栏宽度" title="拖动调整宽度" @mousedown="startPaneResize('group', $event)"></button>
+            <NScrollbar>
+              <div class="group-inspector-inner">
+                <section class="group-inspector-section">
+                  <div class="group-inspector-headline">
+                    <strong>群公告</strong>
+                    <NButton v-if="canEditActiveChannelNotice" size="tiny" text @click="channelNoticeEditing ? cancelEditChannelNotice() : startEditChannelNotice()">
+                      {{ channelNoticeEditing ? '取消' : '编辑' }}
+                    </NButton>
+                  </div>
+                  <div v-if="channelNoticeEditing" class="group-notice-editor">
+                    <NInput v-model:value="channelNoticeDraft" type="textarea" maxlength="240" show-count :autosize="{ minRows: 4, maxRows: 4 }" />
+                    <NButton size="small" type="primary" @click="saveActiveChannelNotice">保存公告</NButton>
+                  </div>
+                  <p v-else class="group-notice-text">{{ activeChannelNotice }}</p>
+                </section>
+                <section class="group-inspector-section">
+                  <div class="group-inspector-headline">
+                    <strong>群成员 · {{ normalizedChannelMembers.length }}</strong>
+                    <span>{{ channelMembersOnlineCount }} 在线</span>
+                  </div>
+                  <NEmpty v-if="normalizedChannelMembers.length === 0" description="暂无成员" class="list-empty compact" />
+                  <div v-else class="group-member-list">
+                    <div v-for="member in normalizedChannelMembers" :key="member.device_id" class="group-member-row">
+                      <button class="group-member-main" type="button" @click="openMemberDevice(member)">
+                        <NAvatar class="peer-avatar compact-avatar">{{ firstLetter(member.nickname) }}</NAvatar>
+                        <span class="group-member-copy">
+                          <strong>{{ member.device_id === profile?.device_id ? `我 · ${member.nickname}` : member.nickname }}</strong>
+                          <small>
+                            <i class="presence-dot" :class="{ online: member.device_id === profile?.device_id || member.online }"></i>
+                            {{ channelMemberPresenceLabel(member) }}
+                            <template v-if="isChannelOwnerMember(member)"> · 群主</template>
+                            <template v-if="channelMemberMuted(member)"> · 已禁言</template>
+                          </small>
+                        </span>
+                      </button>
+                      <div v-if="canManageChannelMember(member)" class="group-member-actions">
+                        <NButton size="tiny" text :type="channelMemberMuted(member) ? 'success' : 'warning'" @click.stop="toggleActiveChannelMemberMute(member)">
+                          {{ channelMemberMuted(member) ? '解禁' : '禁言' }}
+                        </NButton>
+                        <NButton v-if="activeConversation?.is_private" size="tiny" text type="error" @click.stop="removeActivePrivateChannelMember(member)">移除</NButton>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+                <div v-if="canManageActivePrivateChannel" class="group-inspector-actions">
+                  <NButton size="small" secondary type="primary" @click="openRecipientPicker('privateChannelInvite')">邀请成员</NButton>
+                  <NButton size="small" secondary type="error" @click="dissolveActivePrivateChannel">解散频道</NButton>
+                </div>
+              </div>
+            </NScrollbar>
+          </NLayoutSider>
+        </NLayout>
+      </div>
+        <NModal v-model:show="createRoomOpen" preset="card" title="创建房间" class="create-room-modal">
+          <div class="create-room-form" @click="createRoomGameMenuOpen = false">
+            <div class="create-room-game-dropdown" @click.stop>
+              <button class="create-room-game-select" type="button" @click="createRoomGameMenuOpen = !createRoomGameMenuOpen">
+                <span class="create-room-game-icon">{{ selectedCreateRoomGame.icon }}</span>
+                <span class="create-room-game-copy">
+                  <strong>{{ selectedCreateRoomGame.name }}</strong>
+                  <small>{{ selectedCreateRoomGame.minPlayers }}-{{ selectedCreateRoomGame.maxPlayers }} 人 · {{ selectedCreateRoomGame.description }}</small>
+                </span>
+                <span class="create-room-caret" :class="{ open: createRoomGameMenuOpen }">⌄</span>
+              </button>
+              <div v-if="createRoomGameMenuOpen" class="create-room-game-menu">
+                <button
+                  v-for="game in gameRegistry"
+                  :key="game.type"
+                  class="create-room-game-option"
+                  :class="{ active: selectedGameType === game.type }"
+                  type="button"
+                  @click="selectCreateRoomGame(game.type)"
+                >
+                  <span class="create-room-game-icon">{{ game.icon }}</span>
+                  <span class="create-room-game-copy">
+                    <strong>{{ game.name }}</strong>
+                    <small>{{ game.minPlayers }}-{{ game.maxPlayers }} 人 · {{ game.description }}</small>
+                  </span>
+                </button>
+              </div>
+            </div>
+            <NInput v-model:value="roomNameDraft" size="medium" maxlength="24" placeholder="房间名称" />
+            <NButton block type="primary" @click="createGameRoom">创建房间</NButton>
+          </div>
+        </NModal>
+        <NModal v-model:show="superAdminAuthOpen" preset="card" title="超级管理员验证" class="super-admin-auth-modal">
+          <NSpace vertical>
+            <NFormItem label="密码" :show-feedback="false">
+              <NInput
+                v-model:value="superAdminPasswordDraft"
+                type="password"
+                show-password-on="click"
+                clearable
+                placeholder="请输入超级管理员密码"
+                @keydown.enter="confirmSuperAdminPassword"
+              />
+            </NFormItem>
+            <NAlert v-if="superAdminPasswordError" type="error" :show-icon="false">{{ superAdminPasswordError }}</NAlert>
+            <NButton block type="primary" @click="confirmSuperAdminPassword">验证并开启</NButton>
+          </NSpace>
+        </NModal>
+        <NModal v-model:show="recipientPickerOpen" preset="card" :title="recipientPickerTitle" class="recipient-picker-modal">
+          <div class="recipient-picker">
+            <NFormItem v-if="recipientPickerMode === 'privateChannelCreate'" label="频道名称" :show-feedback="false">
+              <NInput v-model:value="privateChannelTitleDraft" maxlength="24" clearable placeholder="例如 项目私有频道" />
+            </NFormItem>
+            <div class="recipient-scroll">
+              <section class="recipient-picker-section">
+                <div class="recipient-section-head">
+                  <strong>{{ recipientPickerMode === 'gameInvite' ? '发送给设备' : '选择频道成员' }}</strong>
+                  <span>{{ selectedRecipientPeerIds.length }} 已选</span>
+                </div>
+                <div v-if="pickerPeerOptions.length > 0" class="recipient-list">
+                  <button
+                    v-for="peer in pickerPeerOptions"
+                    :key="peer.device_id"
+                    class="recipient-list-row"
+                    :class="{ active: selectedRecipientPeerIds.includes(peer.device_id) }"
+                    type="button"
+                    @click="toggleRecipientPeer(peer.device_id)"
+                  ><NAvatar class="peer-avatar">{{ firstLetter(peer.nickname) }}</NAvatar>
+                    <span class="recipient-list-main">
+                      <strong>{{ peer.nickname }}</strong>
+                      <small>{{ peer.address }}:{{ peer.port }}</small>
+                    </span>
+                    <span class="recipient-list-check">{{ selectedRecipientPeerIds.includes(peer.device_id) ? '✓' : '' }}</span>
+                  </button>
+                </div>
+                <div v-else class="recipient-empty">暂无可选择的在线设备</div>
+              </section>
+              <section v-if="recipientPickerMode === 'gameInvite'" class="recipient-picker-section">
+                <div class="recipient-section-head">
+                  <strong>发送到频道</strong>
+                  <span>{{ selectedRecipientConversationIds.length }} 已选</span>
+                </div>
+                <div v-if="pickerConversationOptions.length > 0" class="recipient-list">
+                  <button
+                    v-for="conversation in pickerConversationOptions"
+                    :key="conversation.id"
+                    class="recipient-list-row"
+                    :class="{ active: selectedRecipientConversationIds.includes(conversation.id) }"
+                    type="button"
+                    @click="toggleRecipientConversation(conversation.id)"
+                  >
+                    <span class="recipient-channel-icon">{{ conversation.is_private ? '私' : '局' }}</span>
+                    <span class="recipient-list-main">
+                      <strong>{{ conversation.title }}</strong>
+                      <small>{{ conversation.is_private ? '私有加密频道' : '局域网公开频道' }}</small>
+                    </span>
+                    <span class="recipient-list-check">{{ selectedRecipientConversationIds.includes(conversation.id) ? '✓' : '' }}</span>
+                  </button>
+                </div>
+                <div v-else class="recipient-empty">暂无可发送的频道</div>
+              </section>
+            </div>
+            <div class="recipient-picker-footer">
+              <NText depth="3">
+                {{ recipientPickerMode === 'gameInvite' ? '游戏邀请会以卡片消息发送。' : '私有频道消息会广播投递，但只有持有频道密钥的成员能解密。' }}
+              </NText>
+              <NSpace justify="end">
+                <NButton secondary @click="recipientPickerOpen = false">取消</NButton>
+                <NButton type="primary" :disabled="recipientConfirmDisabled" @click="confirmRecipientPicker">
+                  {{ recipientPickerMode === 'gameInvite' ? '发送邀请' : recipientPickerMode === 'privateChannelCreate' ? '创建频道' : '邀请加入' }}
+                </NButton>
+              </NSpace>
+            </div>
+          </div>
+        </NModal>
+        <NModal v-model:show="leaderboardOpen" preset="card" :title="leaderboardTitle" class="leaderboard-modal">
+          <NTabs
+            v-if="activeGameRoom?.gameType === 'minesweeper'"
+            v-model:value="selectedMinesweeperLeaderboardKey"
+            type="segment"
+            animated
+            class="minesweeper-leaderboard-tabs"
+          >
+            <NTabPane
+              v-for="difficulty in MINESWEEPER_DIFFICULTIES"
+              :key="difficulty.key"
+              :name="difficulty.key"
+              :tab="`${difficulty.label} · ${difficulty.mines} 雷`"
+            >
+              <div class="leaderboard-list minesweeper-rank-list">
+                <div class="leaderboard-table-head">
+                  <span>名次</span>
+                  <span>昵称</span>
+                  <span>耗时</span>
+                  <span>步数</span>
+                </div>
+                <div v-if="minesweeperLeaderboardRows.length === 0" class="leaderboard-empty">暂无记录</div>
+                <div v-for="(record, index) in minesweeperLeaderboardRows" :key="record.id" class="leaderboard-row">
+                  <span class="leaderboard-rank">{{ index + 1 }}</span>
+                  <strong>{{ record.nickname }}</strong>
+                  <span>{{ formatMinesweeperElapsed(record.elapsedMs) }}</span>
+                  <small>{{ record.moves }} 步</small>
+                </div>
+              </div>
+            </NTabPane>
+          </NTabs>
+          <div v-else class="leaderboard-list">
+            <div v-if="activeGameStatsRows.length === 0" class="leaderboard-empty">暂无战绩，完成一局后会出现在这里</div>
+            <div v-for="(record, index) in activeGameStatsRows" :key="record.id" class="leaderboard-row">
+              <span class="leaderboard-rank">{{ index + 1 }}</span>
+              <strong>{{ record.nickname }}</strong>
+              <span>{{ record.totalGames }} 局</span>
+              <small>{{ record.wins }} 胜 · 胜率 {{ formatWinRate(record) }}</small>
+            </div>
+          </div>
+        </NModal>
+      </NMessageProvider>
+  </NConfigProvider>
+</template>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
