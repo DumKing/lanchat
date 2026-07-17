@@ -104,14 +104,14 @@ export type GameFrame = {
   created_at: number;
 };
 
-export type FrogAlertMode = "normal" | "disco";
+export type PetAlertMode = "normal" | "disco";
 
 export type QuickAlert = {
   alert_id: string;
   sender_device_id: string;
   sender_nickname: string;
   content: string;
-  mode: FrogAlertMode;
+  mode: PetAlertMode;
   created_at: number;
 };
 
@@ -141,13 +141,13 @@ export type AdminDiscoMode = {
 
 export type AdminAlertMode = {
   target_device_id: string;
-  mode: FrogAlertMode;
+  mode: PetAlertMode;
   issued_by_device_id: string;
   issued_by_nickname: string;
   created_at: number;
 };
 
-export type NativeFrogPetState = {
+export type DesktopPetRuntimeState = {
   enabled: boolean;
   pending_count: number;
   temperature: number;
@@ -162,6 +162,7 @@ export type NativeFrogPetState = {
   theme_accent?: string | null;
   random_move_enabled?: boolean;
   random_life_enabled?: boolean;
+  disco_movement_mode?: "linear" | "jump";
 };
 
 export type ChannelNoticePayload = {

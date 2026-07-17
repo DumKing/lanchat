@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AdminAlertMode, AdminDiscoMode, ChannelMember, Conversation, FrogAlertMode, GameFrame, Message, NativeFrogPetState, Peer, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem } from "../types/lanchat";
-import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings } from "../types/desktop-pet";
+import type { AdminAlertMode, AdminDiscoMode, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Peer, PetAlertMode, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem } from "../types/lanchat";
+import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, PetStatePlaybackConfig } from "../types/desktop-pet";
 
 export const api = {
   getProfile: () => invoke<Profile>("get_profile"),
@@ -49,7 +49,7 @@ export const api = {
     invoke<Message>("send_voice_message", { conversationId, fileName, bytes, durationMs }),
   sendGameFrame: (targetDeviceId: string | null, frame: GameFrame) =>
     invoke<void>("send_game_frame", { targetDeviceId, frame }),
-  sendQuickAlert: (content: string, mode: FrogAlertMode = "normal") =>
+  sendQuickAlert: (content: string, mode: PetAlertMode = "normal") =>
     invoke<QuickAlert>("send_quick_alert", { content, mode }),
   sendQuickAlertFeedback: (alertId: string, alertSenderDeviceId: string, result: "real" | "false") =>
     invoke<QuickAlertFeedback>("send_quick_alert_feedback", { alertId, alertSenderDeviceId, result }),
@@ -57,7 +57,7 @@ export const api = {
     invoke<QuickAlertTrustReset>("send_quick_alert_trust_reset", { targetDeviceId }),
   sendAdminDiscoMode: (targetDeviceId: string, durationMs = 120_000) =>
     invoke<AdminDiscoMode>("send_admin_disco_mode", { targetDeviceId, durationMs }),
-  sendAdminAlertMode: (targetDeviceId: string, mode: FrogAlertMode) =>
+  sendAdminAlertMode: (targetDeviceId: string, mode: PetAlertMode) =>
     invoke<AdminAlertMode>("send_admin_alert_mode", { targetDeviceId, mode }),
   listDesktopPets: () => invoke<DesktopPetRegistrySnapshot>("list_desktop_pets"),
   refreshDesktopPets: () => invoke<DesktopPetRegistrySnapshot>("refresh_desktop_pets"),
@@ -69,13 +69,13 @@ export const api = {
   getDesktopPetSettings: () => invoke<DesktopPetSettings>("get_desktop_pet_settings"),
   updateDesktopPetSettings: (settings: DesktopPetSettings) =>
     invoke<DesktopPetSettings>("update_desktop_pet_settings", { settings }),
+  updateDesktopPetPlaybackConfig: (petId: string, configs: Record<string, PetStatePlaybackConfig>) =>
+    invoke<DesktopPetPackage>("update_desktop_pet_playback_config", { petId, configs }),
   openDesktopPetFolder: () => invoke<void>("open_desktop_pet_folder"),
   setDesktopPetEnabled: (enabled: boolean) => invoke<void>("set_desktop_pet_enabled", { enabled }),
-  updateDesktopPetState: (petState: NativeFrogPetState) =>
+  updateDesktopPetState: (petState: DesktopPetRuntimeState) =>
     invoke<void>("update_desktop_pet_state", { petState }),
-  setFrogPetEnabled: (enabled: boolean) => invoke<void>("set_frog_pet_enabled", { enabled }),
-  updateNativeFrogPet: (petState: NativeFrogPetState) => invoke<void>("update_native_frog_pet", { petState }),
-  registerFrogStopHotkey: (hotkey: string) => invoke<void>("register_frog_stop_hotkey", { hotkey }),
+  registerDesktopPetStopHotkey: (hotkey: string) => invoke<void>("register_desktop_pet_stop_hotkey", { hotkey }),
   startMainWindowDrag: () => invoke<void>("start_main_window_drag"),
   minimizeMainWindow: () => invoke<void>("minimize_main_window"),
   toggleMainWindowMaximized: () => invoke<void>("toggle_main_window_maximized"),

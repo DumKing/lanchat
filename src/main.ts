@@ -37,6 +37,7 @@ app.config.errorHandler = (error, _instance, info) => {
 };
 
 window.addEventListener("error", (event) => {
+  if (!(event instanceof ErrorEvent) || (!event.error && !event.message)) return;
   notifyAppError(event.error ?? event.message, "浏览器运行时异常");
 });
 

@@ -3041,6 +3041,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "eframe",
+ "fastrand 2.4.1",
  "hex",
  "if-addrs",
  "image",

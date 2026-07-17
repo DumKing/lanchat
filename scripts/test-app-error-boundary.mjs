@@ -14,6 +14,7 @@ assert.match(mainTs, /import AppErrorBoundary from "\.\/components\/AppErrorBoun
 assert.match(mainTs, /h\(AppErrorBoundary,[\s\S]*?h\(App\)/, 'App 应被错误边界包裹，而不是直接挂载');
 assert.match(mainTs, /app\.config\.errorHandler\s*=/, 'Vue 全局错误应进入统一兜底处理');
 assert.match(mainTs, /window\.addEventListener\("error"/, '普通运行时错误应被捕获');
+assert.match(mainTs, /event instanceof ErrorEvent/, '图片等资源加载失败不应被升级成整页致命错误');
 assert.match(mainTs, /window\.addEventListener\("unhandledrejection"/, '未处理 Promise 错误应被捕获');
 assert.match(mainTs, /window\.dispatchEvent\(new CustomEvent\("lanchat-app-error"/, '入口捕获到的错误应通知错误边界展示兜底页');
 

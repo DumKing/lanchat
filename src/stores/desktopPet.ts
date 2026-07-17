@@ -5,6 +5,7 @@ import type {
   DesktopPetPackage,
   DesktopPetRegistrySnapshot,
   DesktopPetSettings,
+  PetStatePlaybackConfig,
 } from "../types/desktop-pet";
 
 export const useDesktopPetStore = defineStore("desktop-pet", () => {
@@ -82,6 +83,11 @@ export const useDesktopPetStore = defineStore("desktop-pet", () => {
     settings.value = await api.updateDesktopPetSettings(next);
   }
 
+  async function updatePlaybackConfig(petId: string, configs: Record<string, PetStatePlaybackConfig>) {
+    await api.updateDesktopPetPlaybackConfig(petId, configs);
+    registry.value = await api.refreshDesktopPets();
+  }
+
   async function setEnabled(enabled: boolean) {
     await api.setDesktopPetEnabled(enabled);
     if (settings.value) settings.value = { ...settings.value, enabled };
@@ -102,7 +108,7 @@ export const useDesktopPetStore = defineStore("desktop-pet", () => {
     selectPackage,
     removePackage,
     updateSettings,
+    updatePlaybackConfig,
     setEnabled,
   };
 });
-

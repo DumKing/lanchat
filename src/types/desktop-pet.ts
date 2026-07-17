@@ -1,6 +1,19 @@
 export type PetStateKind = "Idle" | "Alert" | "Move" | "Interact" | "Life";
 export type PetPackageSource = "built_in" | "portable" | "user";
 
+export type PetStatePlaybackConfig = {
+  minDurationMs: number;
+  maxDurationMs: number;
+  minActionCount: number;
+  maxActionCount: number;
+  minIntervalMs: number;
+  maxIntervalMs: number;
+};
+
+export type PetStateManifestConfig = Partial<PetStatePlaybackConfig> & {
+  loop?: "repeat" | "once" | "ping-pong";
+};
+
 export type PetManifest = {
   schemaVersion: number;
   id: string;
@@ -12,6 +25,13 @@ export type PetManifest = {
   fps: number;
   transparent: boolean;
   defaultState: string;
+  states: Partial<Record<PetStateKind, PetStateManifestConfig>>;
+  clips?: Record<string, {
+    fps?: number;
+    loop?: "repeat" | "once" | "ping-pong";
+    direction?: "left" | "right";
+    weight?: number;
+  }>;
 };
 
 export type PetFrame = {
@@ -62,5 +82,5 @@ export type DesktopPetSettings = {
   stopHotkey: string;
   randomMoveEnabled: boolean;
   randomLifeEnabled: boolean;
+  discoMovementMode: "linear" | "jump";
 };
-

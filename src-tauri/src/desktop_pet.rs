@@ -36,6 +36,12 @@ impl PetStateKind {
             Self::Life => "Life",
         }
     }
+
+    pub fn from_directory_name(value: &str) -> Option<Self> {
+        DESKTOP_PET_STATES
+            .into_iter()
+            .find(|state| state.directory_name() == value)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,6 +134,100 @@ impl PetManifest {
             })
             .to_string()
     }
+
+    fn state_playback_config(&self, state: PetStateKind) -> PetStatePlaybackConfig {
+        let defaults = PetStatePlaybackConfig::defaults_for(state);
+        let config = self
+            .states
+            .as_object()
+            .and_then(|states| states.get(state.directory_name()))
+            .and_then(Value::as_object);
+        let number = |name: &str| {
+            config
+                .and_then(|value| value.get(name))
+                .and_then(Value::as_u64)
+                .map(|value| value.min(u32::MAX as u64) as u32)
+        };
+        PetStatePlaybackConfig {
+            min_duration_ms: number("minDurationMs").unwrap_or(defaults.min_duration_ms),
+            max_duration_ms: number("maxDurationMs").unwrap_or(defaults.max_duration_ms),
+            min_action_count: number("minActionCount").unwrap_or(defaults.min_action_count),
+            max_action_count: number("maxActionCount").unwrap_or(defaults.max_action_count),
+            min_interval_ms: number("minIntervalMs").unwrap_or(defaults.min_interval_ms),
+            max_interval_ms: number("maxIntervalMs").unwrap_or(defaults.max_interval_ms),
+        }
+        .normalized()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PetStatePlaybackConfig {
+    pub min_duration_ms: u32,
+    pub max_duration_ms: u32,
+    pub min_action_count: u32,
+    pub max_action_count: u32,
+    pub min_interval_ms: u32,
+    pub max_interval_ms: u32,
+}
+
+impl PetStatePlaybackConfig {
+    pub fn defaults_for(state: PetStateKind) -> Self {
+        match state {
+            PetStateKind::Idle => Self::new(3000, 7000, 1, 2, 500, 1200),
+            PetStateKind::Alert => Self::new(2000, 4000, 1, 2, 250, 700),
+            PetStateKind::Move => Self::new(1200, 2400, 2, 4, 120, 420),
+            PetStateKind::Interact => Self::new(0, 0, 1, 1, 0, 0),
+            PetStateKind::Life => Self::new(0, 0, 2, 4, 800, 2000),
+        }
+    }
+
+    const fn new(
+        min_duration_ms: u32,
+        max_duration_ms: u32,
+        min_action_count: u32,
+        max_action_count: u32,
+        min_interval_ms: u32,
+        max_interval_ms: u32,
+    ) -> Self {
+        Self {
+            min_duration_ms,
+            max_duration_ms,
+            min_action_count,
+            max_action_count,
+            min_interval_ms,
+            max_interval_ms,
+        }
+    }
+
+    pub fn normalized(self) -> Self {
+        let (min_duration_ms, max_duration_ms) =
+            ordered_pair(self.min_duration_ms, self.max_duration_ms);
+        let (min_action_count, max_action_count) = ordered_pair(
+            self.min_action_count.clamp(1, 20),
+            self.max_action_count.clamp(1, 20),
+        );
+        let (min_interval_ms, max_interval_ms) = ordered_pair(
+            self.min_interval_ms.min(60_000),
+            self.max_interval_ms.min(60_000),
+        );
+        Self {
+            min_duration_ms: min_duration_ms.min(300_000),
+            max_duration_ms: max_duration_ms.min(300_000),
+            min_action_count,
+            max_action_count,
+            min_interval_ms,
+            max_interval_ms,
+        }
+    }
+}
+
+fn ordered_pair(left: u32, right: u32) -> (u32, u32) {
+    if left <= right {
+        (left, right)
+    } else {
+        (right, left)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -174,23 +274,52 @@ impl DesktopPetPackage {
             .unwrap_or_default()
     }
 
-    pub fn frame_at(
+    pub fn playback_config(&self, state: PetStateKind) -> PetStatePlaybackConfig {
+        self.manifest.state_playback_config(state)
+    }
+
+    pub fn clip_candidates(&self, state: PetStateKind, direction: Option<&str>) -> Vec<&PetClip> {
+        let Some(clips) = self
+            .state(state)
+            .filter(|clips| !clips.is_empty())
+            .or_else(|| self.state(PetStateKind::Idle))
+        else {
+            return Vec::new();
+        };
+        if let Some(direction) = direction {
+            let directed = clips
+                .iter()
+                .filter(|clip| clip.direction.as_deref() == Some(direction))
+                .collect::<Vec<_>>();
+            if !directed.is_empty() {
+                return directed;
+            }
+        }
+        clips.iter().collect()
+    }
+
+    pub fn clip_by_uniform_index(
         &self,
         state: PetStateKind,
         direction: Option<&str>,
-        elapsed_seconds: f32,
-    ) -> Option<&PetFrame> {
-        let clips = self
-            .state(state)
-            .filter(|clips| !clips.is_empty())
-            .or_else(|| self.state(PetStateKind::Idle))?;
-        let clip = direction
-            .and_then(|direction| {
-                clips
-                    .iter()
-                    .find(|clip| clip.direction.as_deref() == Some(direction))
-            })
-            .or_else(|| clips.first())?;
+        index: usize,
+    ) -> Option<&PetClip> {
+        let candidates = self.clip_candidates(state, direction);
+        if candidates.is_empty() {
+            return None;
+        }
+        candidates.get(index % candidates.len()).copied()
+    }
+
+    pub fn clip_cycle_seconds(clip: &PetClip) -> f32 {
+        let frame_steps = match clip.loop_mode.as_str() {
+            "ping-pong" if clip.frames.len() > 1 => clip.frames.len() * 2 - 2,
+            _ => clip.frames.len(),
+        };
+        frame_steps.max(1) as f32 / clip.fps.max(0.1)
+    }
+
+    pub fn frame_in_clip(clip: &PetClip, elapsed_seconds: f32) -> Option<&PetFrame> {
         if clip.frames.is_empty() {
             return None;
         }
@@ -331,21 +460,33 @@ fn load_package(root: &Path, source: PetPackageSource) -> Result<DesktopPetPacka
         }
     }
 
+    let preview_path = validated_optional_image(root.join("preview.png"), &mut warnings);
+    let icon_path = validated_optional_image(root.join("icon.png"), &mut warnings);
     Ok(DesktopPetPackage {
-        preview_path: root
-            .join("preview.png")
-            .is_file()
-            .then(|| root.join("preview.png")),
-        icon_path: root
-            .join("icon.png")
-            .is_file()
-            .then(|| root.join("icon.png")),
+        preview_path,
+        icon_path,
         manifest,
         source,
         root: root.to_path_buf(),
         states,
         warnings,
     })
+}
+
+fn validated_optional_image(path: PathBuf, warnings: &mut Vec<String>) -> Option<PathBuf> {
+    if !path.is_file() {
+        return None;
+    }
+    match ImageReader::open(&path)
+        .and_then(|reader| reader.with_guessed_format())
+        .and_then(|reader| reader.decode().map_err(std::io::Error::other))
+    {
+        Ok(_) => Some(path),
+        Err(error) => {
+            warnings.push(format!("忽略无法解码的图片 {}：{error}", path.display()));
+            None
+        }
+    }
 }
 
 fn load_state_clips(
@@ -607,6 +748,12 @@ pub struct DesktopPetSettings {
     pub stop_hotkey: String,
     pub random_move_enabled: bool,
     pub random_life_enabled: bool,
+    #[serde(default = "default_disco_movement_mode")]
+    pub disco_movement_mode: String,
+}
+
+fn default_disco_movement_mode() -> String {
+    "jump".to_string()
 }
 
 impl Default for DesktopPetSettings {
@@ -622,6 +769,7 @@ impl Default for DesktopPetSettings {
             stop_hotkey: "Ctrl+Alt+G".to_string(),
             random_move_enabled: true,
             random_life_enabled: true,
+            disco_movement_mode: default_disco_movement_mode(),
         }
     }
 }
@@ -670,8 +818,12 @@ impl DesktopPetManager {
         let signature = registry_signature(&registry);
         let disk_signature = resource_roots_signature(&roots);
         let mut settings = DesktopPetSettings::load(&settings_path);
-        if settings.selected_pet_id.is_none() && registry.package("violet-tail-girl").is_some() {
-            settings.selected_pet_id = Some("violet-tail-girl".to_string());
+        let selection_is_valid = settings
+            .selected_pet_id
+            .as_deref()
+            .is_some_and(|id| registry.package(id).is_some());
+        if !selection_is_valid && registry.package("frog-buddy").is_some() {
+            settings.selected_pet_id = Some("frog-buddy".to_string());
             let _ = settings.save(&settings_path);
         }
         Self {
@@ -747,6 +899,11 @@ impl DesktopPetManager {
             return Err("桌宠缩放比例无效".to_string());
         }
         settings.scale = settings.scale.clamp(0.3, 3.0);
+        settings.disco_movement_mode = match settings.disco_movement_mode.as_str() {
+            "linear" => "linear",
+            _ => "jump",
+        }
+        .to_string();
         if let Some(id) = settings.selected_pet_id.as_deref() {
             if self
                 .registry
@@ -824,6 +981,95 @@ impl DesktopPetManager {
             .ok_or_else(|| "桌宠导入后未通过注册校验".to_string())
     }
 
+    pub fn update_playback_configs(
+        &self,
+        id: &str,
+        configs: HashMap<String, PetStatePlaybackConfig>,
+    ) -> Result<DesktopPetPackage, String> {
+        let id = id.trim();
+        let package = self
+            .registry
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .package(id)
+            .cloned()
+            .ok_or_else(|| "桌宠资源不存在或校验失败".to_string())?;
+        let editable_root = if package.source == PetPackageSource::User {
+            package.root.clone()
+        } else {
+            fs::create_dir_all(&self.user_root)
+                .map_err(|error| format!("创建桌宠资源目录失败：{error}"))?;
+            let destination = self.user_root.join(id);
+            if destination.exists() {
+                fs::remove_dir_all(&destination)
+                    .map_err(|error| format!("清理桌宠用户覆盖包失败：{error}"))?;
+            }
+            copy_directory(&package.root, &destination)?;
+            destination
+        };
+
+        let manifest_path = editable_root.join("manifest.json");
+        let mut manifest: Value = serde_json::from_slice(
+            &fs::read(&manifest_path)
+                .map_err(|error| format!("读取 manifest.json 失败：{error}"))?,
+        )
+        .map_err(|error| format!("解析 manifest.json 失败：{error}"))?;
+        let states = manifest
+            .get_mut("states")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| "manifest states 必须是对象才能编辑动作配置".to_string())?;
+        for (state_name, config) in configs {
+            let Some(state) = PetStateKind::from_directory_name(&state_name) else {
+                return Err(format!("未知桌宠状态：{state_name}"));
+            };
+            let value = states
+                .entry(state.directory_name().to_string())
+                .or_insert_with(|| Value::Object(Default::default()));
+            let object = value
+                .as_object_mut()
+                .ok_or_else(|| format!("{} 状态配置必须是对象", state.directory_name()))?;
+            let config = config.normalized();
+            object.insert(
+                "minDurationMs".to_string(),
+                Value::from(config.min_duration_ms),
+            );
+            object.insert(
+                "maxDurationMs".to_string(),
+                Value::from(config.max_duration_ms),
+            );
+            object.insert(
+                "minActionCount".to_string(),
+                Value::from(config.min_action_count),
+            );
+            object.insert(
+                "maxActionCount".to_string(),
+                Value::from(config.max_action_count),
+            );
+            object.insert(
+                "minIntervalMs".to_string(),
+                Value::from(config.min_interval_ms),
+            );
+            object.insert(
+                "maxIntervalMs".to_string(),
+                Value::from(config.max_interval_ms),
+            );
+        }
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest)
+                .map_err(|error| format!("序列化 manifest.json 失败：{error}"))?,
+        )
+        .map_err(|error| format!("保存 manifest.json 失败：{error}"))?;
+        load_package(&editable_root, PetPackageSource::User)?;
+        self.refresh();
+        self.registry
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .package(id)
+            .cloned()
+            .ok_or_else(|| "桌宠配置保存后未通过资源校验".to_string())
+    }
+
     pub fn remove_user_package(&self, id: &str) -> Result<(), String> {
         let package = self
             .registry
@@ -841,15 +1087,30 @@ impl DesktopPetManager {
                 .map_err(|error| format!("删除桌宠资源失败：{error}"))?;
         }
         let mut settings = self.settings();
-        if settings.selected_pet_id.as_deref() == Some(package.id()) {
-            settings.selected_pet_id = None;
+        let removed_selected_package = settings.selected_pet_id.as_deref() == Some(package.id());
+        self.refresh();
+        if removed_selected_package {
+            let registry = self
+                .registry
+                .read()
+                .unwrap_or_else(|error| error.into_inner());
+            settings.selected_pet_id = if registry.package(package.id()).is_some() {
+                Some(package.id().to_string())
+            } else if registry.package("frog-buddy").is_some() {
+                Some("frog-buddy".to_string())
+            } else {
+                registry
+                    .packages()
+                    .first()
+                    .map(|package| package.id().to_string())
+            };
+            drop(registry);
             settings.save(&self.settings_path)?;
             *self
                 .settings
                 .lock()
                 .unwrap_or_else(|error| error.into_inner()) = settings;
         }
-        self.refresh();
         Ok(())
     }
 

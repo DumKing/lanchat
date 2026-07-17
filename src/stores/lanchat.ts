@@ -2,7 +2,7 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import { api } from "../services/tauri-api";
 import { registerLanChatEvents } from "../services/event-bus";
-import type { AdminAlertMode, AdminDiscoMode, ChannelMember, ChannelNoticePayload, Conversation, DebugLog, FrogAlertMode, GameFrame, Message, Peer, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset } from "../types/lanchat";
+import type { AdminAlertMode, AdminDiscoMode, ChannelMember, ChannelNoticePayload, Conversation, DebugLog, GameFrame, Message, Peer, PetAlertMode, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset } from "../types/lanchat";
 
 export const DEFAULT_GROUP_ID = "lan-room";
 
@@ -487,7 +487,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
     }
   }
 
-  async function sendQuickAlert(content = "呱呱~呱~~", mode: FrogAlertMode = "normal") {
+  async function sendQuickAlert(content = "呱呱~呱~~", mode: PetAlertMode = "normal") {
     error.value = "";
     try {
       const alert = await api.sendQuickAlert(content, mode);
@@ -539,7 +539,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
     }
   }
 
-  async function sendAdminAlertMode(targetDeviceId: string, mode: FrogAlertMode) {
+  async function sendAdminAlertMode(targetDeviceId: string, mode: PetAlertMode) {
     error.value = "";
     try {
       const frame = await api.sendAdminAlertMode(targetDeviceId, mode);

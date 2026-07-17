@@ -2,12 +2,14 @@ use crate::channel_crypto::{decrypt_channel_content, encrypt_channel_content};
 use crate::debug_log::emit_debug_log;
 use crate::identity::normalize_device_id;
 use crate::protocol::{
-    decode_frame, encode_frame, AckFrame, AdminAlertModeFrame, AdminChannelControlFrame, AdminDiscoModeFrame, AdminNicknameFrame,
-    ChannelMemberFrame, ChannelNoticeFrame, ChatMessageFrame, GameFrame, HelloFrame, PeerStatusFrame,
-    PrivateChannelInviteFrame, QuickAlertFeedbackFrame, QuickAlertFrame, QuickAlertTrustResetFrame, WireFrame,
+    decode_frame, encode_frame, AckFrame, AdminAlertModeFrame, AdminChannelControlFrame,
+    AdminDiscoModeFrame, AdminNicknameFrame, ChannelMemberFrame, ChannelNoticeFrame,
+    ChatMessageFrame, GameFrame, HelloFrame, PeerStatusFrame, PrivateChannelInviteFrame,
+    QuickAlertFeedbackFrame, QuickAlertFrame, QuickAlertTrustResetFrame, WireFrame,
 };
 use crate::storage::{
-    ChannelMemberSeed, Message, MessageStatus, MessageType, Peer, Profile, Storage, DEFAULT_GROUP_ID,
+    ChannelMemberSeed, Message, MessageStatus, MessageType, Peer, Profile, Storage,
+    DEFAULT_GROUP_ID,
 };
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use serde::{Deserialize, Serialize};
@@ -109,7 +111,9 @@ impl Network {
         let network_for_status = self.clone();
         let app_for_status = app.clone();
         tauri::async_runtime::spawn(async move {
-            network_for_status.start_status_broadcast(app_for_status).await;
+            network_for_status
+                .start_status_broadcast(app_for_status)
+                .await;
         });
 
         let network_for_offline = self.clone();
@@ -145,7 +149,11 @@ impl Network {
         self.attach_stream(app, stream, Some((address, port))).await
     }
 
-    pub fn broadcast_profile_status(&self, app: AppHandle, profile: &Profile) -> Result<(), String> {
+    pub fn broadcast_profile_status(
+        &self,
+        app: AppHandle,
+        profile: &Profile,
+    ) -> Result<(), String> {
         let frame = WireFrame::PeerStatus(status_frame(profile));
         let senders = self
             .senders
@@ -411,13 +419,7 @@ impl Network {
             created_at: chrono::Utc::now().timestamp_millis(),
         };
         if target_device_id == normalize_device_id(&profile.device_id) {
-            emit_debug_log(
-                &app,
-                "info",
-                "admin",
-                "本机报警模式已修改",
-                Some(mode),
-            );
+            emit_debug_log(&app, "info", "admin", "本机报警模式已修改", Some(mode));
             return Ok(frame);
         }
         let delivered = self
@@ -466,7 +468,11 @@ impl Network {
             updated_at: chrono::Utc::now().timestamp_millis(),
         });
         let mut target_ids = Vec::new();
-        if self.storage.private_channel_key(&conversation_id)?.is_some() {
+        if self
+            .storage
+            .private_channel_key(&conversation_id)?
+            .is_some()
+        {
             target_ids = self
                 .storage
                 .list_channel_members(&conversation_id)?
@@ -514,7 +520,10 @@ impl Network {
         let wire_frame = WireFrame::MessageRecall(frame.clone());
         let mut delivered = false;
         if frame.conversation_id == DEFAULT_GROUP_ID
-            || self.storage.private_channel_key(&frame.conversation_id)?.is_some()
+            || self
+                .storage
+                .private_channel_key(&frame.conversation_id)?
+                .is_some()
         {
             let senders = self
                 .senders
@@ -585,7 +594,10 @@ impl Network {
             if delivered > 0 { "info" } else { "warn" },
             "alert",
             "快捷告警反馈已广播",
-            Some(format!("{} {} delivered={delivered}", frame.alert_id, frame.result)),
+            Some(format!(
+                "{} {} delivered={delivered}",
+                frame.alert_id, frame.result
+            )),
         );
         Ok(())
     }
@@ -1088,7 +1100,10 @@ impl Network {
                             "info",
                             "channel",
                             "收到频道公告更新",
-                            Some(format!("{} by {}", frame.conversation_id, frame.updated_by_nickname)),
+                            Some(format!(
+                                "{} by {}",
+                                frame.conversation_id, frame.updated_by_nickname
+                            )),
                         );
                         read_app.emit("channel_notice_updated", frame).ok();
                     }
@@ -1130,7 +1145,10 @@ impl Network {
                             "info",
                             "alert",
                             "收到快捷告警反馈",
-                            Some(format!("{} {} {}", frame.alert_id, frame.responder_nickname, frame.result)),
+                            Some(format!(
+                                "{} {} {}",
+                                frame.alert_id, frame.responder_nickname, frame.result
+                            )),
                         );
                         read_app.emit("quick_alert_feedback_received", frame).ok();
                     }
@@ -1140,9 +1158,14 @@ impl Network {
                             "warn",
                             "alert",
                             "收到告警可信度重置",
-                            Some(format!("{} {}", frame.target_device_id, frame.issued_by_nickname)),
+                            Some(format!(
+                                "{} {}",
+                                frame.target_device_id, frame.issued_by_nickname
+                            )),
                         );
-                        read_app.emit("quick_alert_trust_reset_received", frame).ok();
+                        read_app
+                            .emit("quick_alert_trust_reset_received", frame)
+                            .ok();
                     }
                     Ok(WireFrame::AdminNickname(frame)) => {
                         if normalize_device_id(&frame.target_device_id) == local_device_id {
@@ -1182,7 +1205,10 @@ impl Network {
                                 "warn",
                                 "admin",
                                 "收到蹦迪模式",
-                                Some(format!("{} {}ms", frame.issued_by_nickname, frame.duration_ms)),
+                                Some(format!(
+                                    "{} {}ms",
+                                    frame.issued_by_nickname, frame.duration_ms
+                                )),
                             );
                             read_app.emit("admin_disco_mode_received", frame).ok();
                         }
@@ -1530,7 +1556,11 @@ fn peer_from_status_at(frame: PeerStatusFrame, source_address: String, seen_at: 
     }
 }
 
-fn save_system_notice(storage: &Storage, conversation_id: &str, content: String) -> Result<Message, String> {
+fn save_system_notice(
+    storage: &Storage,
+    conversation_id: &str,
+    content: String,
+) -> Result<Message, String> {
     let message = Message {
         id: Uuid::new_v4().to_string(),
         conversation_id: conversation_id.to_string(),

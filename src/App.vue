@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { availableMonitors, getCurrentWindow, LogicalPosition, LogicalSize, UserAttentionType } from "@tauri-apps/api/window";
+import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import CryptoJS from "crypto-js";
 import {
@@ -41,8 +41,8 @@ import { storeToRefs } from "pinia";
 import { api } from "./services/tauri-api";
 import { DEFAULT_GROUP_ID, useLanChatStore } from "./stores/lanchat";
 import { useDesktopPetStore } from "./stores/desktopPet";
-import type { DesktopPetPackage, DesktopPetRegistrySnapshot, PetPackageSource, PetStateKind } from "./types/desktop-pet";
-import type { AdminAlertMode, AdminDiscoMode, ChannelMember, Conversation, FrogAlertMode, GameFrame, Message, NativeFrogPetState, Peer, PrivateChannelInvitePayload, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem } from "./types/lanchat";
+import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, PetPackageSource, PetStateKind, PetStatePlaybackConfig } from "./types/desktop-pet";
+import type { AdminAlertMode, AdminDiscoMode, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Peer, PetAlertMode, PrivateChannelInvitePayload, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem } from "./types/lanchat";
 import { DDZ_TURN_TIMEOUT_MS, canBeat, dealHands, evaluatePlay, isTurnTimedOut, playLabel, sortCards, turnRemainingSeconds, type DdzCard, type DdzPhase, type DdzPlay } from "./games/doudizhu";
 import { GOMOKU_TURN_TIMEOUT_MS, chooseAutoGomokuPoint, cloneGomokuBoard, createGomokuBoard, gomokuStoneLabel, gomokuTurnRemainingSeconds, isGomokuTurnTimedOut, placeGomokuStone, type GomokuBoard, type GomokuPhase, type GomokuPoint, type GomokuStone } from "./games/gomoku";
 import { cloneXiangqiBoard, createXiangqiBoard, createXiangqiDisplayGrid, isLegalXiangqiMove, moveXiangqiPiece, otherXiangqiSide, resignXiangqiSide, undoXiangqiMove, xiangqiPieceLabel, xiangqiSideLabel, type XiangqiBoard, type XiangqiPhase, type XiangqiPiece, type XiangqiPoint, type XiangqiSide } from "./games/xiangqi";
@@ -54,14 +54,6 @@ import { alertTemperature, alertTruthScore, senderCredibility } from "./utils/al
 type UiThemeKey = "theme-dingtalk" | "theme-work" | "theme-lan" | "theme-light";
 type MainSection = "chat" | "devices" | "games" | "alerts" | "settings";
 type RecipientPickerMode = "gameInvite" | "privateChannelCreate" | "privateChannelInvite";
-function currentWindowLabel() {
-  try {
-    return getCurrentWindow().label;
-  } catch {
-    return "";
-  }
-}
-const isPetWindow = currentWindowLabel() === "frog-pet";
 type UndoRequest = {
   requesterId: string;
   requesterName: string;
@@ -87,7 +79,7 @@ type AlertRecord = {
   senderDeviceId: string;
   senderNickname: string;
   content: string;
-  mode: FrogAlertMode;
+  mode: PetAlertMode;
   createdAt: number;
   incoming: boolean;
   handled: boolean;
@@ -286,6 +278,10 @@ const {
   loading: desktopPetLoading,
   error: desktopPetError,
 } = storeToRefs(desktopPetStore);
+const desktopPetPackagesExpanded = ref(true);
+const desktopPetManifestEditorOpen = ref(false);
+const desktopPetManifestEditorTarget = ref<DesktopPetPackage | null>(null);
+const desktopPetPlaybackDraft = ref<Record<PetStateKind, PetStatePlaybackConfig>>({} as Record<PetStateKind, PetStatePlaybackConfig>);
 const {
   profile,
   peers,
@@ -334,8 +330,8 @@ let recordingTimer: number | null = null;
 let turnTicker: number | null = null;
 let autoTurnRunning = false;
 let unlistenTrayOpenTarget: (() => void) | null = null;
-let unlistenNativeFrogAction: (() => void) | null = null;
-let unlistenFrogStopHotkey: (() => void) | null = null;
+let unlistenDesktopPetAction: (() => void) | null = null;
+let unlistenDesktopPetStopHotkey: (() => void) | null = null;
 let unlistenDesktopPetRegistry: (() => void) | null = null;
 const conversationSearch = ref("");
 const deviceSearch = ref("");
@@ -350,7 +346,7 @@ const superAdminPasswordError = ref("");
 const SUPER_ADMIN_PASSWORD_MD5 = "D7B9AF919901FA1598BDC21465E3EB3F";
 const alertTrustResetTargetId = ref<string | null>(null);
 const adminAlertModeTargetId = ref<string | null>(null);
-const adminAlertModeDraft = ref<FrogAlertMode>("normal");
+const adminAlertModeDraft = ref<PetAlertMode>("normal");
 const activeSection = ref<MainSection>("chat");
 const settingsCategory = ref<"basic" | "pet">("basic");
 const listPaneCollapsed = ref(false);
@@ -384,25 +380,17 @@ const messageContextMenuOpen = ref(false);
 const messageContextMenuX = ref(0);
 const messageContextMenuY = ref(0);
 const messageContextMessage = ref<Message | null>(null);
-const frogAlertEnabled = ref(readSavedFrogAlertEnabled());
-const frogAlertPanelOpen = ref(false);
-const frogPetBodyClass = "frog-pet-body";
+const petAlertEnabled = ref(readSavedPetAlertEnabled());
 const quickAlertDraft = ref(readSavedQuickAlertText());
-const frogAlertMode = ref<FrogAlertMode>(readSavedFrogAlertMode());
-const frogStopHotkey = ref(readSavedFrogStopHotkey());
+const petAlertMode = ref<PetAlertMode>(readSavedPetAlertMode());
+const petStopHotkey = ref(readSavedPetStopHotkey());
 const alertRecords = ref<AlertRecord[]>(readSavedAlertRecords());
 const ownAlertFlashUntil = ref(0);
 const lastOwnAlertSentAt = ref(0);
 const discoModeUntil = ref(0);
 const visuallyStoppedAlertIds = ref<Set<string>>(new Set());
-const frogPetScale = ref(readSavedFrogPetScale());
-let discoMoveTimer: number | null = null;
 const ALERT_SEND_COOLDOWN_MS = 20_000;
-const FROG_DISCO_ALERT_DURATION_MS = 60_000;
-const FROG_PET_BASE_WIDTH = 180;
-const FROG_PET_BASE_HEIGHT = 160;
-const FROG_PET_DETAIL_WIDTH = 420;
-const FROG_PET_DETAIL_HEIGHT = 320;
+const PET_DISCO_ALERT_DURATION_MS = 60_000;
 const selectedGameType = ref<GameType>("doudizhu");
 const roomNameDraft = ref("午休娱乐局");
 const gameRoomsState = ref<GameRoomShell[]>([]);
@@ -674,23 +662,7 @@ const alertRankingRows = computed(() => {
     .sort((a, b) => (b.probability ?? -1) - (a.probability ?? -1) || b.feedbackTotal - a.feedbackTotal || b.lastAt - a.lastAt);
 });
 const petAlertProbability = computed(() => alertDisplayTemperature(activePetAlert.value));
-const petTemperatureLabel = computed(() => activePetAlert.value ? `${petAlertProbability.value}°C` : "");
 const discoModeActive = computed(() => discoModeUntil.value > nowTick.value);
-const frogPetClass = computed(() => ({
-  alerting: !!activePetAlert.value,
-  disco: discoModeActive.value && !!activePetAlert.value,
-  feedbackable: pendingAlertCount.value > 0,
-  open: frogAlertPanelOpen.value,
-  hot: petAlertProbability.value >= 70,
-}));
-const frogPetStyle = computed(() => {
-  const temperature = Math.max(0, Math.min(100, petAlertProbability.value));
-  return {
-    "--frog-alert-duration": `${Math.max(0.24, 1.1 - temperature / 120)}s`,
-    "--frog-alert-redness": `${temperature}%`,
-    "--frog-pet-scale": String(frogPetScale.value),
-  };
-});
 const activeRoomChatMessages = computed(() => {
   if (activeGameRoom.value?.gameType === "gomoku") return activeGomokuState.value?.chatMessages ?? [];
   if (activeGameRoom.value?.gameType === "xiangqi") return activeXiangqiState.value?.chatMessages ?? [];
@@ -941,6 +913,20 @@ const shortDeviceId = computed(() => {
   return `${id.slice(0, 10)}...${id.slice(-6)}`;
 });
 const DESKTOP_PET_STATE_ORDER: PetStateKind[] = ["Idle", "Alert", "Move", "Interact", "Life"];
+const DESKTOP_PET_STATE_LABELS: Record<PetStateKind, string> = {
+  Idle: "待机",
+  Alert: "告警",
+  Move: "移动",
+  Interact: "交互",
+  Life: "生活",
+};
+const DESKTOP_PET_PLAYBACK_DEFAULTS: Record<PetStateKind, PetStatePlaybackConfig> = {
+  Idle: { minDurationMs: 3000, maxDurationMs: 7000, minActionCount: 1, maxActionCount: 2, minIntervalMs: 500, maxIntervalMs: 1200 },
+  Alert: { minDurationMs: 2000, maxDurationMs: 4000, minActionCount: 1, maxActionCount: 2, minIntervalMs: 250, maxIntervalMs: 700 },
+  Move: { minDurationMs: 1200, maxDurationMs: 2400, minActionCount: 2, maxActionCount: 4, minIntervalMs: 120, maxIntervalMs: 420 },
+  Interact: { minDurationMs: 0, maxDurationMs: 0, minActionCount: 1, maxActionCount: 1, minIntervalMs: 0, maxIntervalMs: 0 },
+  Life: { minDurationMs: 0, maxDurationMs: 0, minActionCount: 2, maxActionCount: 4, minIntervalMs: 800, maxIntervalMs: 2000 },
+};
 function desktopPetSourceLabel(source: PetPackageSource) {
   if (source === "built_in") return "内置";
   if (source === "portable") return "绿色版";
@@ -950,12 +936,31 @@ function desktopPetFrameCount(pet: DesktopPetPackage, state: PetStateKind) {
   return (pet.states[state] ?? []).reduce((total, clip) => total + clip.frames.length, 0);
 }
 function desktopPetPreview(pet: DesktopPetPackage) {
-  if (!pet.preview_path) return "";
+  const path = pet.icon_path ?? pet.preview_path ?? pet.states.Idle?.[0]?.frames[0]?.path;
+  if (!path) return "";
   try {
-    return convertFileSrc(pet.preview_path);
+    return convertFileSrc(path);
   } catch {
     return "";
   }
+}
+function desktopPetPlaybackConfig(pet: DesktopPetPackage, state: PetStateKind): PetStatePlaybackConfig {
+  const source = pet.manifest.states?.[state] ?? {};
+  return { ...DESKTOP_PET_PLAYBACK_DEFAULTS[state], ...source };
+}
+function openDesktopPetManifestEditor(pet: DesktopPetPackage) {
+  desktopPetManifestEditorTarget.value = pet;
+  desktopPetPlaybackDraft.value = Object.fromEntries(
+    DESKTOP_PET_STATE_ORDER.map((state) => [state, desktopPetPlaybackConfig(pet, state)]),
+  ) as Record<PetStateKind, PetStatePlaybackConfig>;
+  desktopPetManifestEditorOpen.value = true;
+}
+async function saveDesktopPetManifestConfig() {
+  const pet = desktopPetManifestEditorTarget.value;
+  if (!pet) return;
+  await desktopPetStore.updatePlaybackConfig(pet.manifest.id, desktopPetPlaybackDraft.value).catch(() => undefined);
+  desktopPetManifestEditorOpen.value = false;
+  desktopPetManifestEditorTarget.value = null;
 }
 async function importDesktopPetPackage() {
   const selected = await openFileDialog({ directory: true, multiple: false, title: "选择桌宠资源包目录" });
@@ -966,59 +971,60 @@ async function selectDesktopPetPackage(pet: DesktopPetPackage) {
   await desktopPetStore.selectPackage(pet.manifest.id).catch(() => undefined);
 }
 async function removeDesktopPetPackage(pet: DesktopPetPackage) {
-  if (pet.source !== "user") return;
-  if (typeof window !== "undefined" && !window.confirm(`确定删除桌宠“${pet.manifest.name}”吗？`)) return;
-  await desktopPetStore.removePackage(pet).catch(() => undefined);
+  if (pet.source !== "user") return false;
+  if (typeof window !== "undefined" && !window.confirm(`确定删除桌宠“${pet.manifest.name}”吗？`)) return false;
+  try {
+    await desktopPetStore.removePackage(pet);
+    return true;
+  } catch {
+    return false;
+  }
 }
-async function updateDesktopPetBehavior(key: "randomMoveEnabled" | "randomLifeEnabled", value: boolean) {
+async function removeDesktopPetFromEditor() {
+  const pet = desktopPetManifestEditorTarget.value;
+  if (!pet || !(await removeDesktopPetPackage(pet))) return;
+  desktopPetManifestEditorOpen.value = false;
+  desktopPetManifestEditorTarget.value = null;
+}
+async function updateDesktopPetBehavior<K extends keyof DesktopPetSettings>(key: K, value: DesktopPetSettings[K]) {
   if (!desktopPetSettings.value) return;
   await desktopPetStore.updateSettings({ ...desktopPetSettings.value, [key]: value }).catch(() => undefined);
-  await syncNativeFrogPet();
+  await syncDesktopPetRuntime();
 }
 onMounted(async () => {
-  if (isPetWindow && typeof document !== "undefined") {
-    document.body.classList.add(frogPetBodyClass);
-    document.documentElement.classList.add(frogPetBodyClass);
-    if (!frogAlertEnabled.value) {
-      frogAlertEnabled.value = true;
-    }
-    await syncFrogPetWindowSize(false);
-  }
   await store.initialize();
-  if (!isPetWindow) {
-    await desktopPetStore.initialize();
-    if (desktopPetSettings.value) {
-      frogAlertEnabled.value = desktopPetSettings.value.enabled;
-    }
+  await desktopPetStore.initialize();
+  if (desktopPetSettings.value) {
+    petAlertEnabled.value = desktopPetSettings.value.enabled;
   }
   nicknameDraft.value = profile.value?.nickname ?? "";
   portDraft.value = profile.value?.listen_port ?? 18145;
   avatarDraft.value = profile.value?.avatar ?? "";
-  if (!isPetWindow) {
-    await api.setDesktopPetEnabled(frogAlertEnabled.value).catch(() => undefined);
-    await registerFrogStopHotkey();
-    await syncNativeFrogPet();
-  }
+  await api.setDesktopPetEnabled(petAlertEnabled.value).catch(() => undefined);
+  await registerDesktopPetStopHotkey();
+  await syncDesktopPetRuntime();
   try {
     unlistenTrayOpenTarget = await listen<TrayAttentionItem>("tray_open_target", (event) => {
       void openTrayTarget(event.payload);
     });
-    unlistenNativeFrogAction = await listen<{ action: string; alert_id?: string | null }>("desktop_pet_action", (event) => {
+    unlistenDesktopPetAction = await listen<{ action: string; alert_id?: string | null }>("desktop_pet_action", (event) => {
       if (event.payload.action === "quick_alert") {
-        void sendFrogQuickAlert(frogAlertMode.value);
+        void sendPetQuickAlert(petAlertMode.value);
+      } else if (event.payload.action === "open_main_window") {
+        void api.showFromTray();
       } else if (event.payload.action === "broadcast_disco_alert") {
-        void sendFrogQuickAlert("disco");
+        void sendPetQuickAlert("disco");
       } else if (event.payload.action === "stop_visuals") {
-        stopFrogAlertVisuals();
+        stopPetAlertVisuals();
       } else if (event.payload.action === "feedback_real" || event.payload.action === "feedback_false") {
         const target = alertRecords.value.find((item) => item.alertId === event.payload.alert_id) ?? latestPendingAlert.value;
         if (target) {
-          void feedbackFrogAlert(target, event.payload.action === "feedback_real" ? "real" : "false");
+          void feedbackPetAlert(target, event.payload.action === "feedback_real" ? "real" : "false");
         }
       }
     });
-    unlistenFrogStopHotkey = await listen("frog_stop_hotkey_received", () => {
-      stopFrogAlertVisuals();
+    unlistenDesktopPetStopHotkey = await listen("desktop_pet_stop_hotkey_received", () => {
+      stopPetAlertVisuals();
     });
     unlistenDesktopPetRegistry = await listen<DesktopPetRegistrySnapshot>("desktop_pet_registry_changed", (event) => {
       desktopPetStore.applySnapshot(event.payload);
@@ -1028,24 +1034,20 @@ onMounted(async () => {
   }
   await syncTrayAttention();
   if (typeof window !== "undefined") {
-    window.addEventListener("keydown", handleFrogStopHotkey);
+    window.addEventListener("keydown", handleDesktopPetStopHotkey);
     turnTicker = window.setInterval(() => {
       nowTick.value = Date.now();
     }, 1000);
   }
 });
 onUnmounted(() => {
-  if (isPetWindow && typeof document !== "undefined") {
-    document.body.classList.remove(frogPetBodyClass);
-    document.documentElement.classList.remove(frogPetBodyClass);
-  }
   stopPaneResize();
   unlistenTrayOpenTarget?.();
   unlistenTrayOpenTarget = null;
-  unlistenNativeFrogAction?.();
-  unlistenNativeFrogAction = null;
-  unlistenFrogStopHotkey?.();
-  unlistenFrogStopHotkey = null;
+  unlistenDesktopPetAction?.();
+  unlistenDesktopPetAction = null;
+  unlistenDesktopPetStopHotkey?.();
+  unlistenDesktopPetStopHotkey = null;
   unlistenDesktopPetRegistry?.();
   unlistenDesktopPetRegistry = null;
   if (turnTicker !== null && typeof window !== "undefined") {
@@ -1053,11 +1055,7 @@ onUnmounted(() => {
     turnTicker = null;
   }
   if (typeof window !== "undefined") {
-    window.removeEventListener("keydown", handleFrogStopHotkey);
-  }
-  if (discoMoveTimer !== null && typeof window !== "undefined") {
-    window.clearInterval(discoMoveTimer);
-    discoMoveTimer = null;
+    window.removeEventListener("keydown", handleDesktopPetStopHotkey);
   }
 });
 watch(profile, (next) => {
@@ -1086,7 +1084,7 @@ watch(selectedTheme, (next) => {
   if (typeof window !== "undefined") {
     window.localStorage.setItem("lanchat-ui-theme", next);
   }
-  void syncNativeFrogPet();
+  void syncDesktopPetRuntime();
 });
 watch(selectedLanguage, (next) => {
   if (typeof window !== "undefined") {
@@ -1125,30 +1123,30 @@ watch(latestChannelNotice, (payload) => {
   };
 });
 watch(latestQuickAlert, async (alert) => {
-  if (!alert || !frogAlertEnabled.value) return;
+  if (!alert || !petAlertEnabled.value) return;
   applyQuickAlert(alert);
   if (alert.sender_device_id !== profile.value?.device_id) {
     await notifyIncomingActivity();
   }
 });
 watch(latestQuickAlertFeedback, (feedback) => {
-  if (!feedback || !frogAlertEnabled.value) return;
+  if (!feedback || !petAlertEnabled.value) return;
   applyQuickAlertFeedback(feedback);
 });
 watch(latestQuickAlertTrustReset, (reset) => {
-  if (!reset || !frogAlertEnabled.value) return;
+  if (!reset || !petAlertEnabled.value) return;
   applyQuickAlertTrustReset(reset);
 });
 watch(latestAdminDiscoMode, (mode) => {
-  if (!mode || !frogAlertEnabled.value) return;
+  if (!mode || !petAlertEnabled.value) return;
   applyAdminDiscoMode(mode);
 });
 watch(latestAdminAlertMode, (mode) => {
-  if (!mode || !frogAlertEnabled.value) return;
+  if (!mode || !petAlertEnabled.value) return;
   applyAdminAlertMode(mode);
 });
-watch([frogAlertEnabled, pendingAlertCount, activePetAlert, petAlertProbability, discoModeActive, latestPendingAlert], () => {
-  void syncNativeFrogPet();
+watch([petAlertEnabled, pendingAlertCount, activePetAlert, petAlertProbability, discoModeActive, latestPendingAlert], () => {
+  void syncDesktopPetRuntime();
 });
 watch(isGameStarted, (started) => {
   if (activeSection.value === "games" && started) {
@@ -1173,38 +1171,22 @@ watch(() => activeConversation.value?.id, () => {
 watch(channelNotices, saveChannelNotices, { deep: true });
 watch(publicChannelMutedIds, savePublicChannelMutedIds, { deep: true });
 watch(handledPrivateChannelInvites, savePrivateChannelInviteStates, { deep: true });
-watch(frogAlertEnabled, (next) => {
-  saveFrogAlertEnabled(next);
-  if (!isPetWindow) {
-    void desktopPetStore.setEnabled(next).catch(() => undefined);
-  }
+watch(petAlertEnabled, (next) => {
+  savePetAlertEnabled(next);
+  void desktopPetStore.setEnabled(next).catch(() => undefined);
   if (!next && activeSection.value === "alerts") {
     activeSection.value = "settings";
-  }
-});
-watch(pendingAlertCount, (count) => {
-  if (count === 0) frogAlertPanelOpen.value = false;
-});
-watch(frogAlertPanelOpen, () => {
-  void syncFrogPetWindowSize();
-});
-watch(frogPetScale, () => {
-  saveFrogPetScale(frogPetScale.value);
-  if (!frogAlertPanelOpen.value) {
-    void syncFrogPetWindowSize(false);
   }
 });
 watch(quickAlertDraft, (next) => {
   saveQuickAlertText(next);
 });
-watch(frogAlertMode, (next) => {
-  saveFrogAlertMode(next);
+watch(petAlertMode, (next) => {
+  savePetAlertMode(next);
 });
-watch(frogStopHotkey, (next) => {
-  saveFrogStopHotkey(next);
-  if (!isPetWindow) {
-    void registerFrogStopHotkey(next);
-  }
+watch(petStopHotkey, (next) => {
+  savePetStopHotkey(next);
+  void registerDesktopPetStopHotkey(next);
 });
 watch(alertRecords, saveAlertRecords, { deep: true });
 watch(
@@ -1348,48 +1330,59 @@ function savePublicChannelMutedIds() {
     window.localStorage.setItem("lanchat-public-channel-muted-v1", JSON.stringify(publicChannelMutedIds.value));
   }
 }
-function readSavedFrogAlertEnabled() {
-  if (typeof window === "undefined") return true;
-  return window.localStorage.getItem("lanchat-frog-alert-enabled") !== "false";
+function readMigratedPetSetting(key: string, legacyKey: string) {
+  if (typeof window === "undefined") return null;
+  const current = window.localStorage.getItem(key);
+  if (current !== null) return current;
+  const legacy = window.localStorage.getItem(legacyKey);
+  if (legacy !== null) {
+    window.localStorage.setItem(key, legacy);
+    window.localStorage.removeItem(legacyKey);
+  }
+  return legacy;
 }
-function saveFrogAlertEnabled(value: boolean) {
+function readSavedPetAlertEnabled() {
+  if (typeof window === "undefined") return true;
+  return readMigratedPetSetting("lanchat-pet-alert-enabled", "lanchat-frog-alert-enabled") !== "false";
+}
+function savePetAlertEnabled(value: boolean) {
   if (typeof window !== "undefined") {
-    window.localStorage.setItem("lanchat-frog-alert-enabled", String(value));
+    window.localStorage.setItem("lanchat-pet-alert-enabled", String(value));
   }
 }
 function readSavedQuickAlertText() {
   if (typeof window === "undefined") return "呱呱~呱~~";
-  return window.localStorage.getItem("lanchat-frog-alert-text") || "呱呱~呱~~";
+  return readMigratedPetSetting("lanchat-pet-alert-text", "lanchat-frog-alert-text") || "呱呱~呱~~";
 }
 function saveQuickAlertText(value: string) {
   if (typeof window !== "undefined") {
     const text = value.trim() || "呱呱~呱~~";
-    window.localStorage.setItem("lanchat-frog-alert-text", text);
+    window.localStorage.setItem("lanchat-pet-alert-text", text);
   }
 }
-function readSavedFrogAlertMode(): FrogAlertMode {
+function readSavedPetAlertMode(): PetAlertMode {
   if (typeof window === "undefined") return "normal";
-  return window.localStorage.getItem("lanchat-frog-alert-mode") === "disco" ? "disco" : "normal";
+  return readMigratedPetSetting("lanchat-pet-alert-mode", "lanchat-frog-alert-mode") === "disco" ? "disco" : "normal";
 }
-function saveFrogAlertMode(value: FrogAlertMode) {
+function savePetAlertMode(value: PetAlertMode) {
   if (typeof window !== "undefined") {
-    window.localStorage.setItem("lanchat-frog-alert-mode", value === "disco" ? "disco" : "normal");
+    window.localStorage.setItem("lanchat-pet-alert-mode", value === "disco" ? "disco" : "normal");
   }
 }
-function normalizeFrogAlertMode(value: unknown): FrogAlertMode {
+function normalizePetAlertMode(value: unknown): PetAlertMode {
   return value === "disco" ? "disco" : "normal";
 }
-function readSavedFrogStopHotkey() {
+function readSavedPetStopHotkey() {
   if (typeof window === "undefined") return "";
-  return window.localStorage.getItem("lanchat-frog-stop-hotkey") || "";
+  return readMigratedPetSetting("lanchat-pet-stop-hotkey", "lanchat-frog-stop-hotkey") || "";
 }
-function saveFrogStopHotkey(value: string) {
+function savePetStopHotkey(value: string) {
   if (typeof window !== "undefined") {
     const text = value.trim();
     if (text) {
-      window.localStorage.setItem("lanchat-frog-stop-hotkey", text);
+      window.localStorage.setItem("lanchat-pet-stop-hotkey", text);
     } else {
-      window.localStorage.removeItem("lanchat-frog-stop-hotkey");
+      window.localStorage.removeItem("lanchat-pet-stop-hotkey");
     }
   }
 }
@@ -1404,34 +1397,23 @@ function hotkeyFromEvent(event: KeyboardEvent) {
     key,
   ].filter(Boolean).join("+");
 }
-function captureFrogStopHotkey(event: KeyboardEvent) {
+function captureDesktopPetStopHotkey(event: KeyboardEvent) {
   const hotkey = hotkeyFromEvent(event);
   if (!hotkey) return;
   event.preventDefault();
-  frogStopHotkey.value = hotkey;
+  petStopHotkey.value = hotkey;
 }
-function clearFrogStopHotkey() {
-  frogStopHotkey.value = "";
+function clearDesktopPetStopHotkey() {
+  petStopHotkey.value = "";
 }
-async function registerFrogStopHotkey(value = frogStopHotkey.value) {
-  await api.registerFrogStopHotkey(value).catch(() => undefined);
+async function registerDesktopPetStopHotkey(value = petStopHotkey.value) {
+  await api.registerDesktopPetStopHotkey(value).catch(() => undefined);
 }
-function handleFrogStopHotkey(event: KeyboardEvent) {
-  if (!frogStopHotkey.value) return;
-  if (hotkeyFromEvent(event) !== frogStopHotkey.value) return;
+function handleDesktopPetStopHotkey(event: KeyboardEvent) {
+  if (!petStopHotkey.value) return;
+  if (hotkeyFromEvent(event) !== petStopHotkey.value) return;
   event.preventDefault();
-  stopFrogAlertVisuals();
-}
-function readSavedFrogPetScale() {
-  if (typeof window === "undefined") return 1;
-  const saved = Number(window.localStorage.getItem("lanchat-frog-pet-scale"));
-  if (!Number.isFinite(saved)) return 1;
-  return Math.min(1.6, Math.max(0.5, saved));
-}
-function saveFrogPetScale(value: number) {
-  if (typeof window !== "undefined") {
-    window.localStorage.setItem("lanchat-frog-pet-scale", String(value));
-  }
+  stopPetAlertVisuals();
 }
 function normalizeAlertRecords(records: AlertRecord[]) {
   return records
@@ -1439,7 +1421,7 @@ function normalizeAlertRecords(records: AlertRecord[]) {
     .map((item) => ({
       ...item,
       content: item.content || "呱呱~呱~~",
-      mode: normalizeFrogAlertMode(item.mode),
+      mode: normalizePetAlertMode(item.mode),
       feedbacks: Array.isArray(item.feedbacks) ? item.feedbacks : [],
       handled: Boolean(item.handled),
       incoming: Boolean(item.incoming),
@@ -1450,7 +1432,7 @@ function normalizeAlertRecords(records: AlertRecord[]) {
 function readSavedAlertRecords(): AlertRecord[] {
   if (typeof window === "undefined") return [];
   try {
-    const raw = window.localStorage.getItem("lanchat-frog-alert-records-v1");
+    const raw = readMigratedPetSetting("lanchat-pet-alert-records-v1", "lanchat-frog-alert-records-v1");
     return raw ? normalizeAlertRecords(JSON.parse(raw) as AlertRecord[]) : [];
   } catch {
     return [];
@@ -1458,7 +1440,7 @@ function readSavedAlertRecords(): AlertRecord[] {
 }
 function saveAlertRecords() {
   if (typeof window !== "undefined") {
-    window.localStorage.setItem("lanchat-frog-alert-records-v1", JSON.stringify(normalizeAlertRecords(alertRecords.value)));
+    window.localStorage.setItem("lanchat-pet-alert-records-v1", JSON.stringify(normalizeAlertRecords(alertRecords.value)));
   }
 }
 function alertDisplayTemperature(alert?: AlertRecord | null) {
@@ -3009,7 +2991,7 @@ function alertRecordFromFrame(alert: QuickAlert): AlertRecord {
     senderDeviceId: alert.sender_device_id,
     senderNickname: alert.sender_nickname,
     content: alert.content || "呱呱~呱~~",
-    mode: normalizeFrogAlertMode(alert.mode),
+    mode: normalizePetAlertMode(alert.mode),
     createdAt: alert.created_at,
     incoming: alert.sender_device_id !== profile.value?.device_id,
     handled: alert.sender_device_id === profile.value?.device_id,
@@ -3028,7 +3010,7 @@ function applyQuickAlert(alert: QuickAlert) {
             ...item,
             senderNickname: alert.sender_nickname,
             content: alert.content || item.content,
-            mode: normalizeFrogAlertMode(alert.mode || item.mode),
+            mode: normalizePetAlertMode(alert.mode || item.mode),
             createdAt: alert.created_at || item.createdAt,
           }
         : item,
@@ -3036,9 +3018,8 @@ function applyQuickAlert(alert: QuickAlert) {
     return;
   }
   alertRecords.value = normalizeAlertRecords([alertRecordFromFrame(alert), ...alertRecords.value]);
-  if (normalizeFrogAlertMode(alert.mode) === "disco") {
-    discoModeUntil.value = Math.max(discoModeUntil.value, Date.now() + FROG_DISCO_ALERT_DURATION_MS);
-    void startDiscoWindowDance();
+  if (normalizePetAlertMode(alert.mode) === "disco") {
+    discoModeUntil.value = Math.max(discoModeUntil.value, Date.now() + PET_DISCO_ALERT_DURATION_MS);
   }
 }
 function applyQuickAlertFeedback(feedback: QuickAlertFeedback) {
@@ -3073,14 +3054,13 @@ function applyAdminDiscoMode(mode: AdminDiscoMode) {
   if (mode.target_device_id !== profile.value?.device_id) return;
   discoModeUntil.value = Math.max(discoModeUntil.value, Date.now() + mode.duration_ms);
   nowTick.value = Date.now();
-  void startDiscoWindowDance();
 }
 function applyAdminAlertMode(mode: AdminAlertMode) {
   if (mode.target_device_id !== profile.value?.device_id) return;
-  frogAlertMode.value = normalizeFrogAlertMode(mode.mode);
+  petAlertMode.value = normalizePetAlertMode(mode.mode);
 }
-async function sendFrogQuickAlert(mode: FrogAlertMode = frogAlertMode.value) {
-  if (!frogAlertEnabled.value) return;
+async function sendPetQuickAlert(mode: PetAlertMode = petAlertMode.value) {
+  if (!petAlertEnabled.value) return;
   const now = Date.now();
   if (now - lastOwnAlertSentAt.value < ALERT_SEND_COOLDOWN_MS) return;
   const alert = await store.sendQuickAlert(quickAlertDraft.value || "呱呱~呱~~", mode);
@@ -3090,9 +3070,6 @@ async function sendFrogQuickAlert(mode: FrogAlertMode = frogAlertMode.value) {
     ownAlertFlashUntil.value = Date.now();
     nowTick.value = Date.now();
   }
-}
-function handleFrogPetDoubleClick(event: MouseEvent) {
-  void sendFrogQuickAlert(event.ctrlKey ? "disco" : frogAlertMode.value);
 }
 async function resetAlertCredibilityForPeer() {
   if (!superAdminEnabled.value || !alertTrustResetTargetId.value) return;
@@ -3111,7 +3088,7 @@ async function sendAdminAlertModeToPeer() {
     applyAdminAlertMode(mode);
   }
 }
-function stopFrogAlertVisuals() {
+function stopPetAlertVisuals() {
   if (activePetAlert.value) {
     visuallyStoppedAlertIds.value = new Set([...visuallyStoppedAlertIds.value, activePetAlert.value.alertId]);
   }
@@ -3119,25 +3096,13 @@ function stopFrogAlertVisuals() {
   lastOwnAlertSentAt.value = 0;
   discoModeUntil.value = 0;
   nowTick.value = Date.now();
-  void syncNativeFrogPet();
+  void syncDesktopPetRuntime();
 }
-async function syncFrogPetWindowSize(open = frogAlertPanelOpen.value) {
-  if (!isPetWindow) return;
-  const scale = frogPetScale.value;
-  const width = open ? Math.round(FROG_PET_DETAIL_WIDTH * Math.max(1, scale * 0.92)) : Math.round(FROG_PET_BASE_WIDTH * scale);
-  const height = open ? Math.round(FROG_PET_DETAIL_HEIGHT * Math.max(1, scale * 0.9)) : Math.round(FROG_PET_BASE_HEIGHT * scale);
-  try {
-    await getCurrentWindow().setSize(new LogicalSize(width, height));
-  } catch {
-    // 浏览器预览和部分窗口管理器可能不支持动态调整，保持桌宠本体可用即可。
-  }
-}
-async function syncNativeFrogPet() {
-  if (isPetWindow) return;
+async function syncDesktopPetRuntime() {
   const alert = activePetAlert.value;
   const alertSenderPeer = alert ? peers.value.find((peer) => peer.device_id === alert.senderDeviceId) : null;
-  const nativeState: NativeFrogPetState = {
-    enabled: frogAlertEnabled.value,
+  const runtimeState: DesktopPetRuntimeState = {
+    enabled: petAlertEnabled.value,
     pending_count: pendingAlertCount.value,
     temperature: Number(petAlertProbability.value),
     latest_alert_id: alert?.alertId ?? null,
@@ -3151,59 +3116,11 @@ async function syncNativeFrogPet() {
     theme_accent: currentTheme.value.accent,
     random_move_enabled: desktopPetSettings.value?.randomMoveEnabled ?? true,
     random_life_enabled: desktopPetSettings.value?.randomLifeEnabled ?? true,
+    disco_movement_mode: desktopPetSettings.value?.discoMovementMode ?? "jump",
   };
-  await api.updateDesktopPetState(nativeState).catch(() => undefined);
+  await api.updateDesktopPetState(runtimeState).catch(() => undefined);
 }
-function resizeFrogPet(event: WheelEvent) {
-  if (frogAlertPanelOpen.value) return;
-  const direction = event.deltaY < 0 ? 1 : -1;
-  const next = frogPetScale.value + direction * 0.08;
-  frogPetScale.value = Number(Math.min(1.6, Math.max(0.5, next)).toFixed(2));
-  void syncFrogPetWindowSize(false);
-}
-async function startDiscoWindowDance() {
-  if (!isPetWindow || discoMoveTimer !== null) return;
-  const petWindow = getCurrentWindow();
-  const move = async () => {
-    if (!discoModeActive.value || !activePetAlert.value) {
-      if (discoMoveTimer !== null && typeof window !== "undefined") {
-        window.clearInterval(discoMoveTimer);
-      }
-      discoMoveTimer = null;
-      return;
-    }
-    try {
-      const monitors = await availableMonitors();
-      const monitor = monitors[Math.floor(Math.random() * Math.max(1, monitors.length))] ?? monitors[0];
-      if (!monitor) return;
-      const scale = monitor?.scaleFactor || 1;
-      const outerSize = await petWindow.outerSize();
-      const monitorX = Math.floor(monitor.position.x / scale);
-      const monitorY = Math.floor(monitor.position.y / scale);
-      const width = Math.max(260, Math.floor(monitor.size.width / scale));
-      const height = Math.max(220, Math.floor(monitor.size.height / scale));
-      const petWidth = Math.max(132, Math.floor(outerSize.width / scale));
-      const petHeight = Math.max(118, Math.floor(outerSize.height / scale));
-      const x = monitorX + Math.floor(Math.random() * Math.max(1, width - petWidth));
-      const y = monitorY + Math.floor(Math.random() * Math.max(1, height - petHeight));
-      await petWindow.setPosition(new LogicalPosition(x, y));
-    } catch {
-      // 移动桌宠窗口是尽力而为；CSS 动画仍会保留蹦迪感。
-    }
-  };
-  await move();
-  if (typeof window !== "undefined") {
-    discoMoveTimer = window.setInterval(move, 260);
-  }
-}
-function toggleFrogAlertPanel() {
-  if (!latestPendingAlert.value) {
-    frogAlertPanelOpen.value = false;
-    return;
-  }
-  frogAlertPanelOpen.value = !frogAlertPanelOpen.value;
-}
-async function feedbackFrogAlert(alert: AlertRecord | null, result: AlertFeedbackResult) {
+async function feedbackPetAlert(alert: AlertRecord | null, result: AlertFeedbackResult) {
   if (!alert || alert.localFeedback) return;
   alertRecords.value = alertRecords.value.map((item) =>
     item.alertId === alert.alertId ? { ...item, handled: true, localFeedback: result } : item,
@@ -3219,7 +3136,7 @@ function alertProbabilityLabel(alert?: AlertRecord | null) {
   return score.feedbackCount === 0 ? `${alertDisplayTemperature(alert)}°C` : `${score.probability}%`;
 }
 function openSection(section: MainSection) {
-  if (section === "alerts" && !frogAlertEnabled.value) {
+  if (section === "alerts" && !petAlertEnabled.value) {
     activeSection.value = "settings";
     return;
   }
@@ -3695,40 +3612,9 @@ async function closeWindow() {
 }
 </script>
 <template>
-  <NConfigProvider :theme-overrides="themeOverrides" :class="['provider-root', selectedTheme, { 'pet-provider': isPetWindow }]">
+  <NConfigProvider :theme-overrides="themeOverrides" :class="['provider-root', selectedTheme]">
     <NMessageProvider>
-      <div v-if="isPetWindow" class="frog-pet-window" data-tauri-drag-region>
-        <div
-          v-if="frogAlertEnabled"
-          class="frog-alert-pet detached"
-          :class="frogPetClass"
-          :style="frogPetStyle"
-          title="双击发送呱呱告警，滚轮缩放青蛙"
-          data-tauri-drag-region
-          @wheel.prevent="resizeFrogPet"
-          @dblclick.stop.prevent="handleFrogPetDoubleClick"
-        >
-          <span v-if="activePetAlert" class="frog-alert-temp">{{ petTemperatureLabel }}</span>
-          <button class="frog-alert-body" type="button" @click.stop="stopFrogAlertVisuals">
-            <span class="frog-alert-eye left"></span>
-            <span class="frog-alert-eye right"></span>
-            <span class="frog-alert-mouth"></span>
-            <span class="frog-alert-foot left"></span>
-            <span class="frog-alert-foot right"></span>
-          </button>
-          <button class="frog-alert-mark" type="button" title="查看待处理告警" @click.stop="toggleFrogAlertPanel">
-            {{ pendingAlertCount > 0 ? (pendingAlertCount > 9 ? '9+' : pendingAlertCount) : '!' }}
-          </button>
-          <div v-if="frogAlertPanelOpen && latestPendingAlert" class="frog-alert-popover">
-            <p><b>{{ latestPendingAlert.senderNickname }}</b><span>{{ latestPendingAlert.content }}</span></p>
-            <div class="frog-alert-actions">
-              <NButton size="small" type="success" @click="feedbackFrogAlert(latestPendingAlert, 'real')">真实</NButton>
-              <NButton size="small" type="error" secondary @click="feedbackFrogAlert(latestPendingAlert, 'false')">误报</NButton>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div v-else class="desktop-frame">
+      <div class="desktop-frame">
         <header class="app-titlebar" @mousedown="startWindowDrag">
           <div class="titlebar-brand">
             <span class="app-mark">L</span>
@@ -3781,7 +3667,7 @@ async function closeWindow() {
                 <span v-if="showGameAttention" class="nav-unread">{{ gameAttentionCount > 9 ? "9+" : gameAttentionCount }}</span>
               </button>
               <button
-                v-if="frogAlertEnabled"
+                v-if="petAlertEnabled"
                 class="rail-action"
                 :class="{ active: activeSection === 'alerts' }"
                 title="狼来了排行榜"
@@ -4665,14 +4551,14 @@ async function closeWindow() {
             <section v-else-if="activeSection === 'alerts'" class="workspace-view alert-dashboard-view">
               <div class="workspace-header">
                 <h2>狼来了排行榜</h2>
-                <p>按别人反馈后的真实概率排行，真实概率也会作为青蛙温度展示。</p>
+                <p>按别人反馈后的真实概率排行，真实概率也会作为桌宠温度展示。</p>
               </div>
               <div class="alert-dashboard-grid">
-                <NCard title="呱呱告警" size="small" class="frog-alert-card">
+                <NCard title="呱呱告警" size="small" class="quick-alert-card">
                   <NSpace vertical>
-                    <NText depth="3">双击桌面青蛙也可以发送呱呱告警。当前告警会广播给在线设备，后续接入 LanChat Hub 后由 Hub 转发。</NText>
+                    <NText depth="3">双击桌面桌宠也可以发送呱呱告警。当前告警会广播给在线设备，后续接入 LanChat Hub 后由 Hub 转发。</NText>
                     <NInput v-model:value="quickAlertDraft" maxlength="60" clearable placeholder="例如：快来处理一下" />
-                    <NButton type="error" block @click="sendFrogQuickAlert(frogAlertMode)">{{ quickAlertDraft || "呱呱~呱~~" }}</NButton>
+                    <NButton type="error" block @click="sendPetQuickAlert(petAlertMode)">{{ quickAlertDraft || "呱呱~呱~~" }}</NButton>
                   </NSpace>
                 </NCard>
                 <NCard title="狼来了排行" size="small" class="alert-rank-card">
@@ -4772,54 +4658,103 @@ async function closeWindow() {
                     </NAlert>
                   </NSpace>
                 </NCard>
-                <NCard v-if="settingsCategory === 'pet'" title="桌宠与青蛙告警器" size="small" class="desktop-pet-settings-card">
+                <NCard v-if="settingsCategory === 'pet'" title="桌宠与告警器" size="small" class="desktop-pet-settings-card">
                   <NSpace vertical>
                     <div class="desktop-pet-toolbar">
                       <NButton size="small" type="primary" :loading="desktopPetLoading" @click="importDesktopPetPackage">导入桌宠</NButton>
+                      <NTooltip placement="bottom-start" trigger="hover">
+                        <template #trigger>
+                          <button type="button" class="desktop-pet-import-info" aria-label="桌宠导入规则">i</button>
+                        </template>
+                        <div class="desktop-pet-import-help">
+                          <strong>桌宠导入目录规则</strong>
+                          <span>目录名必须与 manifest.json 的 id 一致。</span>
+                          <span>根目录放置 manifest.json、icon.png，可选 preview.png。</span>
+                          <span>动作资源放在 Idle、Alert、Move、Interact、Life 目录中。</span>
+                          <span>每个动作使用独立子目录，PNG 帧按动作顺序连续命名。</span>
+                          <span>导入后右键桌宠图标可编辑动作数量、持续时间和停顿。</span>
+                        </div>
+                      </NTooltip>
                       <NButton size="small" secondary :loading="desktopPetLoading" @click="desktopPetStore.refresh">刷新</NButton>
                       <NButton size="small" quaternary @click="api.openDesktopPetFolder">打开资源目录</NButton>
                     </div>
                     <NAlert v-if="desktopPetError" type="error" title="桌宠资源操作失败">{{ desktopPetError }}</NAlert>
-                    <div v-if="desktopPetPackages.length > 0" class="desktop-pet-package-list">
-                      <div
-                        v-for="pet in desktopPetPackages"
-                        :key="pet.source + '-' + pet.manifest.id"
-                        class="desktop-pet-package-row"
-                        :class="{ active: selectedDesktopPetPackage?.manifest.id === pet.manifest.id }"
-                        role="button"
-                        tabindex="0"
-                        @click="selectDesktopPetPackage(pet)"
-                        @keydown.enter="selectDesktopPetPackage(pet)"
-                      >
-                        <NAvatar :size="42" class="desktop-pet-preview" :src="desktopPetPreview(pet)">
-                          {{ pet.manifest.name.slice(0, 1) }}
-                        </NAvatar>
-                        <div class="desktop-pet-package-main">
-                          <div>
-                            <strong>{{ pet.manifest.name }}</strong>
-                            <NTag size="small" :bordered="false">{{ desktopPetSourceLabel(pet.source) }}</NTag>
-                            <NTag v-if="selectedDesktopPetPackage?.manifest.id === pet.manifest.id" size="small" type="success" :bordered="false">使用中</NTag>
-                          </div>
-                          <span>{{ pet.manifest.id }} · v{{ pet.manifest.version }} · {{ pet.manifest.resolution }}px</span>
-                          <small>
-                            <template v-for="state in DESKTOP_PET_STATE_ORDER" :key="state">
-                              {{ state }} {{ desktopPetFrameCount(pet, state) }}
-                            </template>
-                          </small>
-                          <em v-if="pet.warnings.length > 0">{{ pet.warnings.length }} 条资源警告</em>
-                        </div>
-                        <NButton
-                          v-if="pet.source === 'user'"
-                          size="tiny"
-                          quaternary
-                          type="error"
-                          @click.stop="removeDesktopPetPackage(pet)"
+                    <div v-if="desktopPetPackages.length > 0" class="desktop-pet-package-section">
+                      <button type="button" class="desktop-pet-package-toggle" @click="desktopPetPackagesExpanded = !desktopPetPackagesExpanded">
+                        <span>桌宠资源（{{ desktopPetPackages.length }}）</span>
+                        <span aria-hidden="true">{{ desktopPetPackagesExpanded ? '⌃' : '⌄' }}</span>
+                      </button>
+                      <div v-if="desktopPetPackagesExpanded" class="desktop-pet-package-list">
+                        <NTooltip
+                          v-for="pet in desktopPetPackages"
+                          :key="pet.source + '-' + pet.manifest.id"
+                          placement="bottom"
                         >
-                          删除
-                        </NButton>
+                          <template #trigger>
+                            <button
+                              type="button"
+                              class="desktop-pet-logo-button"
+                              :class="{ active: selectedDesktopPetPackage?.manifest.id === pet.manifest.id }"
+                              @click="selectDesktopPetPackage(pet)"
+                              @contextmenu.prevent="openDesktopPetManifestEditor(pet)"
+                            >
+                              <img class="desktop-pet-logo" :src="desktopPetPreview(pet)" :alt="pet.manifest.name" />
+                              <span v-if="selectedDesktopPetPackage?.manifest.id === pet.manifest.id" class="desktop-pet-selected-mark">✓</span>
+                            </button>
+                          </template>
+                          {{ pet.manifest.name }} · {{ desktopPetSourceLabel(pet.source) }} · {{ desktopPetFrameCount(pet, 'Idle') }} 帧；右键编辑配置
+                        </NTooltip>
                       </div>
                     </div>
-                    <NEmpty v-else size="small" description="尚未导入桌宠资源包；当前继续使用内置青蛙兜底。" />
+                    <NEmpty v-else size="small" description="尚未发现可用的桌宠资源包。" />
+                    <NModal v-model:show="desktopPetManifestEditorOpen">
+                      <NCard
+                        class="desktop-pet-manifest-editor"
+                        :title="`动作配置 · ${desktopPetManifestEditorTarget?.manifest.name ?? ''}`"
+                        size="small"
+                        closable
+                        @close="desktopPetManifestEditorOpen = false"
+                      >
+                        <NTabs type="line" animated>
+                          <NTabPane v-for="state in DESKTOP_PET_STATE_ORDER" :key="state" :name="state" :tab="DESKTOP_PET_STATE_LABELS[state]">
+                            <div v-if="desktopPetPlaybackDraft[state]" class="desktop-pet-playback-grid">
+                              <NFormItem label="单动作最短持续（毫秒）" :show-feedback="false">
+                                <NInputNumber v-model:value="desktopPetPlaybackDraft[state].minDurationMs" :min="0" :max="300000" />
+                              </NFormItem>
+                              <NFormItem label="单动作最长持续（毫秒）" :show-feedback="false">
+                                <NInputNumber v-model:value="desktopPetPlaybackDraft[state].maxDurationMs" :min="0" :max="300000" />
+                              </NFormItem>
+                              <NFormItem label="最少随机动作数" :show-feedback="false">
+                                <NInputNumber v-model:value="desktopPetPlaybackDraft[state].minActionCount" :min="1" :max="20" />
+                              </NFormItem>
+                              <NFormItem label="最多随机动作数" :show-feedback="false">
+                                <NInputNumber v-model:value="desktopPetPlaybackDraft[state].maxActionCount" :min="1" :max="20" />
+                              </NFormItem>
+                              <NFormItem label="动作间最短停顿（毫秒）" :show-feedback="false">
+                                <NInputNumber v-model:value="desktopPetPlaybackDraft[state].minIntervalMs" :min="0" :max="60000" />
+                              </NFormItem>
+                              <NFormItem label="动作间最长停顿（毫秒）" :show-feedback="false">
+                                <NInputNumber v-model:value="desktopPetPlaybackDraft[state].maxIntervalMs" :min="0" :max="60000" />
+                              </NFormItem>
+                            </div>
+                          </NTabPane>
+                        </NTabs>
+                        <template #footer>
+                          <div class="desktop-pet-manifest-actions">
+                            <NButton
+                              v-if="desktopPetManifestEditorTarget?.source === 'user'"
+                              size="small"
+                              type="error"
+                              quaternary
+                              @click="removeDesktopPetFromEditor"
+                            >删除桌宠</NButton>
+                            <span></span>
+                            <NButton size="small" @click="desktopPetManifestEditorOpen = false">取消</NButton>
+                            <NButton size="small" type="primary" :loading="desktopPetLoading" @click="saveDesktopPetManifestConfig">保存并应用</NButton>
+                          </div>
+                        </template>
+                      </NCard>
+                    </NModal>
                     <NAlert v-if="desktopPetIssues.length > 0" type="warning" title="发现无法使用的资源包">
                       <div v-for="issue in desktopPetIssues.slice(0, 3)" :key="issue.root + issue.error">
                         {{ issue.root }}：{{ issue.error }}
@@ -4830,7 +4765,7 @@ async function closeWindow() {
                         <strong>启用桌面桌宠告警器</strong>
                         <p>开启后左侧显示告警入口，并允许桌宠接收、反馈和展示告警真实度。</p>
                       </div>
-                      <NSwitch v-model:value="frogAlertEnabled" />
+                      <NSwitch v-model:value="petAlertEnabled" />
                     </div>
                     <div class="setting-switch-row">
                       <div>
@@ -4852,25 +4787,37 @@ async function closeWindow() {
                         @update:value="updateDesktopPetBehavior('randomLifeEnabled', $event)"
                       />
                     </div>
-                    <NText depth="3">收到告警时青蛙会在红色和绿色之间交叉闪烁，右上角显示感叹号；反馈真实/误报后会更新排行榜。</NText>
+                    <NText depth="3">收到告警时桌宠会播放告警动作并显示未处理数量；反馈真实/误报后会更新排行榜。</NText>
                     <NFormItem label="默认告警文案" :show-feedback="false">
                       <NInput v-model:value="quickAlertDraft" maxlength="60" clearable placeholder="呱呱~呱~~" />
                     </NFormItem>
                     <NFormItem label="本机报警模式" :show-feedback="false">
-                      <NRadioGroup v-model:value="frogAlertMode" name="frog-alert-mode">
+                      <NRadioGroup v-model:value="petAlertMode" name="pet-alert-mode">
                         <NSpace>
                           <NRadioButton value="normal">普通报警</NRadioButton>
                           <NRadioButton value="disco">蹦迪报警</NRadioButton>
                         </NSpace>
                       </NRadioGroup>
                     </NFormItem>
+                    <NFormItem label="蹦迪移动方式" :show-feedback="false">
+                      <NRadioGroup
+                        :value="desktopPetSettings?.discoMovementMode ?? 'jump'"
+                        name="desktop-pet-disco-movement"
+                        @update:value="updateDesktopPetBehavior('discoMovementMode', $event)"
+                      >
+                        <NSpace>
+                          <NRadioButton value="linear">线性移动</NRadioButton>
+                          <NRadioButton value="jump">跳跃移动</NRadioButton>
+                        </NSpace>
+                      </NRadioGroup>
+                    </NFormItem>
                     <NFormItem label="停止快捷键" :show-feedback="false">
                       <NSpace vertical :size="6" style="width: 100%">
-                        <NInput v-model:value="frogStopHotkey" readonly clearable placeholder="点击后按下快捷键，例如 Ctrl+Alt+F" @keydown="captureFrogStopHotkey" @clear="clearFrogStopHotkey" />
-                        <NText depth="3">收到告警或蹦迪时，按该快捷键等同于点击一次青蛙本体，会停止闪烁和蹦迪。</NText>
+                        <NInput v-model:value="petStopHotkey" readonly clearable placeholder="点击后按下快捷键，例如 Ctrl+Alt+F" @keydown="captureDesktopPetStopHotkey" @clear="clearDesktopPetStopHotkey" />
+                        <NText depth="3">收到告警或蹦迪时，按该快捷键等同于点击一次桌宠本体，会停止告警动作和蹦迪。</NText>
                       </NSpace>
                     </NFormItem>
-                    <NButton v-if="frogAlertEnabled" block type="error" @click="sendFrogQuickAlert(frogAlertMode)">发送一次测试告警</NButton>
+                    <NButton v-if="petAlertEnabled" block type="error" @click="sendPetQuickAlert(petAlertMode)">发送一次测试告警</NButton>
                   </NSpace>
                 </NCard>
                 <NCard v-if="settingsCategory === 'pet' && superAdminEnabled" title="告警真实度" size="small">
@@ -4896,7 +4843,7 @@ async function closeWindow() {
                 </NCard>
                 <NCard v-if="settingsCategory === 'basic'" title="LanChat Hub 演进" size="small">
                   <NSpace vertical>
-                    <NText depth="3">当前仍使用局域网点对点 TCP 广播；青蛙告警、反馈和排行榜同步已经设计成独立事件帧，后续 Hub 只需要转发这些事件。</NText>
+                    <NText depth="3">当前仍使用局域网点对点 TCP 广播；桌宠告警、反馈和排行榜同步已经设计成独立事件帧，后续 Hub 只需要转发这些事件。</NText>
                     <div class="hub-evolution-list">
                       <span>1. 客户端发现 Hub 后优先连接 Hub</span>
                       <span>2. 告警和反馈由 Hub 转发给在线设备</span>

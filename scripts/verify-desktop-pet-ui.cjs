@@ -13,7 +13,7 @@ async function capture(browser, width, height) {
     throw new Error("基础设置中不应展示桌宠设置卡片");
   }
   await petSettingsButton.click();
-  await page.getByText("桌宠与青蛙告警器", { exact: true }).waitFor();
+  await page.getByText("桌宠与告警器", { exact: true }).waitFor();
   const metrics = await page.locator(".desktop-pet-settings-card").evaluate((element) => ({
     width: element.getBoundingClientRect().width,
     right: element.getBoundingClientRect().right,

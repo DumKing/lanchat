@@ -1,10 +1,10 @@
 mod channel_crypto;
 mod debug_log;
 mod desktop_pet;
+mod desktop_pet_runtime;
 mod file_server;
 mod identity;
 mod network;
-mod native_frog_pet;
 mod protocol;
 mod storage;
 
@@ -14,14 +14,19 @@ mod desktop_pet_tests;
 use channel_crypto::{generate_channel_key, CHANNEL_KEY_VERSION};
 use desktop_pet::{
     DesktopPetManager, DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings,
-    PetPackageSource, PetResourceRoot,
+    PetPackageSource, PetResourceRoot, PetStatePlaybackConfig,
 };
+use desktop_pet_runtime::{DesktopPetController, DesktopPetRuntimeState};
 use file_server::FileServer;
 use network::Network;
 use protocol::GameFrame;
 use protocol::MessageRecallFrame;
-use protocol::{AdminAlertModeFrame, AdminDiscoModeFrame, QuickAlertFeedbackFrame, QuickAlertFrame, QuickAlertTrustResetFrame};
+use protocol::{
+    AdminAlertModeFrame, AdminDiscoModeFrame, QuickAlertFeedbackFrame, QuickAlertFrame,
+    QuickAlertTrustResetFrame,
+};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -33,7 +38,6 @@ use tauri::image::Image;
 use tauri::menu::{Menu, MenuItemBuilder, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, LogicalSize, Manager, Size, State, UserAttentionType, WindowEvent};
-use native_frog_pet::{NativeFrogPetController, NativeFrogPetState};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use uuid::Uuid;
 
@@ -68,15 +72,19 @@ struct AppState {
     network: Network,
     file_server: FileServer,
     tray: Arc<Mutex<TrayState>>,
-    native_frog_pet: NativeFrogPetController,
+    desktop_pet_controller: DesktopPetController,
     desktop_pet: DesktopPetManager,
-    frog_stop_hotkey: Arc<Mutex<Option<Shortcut>>>,
+    desktop_pet_stop_hotkey: Arc<Mutex<Option<Shortcut>>>,
 }
 
 const TRAY_NORMAL_ICON: &[u8] = include_bytes!("../icons/32x32.png");
 const TRAY_ALERT_ICON: &[u8] = include_bytes!("../icons/tray-alert.png");
 
-fn can_manage_private_channel(channel_owner_device_id: &str, profile_device_id: &str, super_admin: bool) -> bool {
+fn can_manage_private_channel(
+    channel_owner_device_id: &str,
+    profile_device_id: &str,
+    super_admin: bool,
+) -> bool {
     super_admin || channel_owner_device_id == profile_device_id
 }
 
@@ -97,14 +105,23 @@ fn update_profile(
     if nickname.is_empty() {
         return Err("昵称不能为空".to_string());
     }
-    if let Some(value) = avatar.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
-        let encoded = value.split_once(',').map(|(_, payload)| payload).unwrap_or(value);
+    if let Some(value) = avatar
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let encoded = value
+            .split_once(',')
+            .map(|(_, payload)| payload)
+            .unwrap_or(value);
         let approx_bytes = encoded.len().saturating_mul(3) / 4;
         if approx_bytes > 500 * 1024 {
             return Err("头像图片不能超过 500KB".to_string());
         }
     }
-    let profile = state.storage.update_profile(nickname, listen_port, avatar)?;
+    let profile = state
+        .storage
+        .update_profile(nickname, listen_port, avatar)?;
     state.network.broadcast_profile_status(app, &profile)?;
     Ok(profile)
 }
@@ -686,7 +703,11 @@ async fn send_quick_alert(
     mode: Option<String>,
 ) -> Result<QuickAlertFrame, String> {
     let profile = state.storage.get_or_create_profile()?;
-    let mode = if mode.as_deref().unwrap_or("normal").eq_ignore_ascii_case("disco") {
+    let mode = if mode
+        .as_deref()
+        .unwrap_or("normal")
+        .eq_ignore_ascii_case("disco")
+    {
         "disco".to_string()
     } else {
         "normal".to_string()
@@ -779,7 +800,11 @@ async fn send_admin_disco_mode(
     }
     let frame = state
         .network
-        .send_admin_disco_mode(app.clone(), target_device_id, duration_ms.unwrap_or(120_000))
+        .send_admin_disco_mode(
+            app.clone(),
+            target_device_id,
+            duration_ms.unwrap_or(120_000),
+        )
         .await?;
     app.emit("admin_disco_mode_received", &frame).ok();
     Ok(frame)
@@ -805,12 +830,6 @@ async fn send_admin_alert_mode(
 }
 
 #[tauri::command]
-fn set_frog_pet_enabled(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
-    state.native_frog_pet.set_enabled(enabled);
-    Ok(())
-}
-
-#[tauri::command]
 fn list_desktop_pets(state: State<'_, AppState>) -> Result<DesktopPetRegistrySnapshot, String> {
     Ok(state.desktop_pet.snapshot())
 }
@@ -822,7 +841,7 @@ fn refresh_desktop_pets(
 ) -> Result<DesktopPetRegistrySnapshot, String> {
     state.desktop_pet.refresh();
     state
-        .native_frog_pet
+        .desktop_pet_controller
         .set_package(state.desktop_pet.selected_package());
     let snapshot = state.desktop_pet.snapshot();
     app.emit("desktop_pet_registry_changed", &snapshot).ok();
@@ -851,7 +870,7 @@ fn remove_desktop_pet(
 ) -> Result<(), String> {
     state.desktop_pet.remove_user_package(pet_id.trim())?;
     state
-        .native_frog_pet
+        .desktop_pet_controller
         .set_package(state.desktop_pet.selected_package());
     app.emit("desktop_pet_registry_changed", state.desktop_pet.snapshot())
         .ok();
@@ -866,7 +885,7 @@ fn select_desktop_pet(
 ) -> Result<DesktopPetSettings, String> {
     let settings = state.desktop_pet.select(pet_id.trim())?;
     state
-        .native_frog_pet
+        .desktop_pet_controller
         .set_package(state.desktop_pet.selected_package());
     app.emit("desktop_pet_selected", &settings).ok();
     Ok(settings)
@@ -884,12 +903,30 @@ fn update_desktop_pet_settings(
     settings: DesktopPetSettings,
 ) -> Result<DesktopPetSettings, String> {
     let settings = state.desktop_pet.update_settings(settings)?;
-    state.native_frog_pet.set_enabled(settings.enabled);
+    state.desktop_pet_controller.set_enabled(settings.enabled);
     state
-        .native_frog_pet
+        .desktop_pet_controller
         .set_package(state.desktop_pet.selected_package());
     app.emit("desktop_pet_selected", &settings).ok();
     Ok(settings)
+}
+
+#[tauri::command]
+fn update_desktop_pet_playback_config(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    pet_id: String,
+    configs: HashMap<String, PetStatePlaybackConfig>,
+) -> Result<DesktopPetPackage, String> {
+    let package = state
+        .desktop_pet
+        .update_playback_configs(pet_id.trim(), configs)?;
+    state
+        .desktop_pet_controller
+        .set_package(state.desktop_pet.selected_package());
+    app.emit("desktop_pet_registry_changed", state.desktop_pet.snapshot())
+        .ok();
+    Ok(package)
 }
 
 #[tauri::command]
@@ -905,23 +942,23 @@ fn set_desktop_pet_enabled(state: State<'_, AppState>, enabled: bool) -> Result<
     let mut settings = state.desktop_pet.settings();
     settings.enabled = enabled;
     state.desktop_pet.update_settings(settings)?;
-    state.native_frog_pet.set_enabled(enabled);
+    state.desktop_pet_controller.set_enabled(enabled);
     Ok(())
 }
 
 #[tauri::command]
 fn update_desktop_pet_state(
     state: State<'_, AppState>,
-    pet_state: NativeFrogPetState,
+    pet_state: DesktopPetRuntimeState,
 ) -> Result<(), String> {
-    state.native_frog_pet.update(pet_state);
+    state.desktop_pet_controller.update(pet_state);
     Ok(())
 }
 
 fn start_desktop_pet_watcher(
     app: tauri::AppHandle,
     manager: DesktopPetManager,
-    controller: NativeFrogPetController,
+    controller: DesktopPetController,
 ) {
     std::thread::Builder::new()
         .name("lanchat-desktop-pet-watcher".to_string())
@@ -929,19 +966,11 @@ fn start_desktop_pet_watcher(
             std::thread::sleep(Duration::from_secs(2));
             if manager.refresh_if_changed() {
                 controller.set_package(manager.selected_package());
-                app.emit("desktop_pet_registry_changed", manager.snapshot()).ok();
+                app.emit("desktop_pet_registry_changed", manager.snapshot())
+                    .ok();
             }
         })
         .ok();
-}
-
-#[tauri::command]
-fn update_native_frog_pet(
-    state: State<'_, AppState>,
-    pet_state: NativeFrogPetState,
-) -> Result<(), String> {
-    state.native_frog_pet.update(pet_state);
-    Ok(())
 }
 
 fn parse_shortcut_code(value: &str) -> Option<Code> {
@@ -974,10 +1003,14 @@ fn parse_shortcut_code(value: &str) -> Option<Code> {
     Code::from_str(&normalized).ok()
 }
 
-fn parse_frog_stop_hotkey(value: &str) -> Result<Shortcut, String> {
+fn parse_desktop_pet_stop_hotkey(value: &str) -> Result<Shortcut, String> {
     let mut modifiers = Modifiers::empty();
     let mut code = None;
-    for part in value.split('+').map(str::trim).filter(|part| !part.is_empty()) {
+    for part in value
+        .split('+')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
         match part.to_ascii_lowercase().as_str() {
             "ctrl" | "control" => modifiers |= Modifiers::CONTROL,
             "alt" | "option" => modifiers |= Modifiers::ALT,
@@ -993,13 +1026,13 @@ fn parse_frog_stop_hotkey(value: &str) -> Result<Shortcut, String> {
 }
 
 #[tauri::command]
-fn register_frog_stop_hotkey(
+fn register_desktop_pet_stop_hotkey(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     hotkey: String,
 ) -> Result<(), String> {
     let mut current = state
-        .frog_stop_hotkey
+        .desktop_pet_stop_hotkey
         .lock()
         .map_err(|_| "快捷键状态锁定失败".to_string())?;
     if let Some(previous) = current.take() {
@@ -1009,7 +1042,7 @@ fn register_frog_stop_hotkey(
     if hotkey.is_empty() {
         return Ok(());
     }
-    let shortcut = parse_frog_stop_hotkey(hotkey)?;
+    let shortcut = parse_desktop_pet_stop_hotkey(hotkey)?;
     app.global_shortcut()
         .register(shortcut)
         .map_err(|err| format!("注册停止蹦迪快捷键失败：{err}"))?;
@@ -1017,14 +1050,19 @@ fn register_frog_stop_hotkey(
     Ok(())
 }
 
-fn show_main_window(app: &tauri::AppHandle, target: Option<TrayAttentionItem>) -> Result<(), String> {
+fn show_main_window(
+    app: &tauri::AppHandle,
+    target: Option<TrayAttentionItem>,
+) -> Result<(), String> {
     let Some(window) = app.get_webview_window("main") else {
         return Ok(());
     };
     window
         .set_skip_taskbar(false)
         .map_err(|err| format!("恢复任务栏图标失败：{err}"))?;
-    window.show().map_err(|err| format!("显示窗口失败：{err}"))?;
+    window
+        .show()
+        .map_err(|err| format!("显示窗口失败：{err}"))?;
     window
         .unminimize()
         .map_err(|err| format!("恢复最小化窗口失败：{err}"))?;
@@ -1044,7 +1082,9 @@ fn hide_main_window_to_tray(app: &tauri::AppHandle) -> Result<(), String> {
     window
         .set_skip_taskbar(true)
         .map_err(|err| format!("隐藏任务栏图标失败：{err}"))?;
-    window.hide().map_err(|err| format!("隐藏到托盘失败：{err}"))
+    window
+        .hide()
+        .map_err(|err| format!("隐藏到托盘失败：{err}"))
 }
 
 fn quit_lanchat(app: &tauri::AppHandle) -> ! {
@@ -1052,7 +1092,10 @@ fn quit_lanchat(app: &tauri::AppHandle) -> ! {
     std::process::exit(0);
 }
 
-fn rebuild_tray_menu(app: &tauri::AppHandle, items: &[TrayAttentionItem]) -> Result<Menu<tauri::Wry>, String> {
+fn rebuild_tray_menu(
+    app: &tauri::AppHandle,
+    items: &[TrayAttentionItem],
+) -> Result<Menu<tauri::Wry>, String> {
     let menu = Menu::new(app).map_err(|err| format!("创建托盘菜单失败：{err}"))?;
     let open = MenuItemBuilder::with_id("tray-open-latest", "打开 LanChat")
         .build(app)
@@ -1061,7 +1104,8 @@ fn rebuild_tray_menu(app: &tauri::AppHandle, items: &[TrayAttentionItem]) -> Res
         .map_err(|err| format!("创建托盘菜单失败：{err}"))?;
 
     if !items.is_empty() {
-        let separator = PredefinedMenuItem::separator(app).map_err(|err| format!("创建托盘菜单失败：{err}"))?;
+        let separator =
+            PredefinedMenuItem::separator(app).map_err(|err| format!("创建托盘菜单失败：{err}"))?;
         menu.append(&separator)
             .map_err(|err| format!("创建托盘菜单失败：{err}"))?;
         for (index, item) in items.iter().take(8).enumerate() {
@@ -1078,7 +1122,8 @@ fn rebuild_tray_menu(app: &tauri::AppHandle, items: &[TrayAttentionItem]) -> Res
         }
     }
 
-    let separator = PredefinedMenuItem::separator(app).map_err(|err| format!("创建托盘菜单失败：{err}"))?;
+    let separator =
+        PredefinedMenuItem::separator(app).map_err(|err| format!("创建托盘菜单失败：{err}"))?;
     let quit = MenuItemBuilder::with_id("tray-quit", "退出")
         .build(app)
         .map_err(|err| format!("创建托盘菜单失败：{err}"))?;
@@ -1123,7 +1168,11 @@ fn update_tray_visuals(app: &tauri::AppHandle, state: &TrayState) -> Result<(), 
 }
 
 fn set_tray_icon(tray: &tauri::tray::TrayIcon, alert: bool) -> Result<(), String> {
-    let bytes = if alert { TRAY_ALERT_ICON } else { TRAY_NORMAL_ICON };
+    let bytes = if alert {
+        TRAY_ALERT_ICON
+    } else {
+        TRAY_NORMAL_ICON
+    };
     let image = Image::from_bytes(bytes).map_err(|err| format!("读取托盘图标失败：{err}"))?;
     tray.set_icon(Some(image))
         .map_err(|err| format!("更新托盘图标失败：{err}"))
@@ -1172,7 +1221,9 @@ fn minimize_main_window(app: tauri::AppHandle) -> Result<(), String> {
     let Some(window) = app.get_webview_window("main") else {
         return Ok(());
     };
-    window.minimize().map_err(|err| format!("最小化窗口失败：{err}"))
+    window
+        .minimize()
+        .map_err(|err| format!("最小化窗口失败：{err}"))
 }
 
 #[tauri::command]
@@ -1316,9 +1367,18 @@ fn setup_tray(app: &tauri::App, tray_state: Arc<Mutex<TrayState>>) -> Result<(),
                     quit_lanchat(app);
                 }
                 let target = if id == "tray-open-latest" {
-                    tray_state.lock().ok().and_then(|state| state.latest_target.clone())
-                } else if let Some(index) = id.strip_prefix("tray-target-").and_then(|value| value.parse::<usize>().ok()) {
-                    tray_state.lock().ok().and_then(|state| state.items.get(index).cloned())
+                    tray_state
+                        .lock()
+                        .ok()
+                        .and_then(|state| state.latest_target.clone())
+                } else if let Some(index) = id
+                    .strip_prefix("tray-target-")
+                    .and_then(|value| value.parse::<usize>().ok())
+                {
+                    tray_state
+                        .lock()
+                        .ok()
+                        .and_then(|state| state.items.get(index).cloned())
                 } else {
                     None
                 };
@@ -1330,9 +1390,19 @@ fn setup_tray(app: &tauri::App, tray_state: Arc<Mutex<TrayState>>) -> Result<(),
         .on_tray_icon_event({
             let tray_state = tray_state.clone();
             move |tray, event| match event {
-                TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. }
-                | TrayIconEvent::DoubleClick { button: MouseButton::Left, .. } => {
-                    let target = tray_state.lock().ok().and_then(|state| state.latest_target.clone());
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                }
+                | TrayIconEvent::DoubleClick {
+                    button: MouseButton::Left,
+                    ..
+                } => {
+                    let target = tray_state
+                        .lock()
+                        .ok()
+                        .and_then(|state| state.latest_target.clone());
                     let _ = show_main_window(tray.app_handle(), target);
                 }
                 _ => {}
@@ -1374,11 +1444,15 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             let _ = show_main_window(app, None);
         }))
-        .plugin(tauri_plugin_global_shortcut::Builder::new().with_handler(|app, _shortcut, event| {
-            if event.state == ShortcutState::Pressed {
-                let _ = app.emit("frog_stop_hotkey_received", ());
-            }
-        }).build())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state == ShortcutState::Pressed {
+                        let _ = app.emit("desktop_pet_stop_hotkey_received", ());
+                    }
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -1419,23 +1493,23 @@ pub fn run() {
                 app_dir.join("desktop-pets"),
                 app_dir.join("desktop-pet-settings.json"),
             );
-            let native_frog_pet = NativeFrogPetController::start(app.handle().clone());
+            let desktop_pet_controller = DesktopPetController::start(app.handle().clone());
             let pet_settings = desktop_pet.settings();
-            native_frog_pet.set_enabled(pet_settings.enabled);
-            native_frog_pet.set_package(desktop_pet.selected_package());
+            desktop_pet_controller.set_enabled(pet_settings.enabled);
+            desktop_pet_controller.set_package(desktop_pet.selected_package());
             start_desktop_pet_watcher(
                 app.handle().clone(),
                 desktop_pet.clone(),
-                native_frog_pet.clone(),
+                desktop_pet_controller.clone(),
             );
             app.manage(AppState {
                 storage,
                 network,
                 file_server,
                 tray: tray_state,
-                native_frog_pet,
+                desktop_pet_controller,
                 desktop_pet,
-                frog_stop_hotkey: Arc::new(Mutex::new(None)),
+                desktop_pet_stop_hotkey: Arc::new(Mutex::new(None)),
             });
             Ok(())
         })
@@ -1485,12 +1559,11 @@ pub fn run() {
             select_desktop_pet,
             get_desktop_pet_settings,
             update_desktop_pet_settings,
+            update_desktop_pet_playback_config,
             open_desktop_pet_folder,
             set_desktop_pet_enabled,
             update_desktop_pet_state,
-            set_frog_pet_enabled,
-            update_native_frog_pet,
-            register_frog_stop_hotkey,
+            register_desktop_pet_stop_hotkey,
             start_main_window_drag,
             minimize_main_window,
             toggle_main_window_maximized,
@@ -1503,7 +1576,3 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
-
-
-
-
