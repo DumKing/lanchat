@@ -17,6 +17,7 @@ src-tauri/target*/
 src-tauri/gen/
 
 # Local preview, verification and packaging outputs
+.worktrees/
 .tmp/
 .tmp-*/
 .package/
