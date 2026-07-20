@@ -5,6 +5,13 @@ export type Profile = {
   avatar?: string | null;
 };
 
+export type PlatformInfo = {
+  os: "windows" | "macos" | "linux" | string;
+  windowsFirewallRepairSupported: boolean;
+  desktopPetSupported: boolean;
+  globalShortcutRequiresPermission: boolean;
+};
+
 export type Peer = {
   device_id: string;
   nickname: string;

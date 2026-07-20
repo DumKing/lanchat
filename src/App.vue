@@ -42,7 +42,7 @@ import { api } from "./services/tauri-api";
 import { DEFAULT_GROUP_ID, useLanChatStore } from "./stores/lanchat";
 import { useDesktopPetStore } from "./stores/desktopPet";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, PetPackageSource, PetStateKind, PetStatePlaybackConfig } from "./types/desktop-pet";
-import type { AdminAlertMode, AdminDiscoMode, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Peer, PetAlertMode, PrivateChannelInvitePayload, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem } from "./types/lanchat";
+import type { AdminAlertMode, AdminDiscoMode, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Peer, PetAlertMode, PlatformInfo, PrivateChannelInvitePayload, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem } from "./types/lanchat";
 import { DDZ_TURN_TIMEOUT_MS, canBeat, dealHands, evaluatePlay, isTurnTimedOut, playLabel, sortCards, turnRemainingSeconds, type DdzCard, type DdzPhase, type DdzPlay } from "./games/doudizhu";
 import { GOMOKU_TURN_TIMEOUT_MS, chooseAutoGomokuPoint, cloneGomokuBoard, createGomokuBoard, gomokuStoneLabel, gomokuTurnRemainingSeconds, isGomokuTurnTimedOut, placeGomokuStone, type GomokuBoard, type GomokuPhase, type GomokuPoint, type GomokuStone } from "./games/gomoku";
 import { cloneXiangqiBoard, createXiangqiBoard, createXiangqiDisplayGrid, isLegalXiangqiMove, moveXiangqiPiece, otherXiangqiSide, resignXiangqiSide, undoXiangqiMove, xiangqiPieceLabel, xiangqiSideLabel, type XiangqiBoard, type XiangqiPhase, type XiangqiPiece, type XiangqiPoint, type XiangqiSide } from "./games/xiangqi";
@@ -317,11 +317,22 @@ const {
 } = storeToRefs(store);
 const messagePane = ref<HTMLElement | null>(null);
 const roomChatPane = ref<HTMLElement | null>(null);
+const platformInfo = ref<PlatformInfo | null>(null);
 const nicknameDraft = ref("");
 const portDraft = ref(18145);
 const avatarDraft = ref("");
 const profileAvatarInput = ref<HTMLInputElement | null>(null);
 const AVATAR_MAX_BYTES = 500 * 1024;
+const canRepairWindowsNetwork = computed(() => platformInfo.value?.windowsFirewallRepairSupported ?? true);
+const networkRepairDescription = computed(() => {
+  if (canRepairWindowsNetwork.value) {
+    return "当 Windows 专用网络或公用网络下发现不到局域网设备时，可一键放行 LanChat 的局域网通信。";
+  }
+  if (platformInfo.value?.os === "macos") {
+    return "macOS 下请在系统设置中允许 LanChat 访问本地网络，并确认防火墙没有阻止传入连接。";
+  }
+  return "当前平台不支持 Windows 网络修复，请检查系统防火墙和本地网络权限。";
+});
 const isRecording = ref(false);
 const recordingStartedAt = ref(0);
 let mediaRecorder: MediaRecorder | null = null;
@@ -992,6 +1003,7 @@ async function updateDesktopPetBehavior<K extends keyof DesktopPetSettings>(key:
   await syncDesktopPetRuntime();
 }
 onMounted(async () => {
+  platformInfo.value = await api.getPlatformInfo().catch(() => null);
   await store.initialize();
   await desktopPetStore.initialize();
   if (desktopPetSettings.value) {
@@ -4650,9 +4662,9 @@ async function closeWindow() {
                 </NCard>
                 <NCard v-if="settingsCategory === 'basic'" title="网络修复" size="small">
                   <NSpace vertical>
-                    <NText depth="3">当 Windows 专用网络或公用网络下发现不到局域网设备时，可一键放行 LanChat 的局域网通信。</NText>
-                    <NText depth="3">会请求管理员权限，并放行 LanChat.exe、TCP 18145、UDP 18146、UDP 5353。</NText>
-                    <NButton block type="primary" :loading="networkRepairing" @click="store.repairNetwork">网络修复</NButton>
+                    <NText depth="3">{{ networkRepairDescription }}</NText>
+                    <NText v-if="canRepairWindowsNetwork" depth="3">会请求管理员权限，并放行 LanChat.exe、TCP 18145、UDP 18146、UDP 5353。</NText>
+                    <NButton v-if="canRepairWindowsNetwork" block type="primary" :loading="networkRepairing" @click="store.repairNetwork">网络修复</NButton>
                     <NAlert v-if="networkRepairStatus" type="success" title="已打开修复窗口">
                       {{ networkRepairStatus }}
                     </NAlert>

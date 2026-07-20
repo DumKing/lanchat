@@ -67,6 +67,15 @@ struct TrayState {
     items: Vec<TrayAttentionItem>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlatformInfo {
+    os: &'static str,
+    windows_firewall_repair_supported: bool,
+    desktop_pet_supported: bool,
+    global_shortcut_requires_permission: bool,
+}
+
 struct AppState {
     storage: Arc<Storage>,
     network: Network,
@@ -79,6 +88,44 @@ struct AppState {
 
 const TRAY_NORMAL_ICON: &[u8] = include_bytes!("../icons/32x32.png");
 const TRAY_ALERT_ICON: &[u8] = include_bytes!("../icons/tray-alert.png");
+
+fn platform_info_value() -> PlatformInfo {
+    PlatformInfo {
+        os: std::env::consts::OS,
+        windows_firewall_repair_supported: cfg!(target_os = "windows"),
+        desktop_pet_supported: cfg!(any(
+            target_os = "windows",
+            target_os = "macos",
+            target_os = "linux"
+        )),
+        global_shortcut_requires_permission: cfg!(target_os = "macos"),
+    }
+}
+
+#[tauri::command]
+fn get_platform_info() -> PlatformInfo {
+    platform_info_value()
+}
+
+#[cfg(test)]
+mod platform_info_tests {
+    use super::*;
+
+    #[test]
+    fn platform_info_matches_compiled_target() {
+        let info = platform_info_value();
+
+        assert!(!info.os.is_empty());
+        assert_eq!(
+            info.windows_firewall_repair_supported,
+            cfg!(target_os = "windows")
+        );
+        assert_eq!(
+            info.global_shortcut_requires_permission,
+            cfg!(target_os = "macos")
+        );
+    }
+}
 
 fn can_manage_private_channel(
     channel_owner_device_id: &str,
@@ -1285,7 +1332,7 @@ fn quit_app(app: tauri::AppHandle) {
 fn repair_windows_firewall() -> Result<String, String> {
     #[cfg(not(target_os = "windows"))]
     {
-        return Err("网络修复目前仅支持 Windows".to_string());
+        return Err("当前平台不需要 Windows 网络修复。macOS 请在系统设置中允许 LanChat 访问本地网络，并确认防火墙没有阻止传入连接。".to_string());
     }
 
     #[cfg(target_os = "windows")]
@@ -1522,6 +1569,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            get_platform_info,
             get_profile,
             update_profile,
             list_peers,

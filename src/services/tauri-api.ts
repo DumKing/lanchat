@@ -1,8 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AdminAlertMode, AdminDiscoMode, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Peer, PetAlertMode, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem } from "../types/lanchat";
+import type { AdminAlertMode, AdminDiscoMode, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Peer, PetAlertMode, PlatformInfo, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem } from "../types/lanchat";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, PetStatePlaybackConfig } from "../types/desktop-pet";
 
 export const api = {
+  getPlatformInfo: () => invoke<PlatformInfo>("get_platform_info"),
   getProfile: () => invoke<Profile>("get_profile"),
   updateProfile: (nickname: string, listenPort: number, avatar?: string | null) =>
     invoke<Profile>("update_profile", { nickname, listenPort, avatar }),

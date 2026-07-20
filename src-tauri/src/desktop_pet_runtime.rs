@@ -118,7 +118,7 @@ impl DesktopPetController {
             repaint: repaint.clone(),
         };
         native_pet_log("starting native desktop pet thread");
-        std::thread::Builder::new()
+        if let Err(err) = std::thread::Builder::new()
             .name("lanchat-desktop-pet".to_string())
             .spawn(move || {
                 native_pet_log("native desktop pet thread entered");
@@ -135,8 +135,9 @@ impl DesktopPetController {
                     ..Default::default()
                 };
                 run_desktop_pet_window(options, state, package, repaint, app);
-            })
-            .expect("启动原生桌宠线程失败");
+            }) {
+            native_pet_log(&format!("failed to spawn native desktop pet thread: {err}"));
+        }
         controller
     }
 
