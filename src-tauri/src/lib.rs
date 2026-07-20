@@ -41,6 +41,10 @@ use tauri::{Emitter, LogicalSize, Manager, Size, State, UserAttentionType, Windo
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use uuid::Uuid;
 
+pub fn run_desktop_pet_process() {
+    desktop_pet_runtime::run_desktop_pet_process();
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PrivateChannelInviteCardPayload {
     channel_id: String,
@@ -1135,6 +1139,9 @@ fn hide_main_window_to_tray(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 fn quit_lanchat(app: &tauri::AppHandle) -> ! {
+    if let Some(state) = app.try_state::<AppState>() {
+        state.desktop_pet_controller.shutdown();
+    }
     app.exit(0);
     std::process::exit(0);
 }

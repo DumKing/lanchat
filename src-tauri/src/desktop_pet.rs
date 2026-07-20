@@ -16,6 +16,8 @@ pub const DESKTOP_PET_STATES: [PetStateKind; 5] = [
     PetStateKind::Interact,
     PetStateKind::Life,
 ];
+pub const DEFAULT_DESKTOP_PET_ID: &str = "violet-tail-girl";
+pub const FALLBACK_DESKTOP_PET_ID: &str = "frog-buddy";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PetStateKind {
@@ -230,14 +232,14 @@ fn ordered_pair(left: u32, right: u32) -> (u32, u32) {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PetFrame {
     pub path: PathBuf,
     pub width: u32,
     pub height: u32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PetClip {
     pub id: String,
     pub state: PetStateKind,
@@ -248,7 +250,7 @@ pub struct PetClip {
     pub weight: u32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DesktopPetPackage {
     pub manifest: PetManifest,
     pub source: PetPackageSource,
@@ -822,8 +824,12 @@ impl DesktopPetManager {
             .selected_pet_id
             .as_deref()
             .is_some_and(|id| registry.package(id).is_some());
-        if !selection_is_valid && registry.package("frog-buddy").is_some() {
-            settings.selected_pet_id = Some("frog-buddy".to_string());
+        if !selection_is_valid {
+            settings.selected_pet_id = registry
+                .package(DEFAULT_DESKTOP_PET_ID)
+                .or_else(|| registry.package(FALLBACK_DESKTOP_PET_ID))
+                .or_else(|| registry.packages.values().next())
+                .map(|package| package.id().to_string());
             let _ = settings.save(&settings_path);
         }
         Self {
@@ -1096,8 +1102,10 @@ impl DesktopPetManager {
                 .unwrap_or_else(|error| error.into_inner());
             settings.selected_pet_id = if registry.package(package.id()).is_some() {
                 Some(package.id().to_string())
-            } else if registry.package("frog-buddy").is_some() {
-                Some("frog-buddy".to_string())
+            } else if registry.package(DEFAULT_DESKTOP_PET_ID).is_some() {
+                Some(DEFAULT_DESKTOP_PET_ID.to_string())
+            } else if registry.package(FALLBACK_DESKTOP_PET_ID).is_some() {
+                Some(FALLBACK_DESKTOP_PET_ID.to_string())
             } else {
                 registry
                     .packages()

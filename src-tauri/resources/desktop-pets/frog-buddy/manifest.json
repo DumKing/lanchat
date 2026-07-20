@@ -12,48 +12,22 @@
   "states": {
     "Idle": {
       "loop": "repeat",
-      "minDurationMs": 4000,
-      "maxDurationMs": 9000,
-      "minActionCount": 1,
-      "maxActionCount": 2,
-      "minIntervalMs": 600,
-      "maxIntervalMs": 1400
+      "selection": "weighted-random",
+      "minDurationMs": 3000,
+      "maxDurationMs": 9000
     },
     "Alert": {
       "loop": "repeat",
-      "minDurationMs": 2000,
-      "maxDurationMs": 4000,
-      "minActionCount": 1,
-      "maxActionCount": 2,
-      "minIntervalMs": 300,
-      "maxIntervalMs": 700
+      "minLoops": 1
     },
     "Move": {
-      "loop": "repeat",
-      "minDurationMs": 1200,
-      "maxDurationMs": 2200,
-      "minActionCount": 2,
-      "maxActionCount": 4,
-      "minIntervalMs": 150,
-      "maxIntervalMs": 450
+      "loop": "repeat"
     },
     "Interact": {
-      "loop": "once",
-      "minDurationMs": 0,
-      "maxDurationMs": 0,
-      "minActionCount": 1,
-      "maxActionCount": 1,
-      "minIntervalMs": 0,
-      "maxIntervalMs": 0
+      "loop": "once"
     },
     "Life": {
-      "loop": "once",
-      "minDurationMs": 0,
-      "maxDurationMs": 0,
-      "minActionCount": 2,
-      "maxActionCount": 4,
-      "minIntervalMs": 900,
-      "maxIntervalMs": 1800
+      "loop": "once"
     }
   },
   "clips": {

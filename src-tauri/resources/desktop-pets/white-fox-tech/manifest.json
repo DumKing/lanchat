@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 2,
+  "id": "white-fox-tech",
+  "name": "白毛狐耳少女",
+  "version": "1.0.0",
+  "author": "Custom",
+  "description": "白毛狐耳少女 Desktop Pet",
+  "resolution": 512,
+  "fps": 8,
+  "transparent": true,
+  "defaultState": "Idle",
+  "states": {
+    "Idle": {
+      "loop": "repeat",
+      "selection": "weighted-random",
+      "minDurationMs": 3000,
+      "maxDurationMs": 9000
+    },
+    "Alert": {
+      "loop": "repeat",
+      "minLoops": 1
+    },
+    "Move": {
+      "loop": "repeat"
+    },
+    "Interact": {
+      "loop": "once"
+    },
+    "Life": {
+      "loop": "once"
+    }
+  },
+  "clips": {}
+}
