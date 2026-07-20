@@ -47,7 +47,10 @@
     ],
     "resources": [
       "resources/desktop-pets/**/*"
-    ]
+    ],
+    "macOS": {
+      "signingIdentity": "-"
+    }
   }
 }
 
