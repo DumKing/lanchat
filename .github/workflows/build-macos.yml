@@ -1,0 +1,60 @@
+name: Build macOS Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Branch, tag, or commit to build"
+        required: true
+        default: "codex/macos-adaptation"
+      runner:
+        description: "macOS runner label"
+        required: true
+        default: "macos-15"
+        type: choice
+        options:
+          - macos-15
+          - macos-latest
+          - macos-15-intel
+
+jobs:
+  build-macos:
+    name: Build macOS app and dmg
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build macOS bundle
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        run: npm run tauri build -- --bundles app,dmg
+
+      - name: Verify ad-hoc signature
+        run: |
+          codesign --verify --deep --strict --verbose=4 src-tauri/target/release/bundle/macos/*.app
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lanchat-macos-${{ inputs.runner }}
+          if-no-files-found: error
+          path: |
+            src-tauri/target/release/bundle/macos/*.app
+            src-tauri/target/release/bundle/dmg/*.dmg
