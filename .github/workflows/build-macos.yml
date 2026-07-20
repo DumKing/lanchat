@@ -42,7 +42,13 @@ jobs:
         run: npm ci
 
       - name: Build macOS bundle
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
         run: npm run tauri build -- --bundles app,dmg
+
+      - name: Verify ad-hoc signature
+        run: |
+          codesign --verify --deep --strict --verbose=4 src-tauri/target/release/bundle/macos/*.app
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
