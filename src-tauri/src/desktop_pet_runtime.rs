@@ -5,7 +5,7 @@ use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -434,25 +434,7 @@ impl DesktopPetApp {
         repaint: Arc<Mutex<Option<egui::Context>>>,
         action_sink: DesktopPetActionSink,
     ) -> Self {
-        #[cfg(target_os = "windows")]
-        {
-            let mut fonts = egui::FontDefinitions::default();
-            fonts.font_data.insert(
-                "microsoft-yahei".to_owned(),
-                egui::FontData::from_static(include_bytes!("C:/Windows/Fonts/msyh.ttc")),
-            );
-            fonts
-                .families
-                .entry(egui::FontFamily::Proportional)
-                .or_default()
-                .insert(0, "microsoft-yahei".to_owned());
-            fonts
-                .families
-                .entry(egui::FontFamily::Monospace)
-                .or_default()
-                .insert(0, "microsoft-yahei".to_owned());
-            _cc.egui_ctx.set_fonts(fonts);
-        }
+        install_cjk_fonts(&_cc.egui_ctx);
         if let Ok(mut context) = repaint.lock() {
             *context = Some(_cc.egui_ctx.clone());
         }
@@ -961,6 +943,77 @@ impl DesktopPetApp {
         self.last_size = next;
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(next));
     }
+}
+
+fn install_cjk_fonts(ctx: &egui::Context) {
+    let Some((font_name, font_bytes)) = load_cjk_font() else {
+        native_pet_log("no cjk font found for desktop pet; using egui default fonts");
+        return;
+    };
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        font_name.clone(),
+        egui::FontData::from_owned(font_bytes).into(),
+    );
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, font_name.clone());
+    fonts
+        .families
+        .entry(egui::FontFamily::Monospace)
+        .or_default()
+        .insert(0, font_name);
+    ctx.set_fonts(fonts);
+}
+
+fn load_cjk_font() -> Option<(String, Vec<u8>)> {
+    for path in cjk_font_candidates() {
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+        if !bytes.is_empty() {
+            native_pet_log(&format!("desktop pet loaded cjk font: {}", path.display()));
+            return Some((
+                path.file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("lanchat-cjk")
+                    .to_string(),
+                bytes,
+            ));
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn cjk_font_candidates() -> Vec<&'static Path> {
+    vec![
+        Path::new("C:/Windows/Fonts/msyh.ttc"),
+        Path::new("C:/Windows/Fonts/simhei.ttf"),
+        Path::new("C:/Windows/Fonts/simsun.ttc"),
+    ]
+}
+
+#[cfg(target_os = "macos")]
+fn cjk_font_candidates() -> Vec<&'static Path> {
+    vec![
+        Path::new("/System/Library/Fonts/PingFang.ttc"),
+        Path::new("/System/Library/Fonts/STHeiti Light.ttc"),
+        Path::new("/System/Library/Fonts/STHeiti Medium.ttc"),
+        Path::new("/System/Library/Fonts/Hiragino Sans GB.ttc"),
+        Path::new("/Library/Fonts/Arial Unicode.ttf"),
+    ]
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+fn cjk_font_candidates() -> Vec<&'static Path> {
+    vec![
+        Path::new("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+        Path::new("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"),
+        Path::new("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"),
+    ]
 }
 
 impl eframe::App for DesktopPetApp {

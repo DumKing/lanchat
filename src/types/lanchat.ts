@@ -117,6 +117,7 @@ export type QuickAlert = {
   alert_id: string;
   sender_device_id: string;
   sender_nickname: string;
+  sender_address?: string | null;
   content: string;
   mode: PetAlertMode;
   created_at: number;

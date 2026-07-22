@@ -11,6 +11,7 @@ import {
   NBadge,
   NButton,
   NCard,
+  NCheckbox,
   NConfigProvider,
   NDropdown,
   NEmpty,
@@ -41,7 +42,7 @@ import { storeToRefs } from "pinia";
 import { api } from "./services/tauri-api";
 import { DEFAULT_GROUP_ID, useLanChatStore } from "./stores/lanchat";
 import { useDesktopPetStore } from "./stores/desktopPet";
-import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, PetPackageSource, PetStateKind, PetStatePlaybackConfig } from "./types/desktop-pet";
+import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, ExternalPushConfig, ExternalPushKind, PetPackageSource, PetStateKind, PetStatePlaybackConfig } from "./types/desktop-pet";
 import type { AdminAlertMode, AdminDiscoMode, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Peer, PetAlertMode, PlatformInfo, PrivateChannelInvitePayload, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem } from "./types/lanchat";
 import { DDZ_TURN_TIMEOUT_MS, canBeat, dealHands, evaluatePlay, isTurnTimedOut, playLabel, sortCards, turnRemainingSeconds, type DdzCard, type DdzPhase, type DdzPlay } from "./games/doudizhu";
 import { GOMOKU_TURN_TIMEOUT_MS, chooseAutoGomokuPoint, cloneGomokuBoard, createGomokuBoard, gomokuStoneLabel, gomokuTurnRemainingSeconds, isGomokuTurnTimedOut, placeGomokuStone, type GomokuBoard, type GomokuPhase, type GomokuPoint, type GomokuStone } from "./games/gomoku";
@@ -78,6 +79,7 @@ type AlertRecord = {
   alertId: string;
   senderDeviceId: string;
   senderNickname: string;
+  senderAddress?: string | null;
   content: string;
   mode: PetAlertMode;
   createdAt: number;
@@ -938,6 +940,14 @@ const DESKTOP_PET_PLAYBACK_DEFAULTS: Record<PetStateKind, PetStatePlaybackConfig
   Interact: { minDurationMs: 0, maxDurationMs: 0, minActionCount: 1, maxActionCount: 1, minIntervalMs: 0, maxIntervalMs: 0 },
   Life: { minDurationMs: 0, maxDurationMs: 0, minActionCount: 2, maxActionCount: 4, minIntervalMs: 800, maxIntervalMs: 2000 },
 };
+const EXTERNAL_PUSH_DEFAULT_TEMPLATE = "";
+const externalPushKindOptions: Array<{ label: string; value: ExternalPushKind }> = [
+  { label: "企业微信群机器人", value: "wechat_work" },
+  { label: "钉钉群机器人", value: "dingtalk" },
+];
+function externalPushKindLabel(kind: ExternalPushKind) {
+  return externalPushKindOptions.find((item) => item.value === kind)?.label ?? "企业微信群机器人";
+}
 function desktopPetSourceLabel(source: PetPackageSource) {
   if (source === "built_in") return "内置";
   if (source === "portable") return "绿色版";
@@ -1002,6 +1012,44 @@ async function updateDesktopPetBehavior<K extends keyof DesktopPetSettings>(key:
   await desktopPetStore.updateSettings({ ...desktopPetSettings.value, [key]: value }).catch(() => undefined);
   await syncDesktopPetRuntime();
 }
+async function updateDesktopPetSettingsPatch(patch: Partial<DesktopPetSettings>) {
+  if (!desktopPetSettings.value) return;
+  await desktopPetStore.updateSettings({ ...desktopPetSettings.value, ...patch }).catch(() => undefined);
+}
+function createExternalPushConfig(kind: ExternalPushKind): ExternalPushConfig {
+  return {
+    id: crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    name: kind === "dingtalk" ? "钉钉群" : "企业微信群",
+    kind,
+    webhook: "",
+    enabled: true,
+    mentionAll: false,
+    template: EXTERNAL_PUSH_DEFAULT_TEMPLATE,
+  };
+}
+async function addExternalPushConfig(kind: ExternalPushKind = "wechat_work") {
+  const configs = desktopPetSettings.value?.externalPushConfigs ?? [];
+  await updateDesktopPetSettingsPatch({
+    externalPushEnabled: true,
+    externalPushConfigs: [...configs, createExternalPushConfig(kind)],
+  });
+}
+async function updateExternalPushConfig(id: string, patch: Partial<ExternalPushConfig>) {
+  const settings = desktopPetSettings.value;
+  if (!settings) return;
+  await updateDesktopPetSettingsPatch({
+    externalPushConfigs: (settings.externalPushConfigs ?? []).map((config) =>
+      config.id === id ? { ...config, ...patch } : config,
+    ),
+  });
+}
+async function removeExternalPushConfig(id: string) {
+  const settings = desktopPetSettings.value;
+  if (!settings) return;
+  await updateDesktopPetSettingsPatch({
+    externalPushConfigs: (settings.externalPushConfigs ?? []).filter((config) => config.id !== id),
+  });
+}
 onMounted(async () => {
   platformInfo.value = await api.getPlatformInfo().catch(() => null);
   await store.initialize();
@@ -1036,7 +1084,7 @@ onMounted(async () => {
       }
     });
     unlistenDesktopPetStopHotkey = await listen("desktop_pet_stop_hotkey_received", () => {
-      stopPetAlertVisuals();
+      handleDesktopPetStopHotkeyAction();
     });
     unlistenDesktopPetRegistry = await listen<DesktopPetRegistrySnapshot>("desktop_pet_registry_changed", (event) => {
       desktopPetStore.applySnapshot(event.payload);
@@ -1421,17 +1469,25 @@ function clearDesktopPetStopHotkey() {
 async function registerDesktopPetStopHotkey(value = petStopHotkey.value) {
   await api.registerDesktopPetStopHotkey(value).catch(() => undefined);
 }
+function handleDesktopPetStopHotkeyAction() {
+  if (activePetAlert.value || discoModeActive.value) {
+    stopPetAlertVisuals();
+    return;
+  }
+  void sendPetQuickAlert("disco");
+}
 function handleDesktopPetStopHotkey(event: KeyboardEvent) {
   if (!petStopHotkey.value) return;
   if (hotkeyFromEvent(event) !== petStopHotkey.value) return;
   event.preventDefault();
-  stopPetAlertVisuals();
+  handleDesktopPetStopHotkeyAction();
 }
 function normalizeAlertRecords(records: AlertRecord[]) {
   return records
     .filter((item) => item.alertId && item.senderDeviceId)
     .map((item) => ({
       ...item,
+      senderAddress: item.senderAddress ?? null,
       content: item.content || "呱呱~呱~~",
       mode: normalizePetAlertMode(item.mode),
       feedbacks: Array.isArray(item.feedbacks) ? item.feedbacks : [],
@@ -3002,6 +3058,7 @@ function alertRecordFromFrame(alert: QuickAlert): AlertRecord {
     alertId: alert.alert_id,
     senderDeviceId: alert.sender_device_id,
     senderNickname: alert.sender_nickname,
+    senderAddress: alert.sender_address ?? null,
     content: alert.content || "呱呱~呱~~",
     mode: normalizePetAlertMode(alert.mode),
     createdAt: alert.created_at,
@@ -3021,6 +3078,7 @@ function applyQuickAlert(alert: QuickAlert) {
         ? {
             ...item,
             senderNickname: alert.sender_nickname,
+            senderAddress: alert.sender_address ?? item.senderAddress ?? null,
             content: alert.content || item.content,
             mode: normalizePetAlertMode(alert.mode || item.mode),
             createdAt: alert.created_at || item.createdAt,
@@ -3112,14 +3170,13 @@ function stopPetAlertVisuals() {
 }
 async function syncDesktopPetRuntime() {
   const alert = activePetAlert.value;
-  const alertSenderPeer = alert ? peers.value.find((peer) => peer.device_id === alert.senderDeviceId) : null;
   const runtimeState: DesktopPetRuntimeState = {
     enabled: petAlertEnabled.value,
     pending_count: pendingAlertCount.value,
     temperature: Number(petAlertProbability.value),
     latest_alert_id: alert?.alertId ?? null,
     latest_sender: alert?.senderNickname ?? null,
-    latest_sender_address: alertSenderPeer ? `${alertSenderPeer.address}:${alertSenderPeer.port}` : null,
+    latest_sender_address: alert?.senderAddress ?? null,
     latest_content: alert?.content ?? null,
     latest_created_at: alert?.createdAt ?? null,
     feedbackable: !!latestPendingAlert.value,
@@ -4826,10 +4883,90 @@ async function closeWindow() {
                     <NFormItem label="停止快捷键" :show-feedback="false">
                       <NSpace vertical :size="6" style="width: 100%">
                         <NInput v-model:value="petStopHotkey" readonly clearable placeholder="点击后按下快捷键，例如 Ctrl+Alt+F" @keydown="captureDesktopPetStopHotkey" @clear="clearDesktopPetStopHotkey" />
-                        <NText depth="3">收到告警或蹦迪时，按该快捷键等同于点击一次桌宠本体，会停止告警动作和蹦迪。</NText>
+                        <NText depth="3">报警或蹦迪状态下按此快捷键会停止提醒；正常状态下按此快捷键会快速发起一次蹦迪报警。</NText>
                       </NSpace>
                     </NFormItem>
                     <NButton v-if="petAlertEnabled" block type="error" @click="sendPetQuickAlert(petAlertMode)">发送一次测试告警</NButton>
+                  </NSpace>
+                </NCard>
+                <NCard v-if="settingsCategory === 'pet'" title="外部推送" size="small">
+                  <NSpace vertical>
+                    <div class="setting-switch-row">
+                      <div>
+                        <strong>开启外部推送</strong>
+                        <p>桌宠发起告警后，同时推送到已启用的群机器人。第一期支持企业微信和钉钉。</p>
+                      </div>
+                      <NSwitch
+                        :value="desktopPetSettings?.externalPushEnabled ?? false"
+                        @update:value="updateDesktopPetBehavior('externalPushEnabled', $event)"
+                      />
+                    </div>
+                    <NSpace>
+                      <NButton size="small" secondary type="primary" @click="addExternalPushConfig('wechat_work')">添加企业微信群</NButton>
+                      <NButton size="small" secondary type="primary" @click="addExternalPushConfig('dingtalk')">添加钉钉群</NButton>
+                    </NSpace>
+                    <NText depth="3">这里只配置推送内容正文，来源固定追加在最后一行，格式为 昵称（WLAN IP）。正文为空时只推送来源。</NText>
+                    <div v-if="desktopPetSettings?.externalPushConfigs?.length" class="external-push-list">
+                      <div
+                        v-for="config in desktopPetSettings.externalPushConfigs"
+                        :key="config.id"
+                        class="external-push-item"
+                      >
+                        <div class="external-push-head">
+                          <strong>{{ config.name || externalPushKindLabel(config.kind) }}</strong>
+                          <NSpace align="center" :size="8">
+                            <NTag size="small">{{ externalPushKindLabel(config.kind) }}</NTag>
+                            <NSwitch
+                              size="small"
+                              :value="config.enabled"
+                              @update:value="updateExternalPushConfig(config.id, { enabled: $event })"
+                            />
+                          </NSpace>
+                        </div>
+                        <div class="external-push-grid">
+                          <NFormItem label="类型" :show-feedback="false">
+                            <NSelect
+                              :value="config.kind"
+                              :options="externalPushKindOptions"
+                              @update:value="updateExternalPushConfig(config.id, { kind: $event as ExternalPushKind })"
+                            />
+                          </NFormItem>
+                          <NFormItem label="名称" :show-feedback="false">
+                            <NInput
+                              :value="config.name"
+                              maxlength="30"
+                              placeholder="午休告警群"
+                              @update:value="updateExternalPushConfig(config.id, { name: $event })"
+                            />
+                          </NFormItem>
+                        </div>
+                        <NFormItem label="Webhook" :show-feedback="false">
+                          <NInput
+                            :value="config.webhook"
+                            type="password"
+                            show-password-on="click"
+                            placeholder="https://..."
+                            @update:value="updateExternalPushConfig(config.id, { webhook: $event })"
+                          />
+                        </NFormItem>
+                        <NFormItem label="推送内容" :show-feedback="false">
+                          <NInput
+                            :value="config.template"
+                            type="textarea"
+                            :autosize="{ minRows: 4, maxRows: 7 }"
+                            @update:value="updateExternalPushConfig(config.id, { template: $event })"
+                          />
+                        </NFormItem>
+                        <div class="external-push-actions">
+                          <NCheckbox
+                            :checked="config.mentionAll"
+                            @update:checked="updateExternalPushConfig(config.id, { mentionAll: $event })"
+                          >@所有人</NCheckbox>
+                          <NButton size="small" quaternary type="error" @click="removeExternalPushConfig(config.id)">删除</NButton>
+                        </div>
+                      </div>
+                    </div>
+                    <NEmpty v-else size="small" description="还没有外部推送配置。" />
                   </NSpace>
                 </NCard>
                 <NCard v-if="settingsCategory === 'pet' && superAdminEnabled" title="告警真实度" size="small">

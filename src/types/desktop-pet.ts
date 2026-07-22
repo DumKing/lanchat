@@ -71,6 +71,18 @@ export type DesktopPetRegistrySnapshot = {
   issues: DesktopPetPackageIssue[];
 };
 
+export type ExternalPushKind = "wechat_work" | "dingtalk";
+
+export type ExternalPushConfig = {
+  id: string;
+  name: string;
+  kind: ExternalPushKind;
+  webhook: string;
+  enabled: boolean;
+  mentionAll: boolean;
+  template: string;
+};
+
 export type DesktopPetSettings = {
   enabled: boolean;
   selectedPetId?: string | null;
@@ -83,4 +95,6 @@ export type DesktopPetSettings = {
   randomMoveEnabled: boolean;
   randomLifeEnabled: boolean;
   discoMovementMode: "linear" | "jump";
+  externalPushEnabled: boolean;
+  externalPushConfigs: ExternalPushConfig[];
 };

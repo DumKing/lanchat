@@ -739,6 +739,48 @@ impl PetStateMachine {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ExternalPushConfig {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub webhook: String,
+    pub enabled: bool,
+    pub mention_all: bool,
+    #[serde(default = "default_external_push_template")]
+    pub template: String,
+}
+
+impl ExternalPushConfig {
+    fn normalized(mut self) -> Self {
+        self.name = self.name.trim().chars().take(30).collect();
+        self.kind = match self.kind.trim().to_lowercase().as_str() {
+            "dingtalk" => "dingtalk".to_string(),
+            _ => "wechat_work".to_string(),
+        };
+        self.webhook = self.webhook.trim().to_string();
+        self.template = self.template.trim().to_string();
+        if self.id.trim().is_empty() {
+            self.id = Uuid::new_v4().to_string();
+        }
+        if self.name.is_empty() {
+            self.name = if self.kind == "dingtalk" {
+                "钉钉群".to_string()
+            } else {
+                "企业微信群".to_string()
+            };
+        }
+        if self.template.is_empty() {
+            self.template = default_external_push_template();
+        }
+        if self.template.contains("{source}") || self.template.contains("来源：") {
+            self.template = default_external_push_template();
+        }
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DesktopPetSettings {
     pub enabled: bool,
     pub selected_pet_id: Option<String>,
@@ -752,10 +794,26 @@ pub struct DesktopPetSettings {
     pub random_life_enabled: bool,
     #[serde(default = "default_disco_movement_mode")]
     pub disco_movement_mode: String,
+    #[serde(default)]
+    pub external_push_enabled: bool,
+    #[serde(default)]
+    pub external_push_configs: Vec<ExternalPushConfig>,
+    #[serde(default, skip_serializing)]
+    pub enterprise_wechat_enabled: bool,
+    #[serde(default, skip_serializing)]
+    pub enterprise_wechat_webhook: String,
+    #[serde(default, skip_serializing)]
+    pub enterprise_wechat_mention_all: bool,
+    #[serde(default = "default_external_push_template", skip_serializing)]
+    pub enterprise_wechat_template: String,
 }
 
 fn default_disco_movement_mode() -> String {
     "jump".to_string()
+}
+
+fn default_external_push_template() -> String {
+    String::new()
 }
 
 impl Default for DesktopPetSettings {
@@ -772,6 +830,12 @@ impl Default for DesktopPetSettings {
             random_move_enabled: true,
             random_life_enabled: true,
             disco_movement_mode: default_disco_movement_mode(),
+            external_push_enabled: false,
+            external_push_configs: Vec::new(),
+            enterprise_wechat_enabled: false,
+            enterprise_wechat_webhook: String::new(),
+            enterprise_wechat_mention_all: false,
+            enterprise_wechat_template: default_external_push_template(),
         }
     }
 }
@@ -910,6 +974,31 @@ impl DesktopPetManager {
             _ => "jump",
         }
         .to_string();
+        settings.enterprise_wechat_webhook = settings.enterprise_wechat_webhook.trim().to_string();
+        settings.enterprise_wechat_template =
+            settings.enterprise_wechat_template.trim().to_string();
+        if settings.enterprise_wechat_template.is_empty() {
+            settings.enterprise_wechat_template = default_external_push_template();
+        }
+        if settings.external_push_configs.is_empty()
+            && !settings.enterprise_wechat_webhook.is_empty()
+        {
+            settings.external_push_enabled = settings.enterprise_wechat_enabled;
+            settings.external_push_configs.push(ExternalPushConfig {
+                id: Uuid::new_v4().to_string(),
+                name: "企业微信群".to_string(),
+                kind: "wechat_work".to_string(),
+                webhook: settings.enterprise_wechat_webhook.clone(),
+                enabled: true,
+                mention_all: settings.enterprise_wechat_mention_all,
+                template: settings.enterprise_wechat_template.clone(),
+            });
+        }
+        settings.external_push_configs = settings
+            .external_push_configs
+            .into_iter()
+            .map(ExternalPushConfig::normalized)
+            .collect();
         if let Some(id) = settings.selected_pet_id.as_deref() {
             if self
                 .registry

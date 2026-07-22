@@ -12,13 +12,14 @@ mod storage;
 mod desktop_pet_tests;
 
 use channel_crypto::{generate_channel_key, CHANNEL_KEY_VERSION};
+use chrono::TimeZone;
 use desktop_pet::{
     DesktopPetManager, DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings,
-    PetPackageSource, PetResourceRoot, PetStatePlaybackConfig,
+    ExternalPushConfig, PetPackageSource, PetResourceRoot, PetStatePlaybackConfig,
 };
 use desktop_pet_runtime::{DesktopPetController, DesktopPetRuntimeState};
 use file_server::FileServer;
-use network::Network;
+use network::{local_ip_address, Network};
 use protocol::GameFrame;
 use protocol::MessageRecallFrame;
 use protocol::{
@@ -27,6 +28,7 @@ use protocol::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -43,6 +45,166 @@ use uuid::Uuid;
 
 pub fn run_desktop_pet_process() {
     desktop_pet_runtime::run_desktop_pet_process();
+}
+
+fn push_unique_pet_root(
+    roots: &mut Vec<PetResourceRoot>,
+    seen: &mut Vec<PathBuf>,
+    path: PathBuf,
+    source: PetPackageSource,
+) {
+    if seen.iter().any(|current| current == &path) {
+        return;
+    }
+    seen.push(path.clone());
+    roots.push(PetResourceRoot::new(path, source));
+}
+
+fn desktop_pet_resource_roots(app: &tauri::App, app_dir: &Path) -> Vec<PetResourceRoot> {
+    let mut roots = Vec::new();
+    let mut seen = Vec::new();
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        push_unique_pet_root(
+            &mut roots,
+            &mut seen,
+            resource_dir.join("desktop-pets"),
+            PetPackageSource::BuiltIn,
+        );
+        push_unique_pet_root(
+            &mut roots,
+            &mut seen,
+            resource_dir.join("resources").join("desktop-pets"),
+            PetPackageSource::BuiltIn,
+        );
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            push_unique_pet_root(
+                &mut roots,
+                &mut seen,
+                parent.join("desktop-pets"),
+                PetPackageSource::Portable,
+            );
+            push_unique_pet_root(
+                &mut roots,
+                &mut seen,
+                parent.join("resources").join("desktop-pets"),
+                PetPackageSource::Portable,
+            );
+        }
+    }
+    push_unique_pet_root(
+        &mut roots,
+        &mut seen,
+        app_dir.join("desktop-pets"),
+        PetPackageSource::User,
+    );
+    roots
+}
+
+fn alert_mode_label(mode: &str) -> &'static str {
+    if mode.eq_ignore_ascii_case("disco") {
+        "蹦迪报警"
+    } else {
+        "普通报警"
+    }
+}
+
+fn format_alert_time(timestamp_millis: i64) -> String {
+    chrono::Local
+        .timestamp_millis_opt(timestamp_millis)
+        .single()
+        .unwrap_or_else(chrono::Local::now)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string()
+}
+
+fn render_external_push_content(template: &str, frame: &QuickAlertFrame) -> String {
+    let content = template
+        .replace("{mode}", alert_mode_label(&frame.mode))
+        .replace("{content}", &frame.content)
+        .replace("{time}", &format_alert_time(frame.created_at));
+    content.trim().to_string()
+}
+
+fn render_external_push_alert_text(template: &str, frame: &QuickAlertFrame) -> String {
+    let source_ip = frame.sender_address.as_deref().unwrap_or("未知 IP");
+    let source = format!("来源：{}（{}）", frame.sender_nickname, source_ip);
+    let content = render_external_push_content(template, frame);
+    if content.is_empty() {
+        source
+    } else {
+        format!("{content}\n{source}")
+    }
+}
+
+async fn send_external_push_alert(
+    config: ExternalPushConfig,
+    frame: QuickAlertFrame,
+) -> Result<(), String> {
+    if !config.enabled {
+        return Ok(());
+    }
+    let webhook = config.webhook.trim();
+    if webhook.is_empty() {
+        return Ok(());
+    }
+    if !webhook.starts_with("https://") {
+        return Err("外部推送机器人 Webhook 必须使用 https:// 地址".to_string());
+    }
+    let content = render_external_push_alert_text(&config.template, &frame);
+    let payload = if config.kind == "dingtalk" {
+        serde_json::json!({
+            "msgtype": "text",
+            "text": {
+                "content": content,
+            },
+            "at": {
+                "isAtAll": config.mention_all,
+            }
+        })
+    } else {
+        let mentioned_list = if config.mention_all {
+            vec!["@all"]
+        } else {
+            Vec::new()
+        };
+        serde_json::json!({
+            "msgtype": "text",
+            "text": {
+                "content": content,
+                "mentioned_list": mentioned_list,
+            }
+        })
+    };
+    let response = reqwest::Client::new()
+        .post(webhook)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|error| format!("外部推送「{}」发送失败：{error}", config.name))?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_else(|_| String::new());
+    if !status.is_success() {
+        return Err(format!(
+            "外部推送「{}」发送失败：HTTP {status}",
+            config.name
+        ));
+    }
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
+        let code = value
+            .get("errcode")
+            .and_then(|item| item.as_i64())
+            .unwrap_or(0);
+        if code != 0 {
+            let message = value
+                .get("errmsg")
+                .and_then(|item| item.as_str())
+                .unwrap_or("未知错误");
+            return Err(format!("外部推送「{}」发送失败：{message}", config.name));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -767,6 +929,7 @@ async fn send_quick_alert(
         alert_id: Uuid::new_v4().to_string(),
         sender_device_id: profile.device_id,
         sender_nickname: profile.nickname,
+        sender_address: Some(local_ip_address()),
         content: {
             let text = content.trim();
             if text.is_empty() {
@@ -782,6 +945,21 @@ async fn send_quick_alert(
         .network
         .broadcast_quick_alert(app, frame.clone())
         .await?;
+    let settings = state.desktop_pet.settings();
+    if settings.external_push_enabled {
+        for config in settings
+            .external_push_configs
+            .into_iter()
+            .filter(|item| item.enabled && !item.webhook.trim().is_empty())
+        {
+            let notify_frame = frame.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = send_external_push_alert(config, notify_frame).await {
+                    eprintln!("{error}");
+                }
+            });
+        }
+    }
     Ok(frame)
 }
 
@@ -1528,22 +1706,9 @@ pub fn run() {
             network.start(app.handle().clone())?;
             let file_server = FileServer::new();
             file_server.start();
-            let user_pet_root = app_dir.join("desktop-pets");
-            let builtin_pet_root = app
-                .path()
-                .resource_dir()
-                .unwrap_or_else(|_| app_dir.clone())
-                .join("desktop-pets");
-            let portable_pet_root = std::env::current_exe()
-                .ok()
-                .and_then(|path| path.parent().map(|parent| parent.join("desktop-pets")))
-                .unwrap_or_else(|| app_dir.join("portable-desktop-pets"));
+            let pet_roots = desktop_pet_resource_roots(app, &app_dir);
             let desktop_pet = DesktopPetManager::new(
-                vec![
-                    PetResourceRoot::new(builtin_pet_root, PetPackageSource::BuiltIn),
-                    PetResourceRoot::new(portable_pet_root, PetPackageSource::Portable),
-                    PetResourceRoot::new(user_pet_root, PetPackageSource::User),
-                ],
+                pet_roots,
                 app_dir.join("desktop-pets"),
                 app_dir.join("desktop-pet-settings.json"),
             );
