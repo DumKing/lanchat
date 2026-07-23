@@ -1692,18 +1692,54 @@ fn register_mdns_service(mdns: &ServiceDaemon, profile: &Profile) -> Result<(), 
 }
 
 pub(crate) fn local_ip_address() -> String {
-    if_addrs::get_if_addrs()
-        .ok()
-        .and_then(|interfaces| {
+    let Ok(interfaces) = if_addrs::get_if_addrs() else {
+        return "127.0.0.1".to_string();
+    };
+    let wireless_ip = interfaces
+        .iter()
+        .filter(|iface| !iface.is_loopback())
+        .filter(|iface| is_wireless_interface(iface))
+        .find_map(interface_ipv4);
+    wireless_ip
+        .or_else(|| {
             interfaces
-                .into_iter()
+                .iter()
                 .filter(|iface| !iface.is_loopback())
-                .find_map(|iface| match iface.addr.ip() {
-                    std::net::IpAddr::V4(ip) => Some(ip.to_string()),
-                    std::net::IpAddr::V6(_) => None,
-                })
+                .find_map(interface_ipv4)
         })
         .unwrap_or_else(|| "127.0.0.1".to_string())
+}
+
+fn interface_ipv4(iface: &if_addrs::Interface) -> Option<String> {
+    match iface.addr.ip() {
+        std::net::IpAddr::V4(ip) => Some(ip.to_string()),
+        std::net::IpAddr::V6(_) => None,
+    }
+}
+
+fn is_wireless_interface(iface: &if_addrs::Interface) -> bool {
+    let name = iface.name.to_ascii_lowercase();
+    if name.contains("wlan")
+        || name.contains("wi-fi")
+        || name.contains("wifi")
+        || name.contains("wireless")
+        || name.contains("802.11")
+    {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        let adapter_name = iface.adapter_name.to_ascii_lowercase();
+        adapter_name.contains("wlan")
+            || adapter_name.contains("wi-fi")
+            || adapter_name.contains("wifi")
+            || adapter_name.contains("wireless")
+            || adapter_name.contains("802.11")
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 #[cfg(test)]

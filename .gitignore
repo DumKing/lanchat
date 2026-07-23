@@ -22,6 +22,7 @@ src-tauri/gen/
 .tmp-*/
 .package/
 artifacts/
+release-assets/
 LanChat-green/
 LanChat_*_green/
 LanChat_*_green.zip

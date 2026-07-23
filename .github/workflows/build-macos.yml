@@ -6,7 +6,7 @@ on:
       source_ref:
         description: "Branch, tag, or commit to build"
         required: true
-        default: "codex/macos-adaptation"
+        default: "main"
       runner:
         description: "macOS runner label"
         required: true
@@ -16,18 +16,21 @@ on:
           - macos-15
           - macos-latest
           - macos-15-intel
+  push:
+    tags:
+      - "v*"
 
 jobs:
   build-macos:
     name: Build macOS app and dmg
-    runs-on: ${{ inputs.runner }}
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.runner || 'macos-15' }}
     timeout-minutes: 60
 
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -41,6 +44,16 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Build external desktop pet packages
+        shell: bash
+        run: |
+          mkdir -p release-assets/desktop-pets
+          for pet in violet-tail-girl white-fox-tech; do
+            if [ -d "desktop-pet-packages/$pet" ]; then
+              (cd desktop-pet-packages && zip -r "../release-assets/desktop-pets/$pet.zip" "$pet")
+            fi
+          done
+
       - name: Build macOS bundle
         env:
           APPLE_SIGNING_IDENTITY: "-"
@@ -53,8 +66,9 @@ jobs:
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: lanchat-macos-${{ inputs.runner }}
+          name: lanchat-macos-${{ github.event_name == 'workflow_dispatch' && inputs.runner || 'macos-15' }}
           if-no-files-found: error
           path: |
             src-tauri/target/release/bundle/macos/*.app
             src-tauri/target/release/bundle/dmg/*.dmg
+            release-assets/desktop-pets/*.zip

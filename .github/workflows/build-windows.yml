@@ -1,0 +1,61 @@
+name: Build Windows Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Branch, tag, or commit to build"
+        required: true
+        default: "main"
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-windows:
+    name: Build Windows installer
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.source_ref || github.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build external desktop pet packages
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release-assets\desktop-pets | Out-Null
+          foreach ($pet in @("violet-tail-girl", "white-fox-tech")) {
+            $source = Join-Path "desktop-pet-packages" $pet
+            if (Test-Path -LiteralPath $source) {
+              $target = Join-Path "release-assets\desktop-pets" "$pet.zip"
+              if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force }
+              Compress-Archive -Path $source -DestinationPath $target -Force
+            }
+          }
+
+      - name: Build Windows installer
+        run: npm run tauri build -- --bundles nsis
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lanchat-windows
+          if-no-files-found: error
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            release-assets/desktop-pets/*.zip

@@ -1,0 +1,98 @@
+name: Release Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, for example v0.1.0"
+        required: true
+        default: "v0.1.0"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            bundle: nsis
+            artifact: lanchat-windows
+          - os: macos-15
+            bundle: app,dmg
+            artifact: lanchat-macos
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build external desktop pet packages
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release-assets/desktop-pets | Out-Null
+          foreach ($pet in @("violet-tail-girl", "white-fox-tech")) {
+            $source = Join-Path "desktop-pet-packages" $pet
+            if (Test-Path -LiteralPath $source) {
+              $target = Join-Path "release-assets/desktop-pets" "$pet.zip"
+              if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force }
+              Compress-Archive -Path $source -DestinationPath $target -Force
+            }
+          }
+
+      - name: Build Tauri bundle
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        run: npm run tauri build -- --bundles ${{ matrix.bundle }}
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          if-no-files-found: error
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/dmg/*.dmg
+            release-assets/desktop-pets/*.zip
+
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 20
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-downloads
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          name: LanChat ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          draft: false
+          prerelease: false
+          files: |
+            release-downloads/**/*

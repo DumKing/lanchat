@@ -16,6 +16,8 @@ pub const DESKTOP_PET_STATES: [PetStateKind; 5] = [
     PetStateKind::Interact,
     PetStateKind::Life,
 ];
+pub const DEFAULT_DESKTOP_PET_ID: &str = "violet-tail-girl";
+pub const FALLBACK_DESKTOP_PET_ID: &str = "frog-buddy";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PetStateKind {
@@ -230,14 +232,14 @@ fn ordered_pair(left: u32, right: u32) -> (u32, u32) {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PetFrame {
     pub path: PathBuf,
     pub width: u32,
     pub height: u32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PetClip {
     pub id: String,
     pub state: PetStateKind,
@@ -248,7 +250,7 @@ pub struct PetClip {
     pub weight: u32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DesktopPetPackage {
     pub manifest: PetManifest,
     pub source: PetPackageSource,
@@ -737,6 +739,48 @@ impl PetStateMachine {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ExternalPushConfig {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub webhook: String,
+    pub enabled: bool,
+    pub mention_all: bool,
+    #[serde(default = "default_external_push_template")]
+    pub template: String,
+}
+
+impl ExternalPushConfig {
+    fn normalized(mut self) -> Self {
+        self.name = self.name.trim().chars().take(30).collect();
+        self.kind = match self.kind.trim().to_lowercase().as_str() {
+            "dingtalk" => "dingtalk".to_string(),
+            _ => "wechat_work".to_string(),
+        };
+        self.webhook = self.webhook.trim().to_string();
+        self.template = self.template.trim().to_string();
+        if self.id.trim().is_empty() {
+            self.id = Uuid::new_v4().to_string();
+        }
+        if self.name.is_empty() {
+            self.name = if self.kind == "dingtalk" {
+                "钉钉群".to_string()
+            } else {
+                "企业微信群".to_string()
+            };
+        }
+        if self.template.is_empty() {
+            self.template = default_external_push_template();
+        }
+        if self.template.contains("{source}") || self.template.contains("来源：") {
+            self.template = default_external_push_template();
+        }
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DesktopPetSettings {
     pub enabled: bool,
     pub selected_pet_id: Option<String>,
@@ -750,10 +794,26 @@ pub struct DesktopPetSettings {
     pub random_life_enabled: bool,
     #[serde(default = "default_disco_movement_mode")]
     pub disco_movement_mode: String,
+    #[serde(default)]
+    pub external_push_enabled: bool,
+    #[serde(default)]
+    pub external_push_configs: Vec<ExternalPushConfig>,
+    #[serde(default, skip_serializing)]
+    pub enterprise_wechat_enabled: bool,
+    #[serde(default, skip_serializing)]
+    pub enterprise_wechat_webhook: String,
+    #[serde(default, skip_serializing)]
+    pub enterprise_wechat_mention_all: bool,
+    #[serde(default = "default_external_push_template", skip_serializing)]
+    pub enterprise_wechat_template: String,
 }
 
 fn default_disco_movement_mode() -> String {
     "jump".to_string()
+}
+
+fn default_external_push_template() -> String {
+    String::new()
 }
 
 impl Default for DesktopPetSettings {
@@ -770,6 +830,12 @@ impl Default for DesktopPetSettings {
             random_move_enabled: true,
             random_life_enabled: true,
             disco_movement_mode: default_disco_movement_mode(),
+            external_push_enabled: false,
+            external_push_configs: Vec::new(),
+            enterprise_wechat_enabled: false,
+            enterprise_wechat_webhook: String::new(),
+            enterprise_wechat_mention_all: false,
+            enterprise_wechat_template: default_external_push_template(),
         }
     }
 }
@@ -822,8 +888,12 @@ impl DesktopPetManager {
             .selected_pet_id
             .as_deref()
             .is_some_and(|id| registry.package(id).is_some());
-        if !selection_is_valid && registry.package("frog-buddy").is_some() {
-            settings.selected_pet_id = Some("frog-buddy".to_string());
+        if !selection_is_valid {
+            settings.selected_pet_id = registry
+                .package(DEFAULT_DESKTOP_PET_ID)
+                .or_else(|| registry.package(FALLBACK_DESKTOP_PET_ID))
+                .or_else(|| registry.packages.values().next())
+                .map(|package| package.id().to_string());
             let _ = settings.save(&settings_path);
         }
         Self {
@@ -904,6 +974,31 @@ impl DesktopPetManager {
             _ => "jump",
         }
         .to_string();
+        settings.enterprise_wechat_webhook = settings.enterprise_wechat_webhook.trim().to_string();
+        settings.enterprise_wechat_template =
+            settings.enterprise_wechat_template.trim().to_string();
+        if settings.enterprise_wechat_template.is_empty() {
+            settings.enterprise_wechat_template = default_external_push_template();
+        }
+        if settings.external_push_configs.is_empty()
+            && !settings.enterprise_wechat_webhook.is_empty()
+        {
+            settings.external_push_enabled = settings.enterprise_wechat_enabled;
+            settings.external_push_configs.push(ExternalPushConfig {
+                id: Uuid::new_v4().to_string(),
+                name: "企业微信群".to_string(),
+                kind: "wechat_work".to_string(),
+                webhook: settings.enterprise_wechat_webhook.clone(),
+                enabled: true,
+                mention_all: settings.enterprise_wechat_mention_all,
+                template: settings.enterprise_wechat_template.clone(),
+            });
+        }
+        settings.external_push_configs = settings
+            .external_push_configs
+            .into_iter()
+            .map(ExternalPushConfig::normalized)
+            .collect();
         if let Some(id) = settings.selected_pet_id.as_deref() {
             if self
                 .registry
@@ -1096,8 +1191,10 @@ impl DesktopPetManager {
                 .unwrap_or_else(|error| error.into_inner());
             settings.selected_pet_id = if registry.package(package.id()).is_some() {
                 Some(package.id().to_string())
-            } else if registry.package("frog-buddy").is_some() {
-                Some("frog-buddy".to_string())
+            } else if registry.package(DEFAULT_DESKTOP_PET_ID).is_some() {
+                Some(DEFAULT_DESKTOP_PET_ID.to_string())
+            } else if registry.package(FALLBACK_DESKTOP_PET_ID).is_some() {
+                Some(FALLBACK_DESKTOP_PET_ID.to_string())
             } else {
                 registry
                     .packages()

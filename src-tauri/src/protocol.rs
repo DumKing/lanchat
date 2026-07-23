@@ -124,6 +124,8 @@ pub struct QuickAlertFrame {
     pub alert_id: String,
     pub sender_device_id: String,
     pub sender_nickname: String,
+    #[serde(default)]
+    pub sender_address: Option<String>,
     pub content: String,
     #[serde(default = "default_alert_mode")]
     pub mode: String,
@@ -307,6 +309,7 @@ mod tests {
             alert_id: "alert-1".to_string(),
             sender_device_id: "device-a".to_string(),
             sender_nickname: "Alice".to_string(),
+            sender_address: Some("192.168.1.23".to_string()),
             content: "快捷告警".to_string(),
             mode: "disco".to_string(),
             created_at: 130,

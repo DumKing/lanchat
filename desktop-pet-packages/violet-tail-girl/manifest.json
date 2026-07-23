@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 2,
+  "id": "violet-tail-girl",
+  "name": "紫瞳兽耳娘",
+  "version": "1.0.0",
+  "author": "Custom",
+  "description": "参考确认预览制作的Q版3D紫瞳兽耳娘桌宠",
+  "resolution": 512,
+  "fps": 8.0,
+  "transparent": true,
+  "defaultState": "Idle",
+  "states": {
+    "Idle": {
+      "loop": "repeat",
+      "selection": "weighted-random",
+      "minDurationMs": 3000,
+      "maxDurationMs": 9000
+    },
+    "Alert": {
+      "loop": "repeat",
+      "minLoops": 1
+    },
+    "Move": {
+      "loop": "repeat"
+    },
+    "Interact": {
+      "loop": "once"
+    },
+    "Life": {
+      "loop": "once"
+    }
+  },
+  "clips": {
+    "Idle/breathe": {
+      "fps": 4,
+      "loop": "ping-pong",
+      "weight": 3
+    },
+    "Idle/blink": {
+      "fps": 8,
+      "loop": "once",
+      "weight": 1
+    },
+    "Alert/surprised": {
+      "fps": 6,
+      "loop": "ping-pong",
+      "weight": 2
+    },
+    "Alert/reminder_wave": {
+      "fps": 6,
+      "loop": "ping-pong",
+      "weight": 3
+    },
+    "Move/walk_right": {
+      "fps": 8,
+      "loop": "repeat",
+      "direction": "right",
+      "weight": 3
+    },
+    "Move/walk_left": {
+      "fps": 8,
+      "loop": "repeat",
+      "direction": "left",
+      "weight": 3
+    },
+    "Move/jump_right": {
+      "fps": 6,
+      "loop": "repeat",
+      "direction": "right",
+      "weight": 1
+    },
+    "Move/jump_left": {
+      "fps": 6,
+      "loop": "repeat",
+      "direction": "left",
+      "weight": 1
+    },
+    "Interact/head_pat": {
+      "fps": 6,
+      "loop": "once",
+      "weight": 3
+    },
+    "Interact/drag_release": {
+      "fps": 6,
+      "loop": "once",
+      "weight": 2
+    },
+    "Life/sleep": {
+      "fps": 3,
+      "loop": "once",
+      "weight": 2
+    },
+    "Life/drink_tea": {
+      "fps": 4,
+      "loop": "once",
+      "weight": 2
+    }
+  }
+}

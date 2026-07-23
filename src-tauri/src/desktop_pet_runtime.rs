@@ -4,7 +4,9 @@ use eframe::egui::{self, Color32, Pos2, Rect, TextureHandle, Vec2};
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
@@ -33,7 +35,7 @@ fn run_desktop_pet_window(
     state: Arc<Mutex<DesktopPetRuntimeState>>,
     package: Arc<Mutex<Option<DesktopPetPackage>>>,
     repaint: Arc<Mutex<Option<egui::Context>>>,
-    app: AppHandle,
+    action_sink: DesktopPetActionSink,
 ) {
     #[cfg(target_os = "windows")]
     {
@@ -47,7 +49,11 @@ fn run_desktop_pet_window(
         options,
         Box::new(move |cc| {
             Ok(Box::new(DesktopPetApp::new(
-                cc, state, package, repaint, app,
+                cc,
+                state,
+                package,
+                repaint,
+                action_sink.clone(),
             )))
         }),
     );
@@ -84,10 +90,30 @@ fn default_disco_movement_mode() -> String {
     "jump".to_string()
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct DesktopPetAction {
     action: String,
     alert_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
+enum DesktopPetProcessCommand {
+    State(DesktopPetRuntimeState),
+    Package(Option<DesktopPetPackage>),
+    Shutdown,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
+enum DesktopPetProcessEvent {
+    Action(DesktopPetAction),
+    Log(String),
+}
+
+#[derive(Clone)]
+enum DesktopPetActionSink {
+    Stdout,
 }
 
 struct ActivePetClip {
@@ -102,6 +128,13 @@ pub struct DesktopPetController {
     state: Arc<Mutex<DesktopPetRuntimeState>>,
     package: Arc<Mutex<Option<DesktopPetPackage>>>,
     repaint: Arc<Mutex<Option<egui::Context>>>,
+    process: Arc<Mutex<Option<DesktopPetProcessHandle>>>,
+    app: AppHandle,
+}
+
+struct DesktopPetProcessHandle {
+    child: Child,
+    stdin: ChildStdin,
 }
 
 impl DesktopPetController {
@@ -116,27 +149,10 @@ impl DesktopPetController {
             state: state.clone(),
             package: package.clone(),
             repaint: repaint.clone(),
+            process: Arc::new(Mutex::new(None)),
+            app: app.clone(),
         };
-        native_pet_log("starting native desktop pet thread");
-        std::thread::Builder::new()
-            .name("lanchat-desktop-pet".to_string())
-            .spawn(move || {
-                native_pet_log("native desktop pet thread entered");
-                let options = eframe::NativeOptions {
-                    viewport: egui::ViewportBuilder::default()
-                        .with_inner_size([180.0, 160.0])
-                        .with_min_inner_size([96.0, 92.0])
-                        .with_max_inner_size([520.0, 380.0])
-                        .with_decorations(false)
-                        .with_transparent(true)
-                        .with_always_on_top()
-                        .with_taskbar(false)
-                        .with_resizable(true),
-                    ..Default::default()
-                };
-                run_desktop_pet_window(options, state, package, repaint, app);
-            })
-            .expect("启动原生桌宠线程失败");
+        controller.ensure_process();
         controller
     }
 
@@ -145,6 +161,7 @@ impl DesktopPetController {
         if let Ok(mut state) = self.state.lock() {
             *state = next;
         }
+        self.send_command(DesktopPetProcessCommand::State(self.state()));
         if let Ok(context) = self.repaint.lock() {
             if let Some(context) = context.as_ref() {
                 context.send_viewport_cmd(egui::ViewportCommand::Visible(enabled));
@@ -157,6 +174,7 @@ impl DesktopPetController {
         if let Ok(mut state) = self.state.lock() {
             state.enabled = enabled;
         }
+        self.send_command(DesktopPetProcessCommand::State(self.state()));
         if let Ok(context) = self.repaint.lock() {
             if let Some(context) = context.as_ref() {
                 context.send_viewport_cmd(egui::ViewportCommand::Visible(enabled));
@@ -167,20 +185,222 @@ impl DesktopPetController {
 
     pub fn set_package(&self, package: Option<DesktopPetPackage>) {
         if let Ok(mut current) = self.package.lock() {
-            *current = package;
+            *current = package.clone();
         }
+        self.send_command(DesktopPetProcessCommand::Package(package));
         if let Ok(context) = self.repaint.lock() {
             if let Some(context) = context.as_ref() {
                 context.request_repaint();
             }
         }
     }
+
+    pub fn shutdown(&self) {
+        self.send_command(DesktopPetProcessCommand::Shutdown);
+        if let Ok(mut process) = self.process.lock() {
+            if let Some(mut handle) = process.take() {
+                let _ = handle.child.kill();
+                let _ = handle.child.wait();
+            }
+        }
+    }
+
+    fn state(&self) -> DesktopPetRuntimeState {
+        self.state
+            .lock()
+            .map(|value| value.clone())
+            .unwrap_or_default()
+    }
+
+    fn ensure_process(&self) {
+        let mut current = match self.process.lock() {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        if current
+            .as_mut()
+            .is_some_and(|handle| handle.child.try_wait().ok().flatten().is_none())
+        {
+            return;
+        }
+        native_pet_log("starting desktop pet child process");
+        let Ok(exe) = std::env::current_exe() else {
+            native_pet_log("failed to resolve current executable for desktop pet child process");
+            return;
+        };
+        let mut command = Command::new(exe);
+        command
+            .arg("--desktop-pet")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x08000000);
+        }
+        let Ok(mut child) = command.spawn() else {
+            native_pet_log("failed to spawn desktop pet child process");
+            return;
+        };
+        if let Some(stdout) = child.stdout.take() {
+            start_desktop_pet_stdout_reader(self.app.clone(), stdout);
+        }
+        if let Some(stderr) = child.stderr.take() {
+            start_desktop_pet_stderr_reader(stderr);
+        }
+        let Some(stdin) = child.stdin.take() else {
+            native_pet_log("desktop pet child process stdin is unavailable");
+            let _ = child.kill();
+            return;
+        };
+        *current = Some(DesktopPetProcessHandle { child, stdin });
+    }
+
+    fn send_command(&self, command: DesktopPetProcessCommand) {
+        self.ensure_process();
+        let Ok(mut current) = self.process.lock() else {
+            return;
+        };
+        let Some(handle) = current.as_mut() else {
+            return;
+        };
+        let Ok(line) = serde_json::to_string(&command) else {
+            return;
+        };
+        if writeln!(handle.stdin, "{line}").is_err() || handle.stdin.flush().is_err() {
+            native_pet_log("desktop pet child process stdin write failed");
+            if let Some(mut failed) = current.take() {
+                let _ = failed.child.kill();
+                let _ = failed.child.wait();
+            }
+        }
+    }
+}
+
+fn start_desktop_pet_stdout_reader(app: AppHandle, stdout: impl std::io::Read + Send + 'static) {
+    let _ = std::thread::Builder::new()
+        .name("lanchat-desktop-pet-stdout".to_string())
+        .spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                match serde_json::from_str::<DesktopPetProcessEvent>(&line) {
+                    Ok(DesktopPetProcessEvent::Action(action)) => {
+                        let _ = app.emit("desktop_pet_action", &action);
+                    }
+                    Ok(DesktopPetProcessEvent::Log(message)) => {
+                        native_pet_log(&format!("child: {message}"));
+                    }
+                    Err(error) => {
+                        native_pet_log(&format!(
+                            "invalid desktop pet child event: {error}; {line}"
+                        ));
+                    }
+                }
+            }
+            native_pet_log("desktop pet stdout reader exited");
+        });
+}
+
+fn start_desktop_pet_stderr_reader(stderr: impl std::io::Read + Send + 'static) {
+    let _ = std::thread::Builder::new()
+        .name("lanchat-desktop-pet-stderr".to_string())
+        .spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines().map_while(Result::ok) {
+                if !line.trim().is_empty() {
+                    native_pet_log(&format!("child stderr: {line}"));
+                }
+            }
+        });
+}
+
+pub fn run_desktop_pet_process() {
+    native_pet_log("desktop pet child process entered");
+    let state = Arc::new(Mutex::new(DesktopPetRuntimeState {
+        enabled: true,
+        ..Default::default()
+    }));
+    let package = Arc::new(Mutex::new(None));
+    let repaint = Arc::new(Mutex::new(None));
+    start_desktop_pet_stdin_reader(state.clone(), package.clone(), repaint.clone());
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([180.0, 160.0])
+            .with_min_inner_size([96.0, 92.0])
+            .with_max_inner_size([520.0, 380.0])
+            .with_decorations(false)
+            .with_transparent(true)
+            .with_always_on_top()
+            .with_taskbar(false)
+            .with_resizable(true),
+        ..Default::default()
+    };
+    run_desktop_pet_window(
+        options,
+        state,
+        package,
+        repaint,
+        DesktopPetActionSink::Stdout,
+    );
+}
+
+fn start_desktop_pet_stdin_reader(
+    state: Arc<Mutex<DesktopPetRuntimeState>>,
+    package: Arc<Mutex<Option<DesktopPetPackage>>>,
+    repaint: Arc<Mutex<Option<egui::Context>>>,
+) {
+    let _ = std::thread::Builder::new()
+        .name("lanchat-desktop-pet-stdin".to_string())
+        .spawn(move || {
+            let reader = BufReader::new(std::io::stdin());
+            for line in reader.lines().map_while(Result::ok) {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                match serde_json::from_str::<DesktopPetProcessCommand>(&line) {
+                    Ok(DesktopPetProcessCommand::State(next)) => {
+                        let enabled = next.enabled;
+                        if let Ok(mut current) = state.lock() {
+                            *current = next;
+                        }
+                        if let Ok(context) = repaint.lock() {
+                            if let Some(context) = context.as_ref() {
+                                context.send_viewport_cmd(egui::ViewportCommand::Visible(enabled));
+                                context.request_repaint();
+                            }
+                        }
+                    }
+                    Ok(DesktopPetProcessCommand::Package(next)) => {
+                        if let Ok(mut current) = package.lock() {
+                            *current = next;
+                        }
+                        if let Ok(context) = repaint.lock() {
+                            if let Some(context) = context.as_ref() {
+                                context.request_repaint();
+                            }
+                        }
+                    }
+                    Ok(DesktopPetProcessCommand::Shutdown) => {
+                        std::process::exit(0);
+                    }
+                    Err(error) => {
+                        native_pet_log(&format!("invalid desktop pet command: {error}; {line}"));
+                    }
+                }
+            }
+            native_pet_log("desktop pet stdin reader exited");
+            std::process::exit(0);
+        });
 }
 
 struct DesktopPetApp {
     state: Arc<Mutex<DesktopPetRuntimeState>>,
     package: Arc<Mutex<Option<DesktopPetPackage>>>,
-    app: AppHandle,
+    action_sink: DesktopPetActionSink,
     details_open: bool,
     detail_last_open: bool,
     detail_side: i8,
@@ -212,34 +432,16 @@ impl DesktopPetApp {
         state: Arc<Mutex<DesktopPetRuntimeState>>,
         package: Arc<Mutex<Option<DesktopPetPackage>>>,
         repaint: Arc<Mutex<Option<egui::Context>>>,
-        app: AppHandle,
+        action_sink: DesktopPetActionSink,
     ) -> Self {
-        #[cfg(target_os = "windows")]
-        {
-            let mut fonts = egui::FontDefinitions::default();
-            fonts.font_data.insert(
-                "microsoft-yahei".to_owned(),
-                egui::FontData::from_static(include_bytes!("C:/Windows/Fonts/msyh.ttc")),
-            );
-            fonts
-                .families
-                .entry(egui::FontFamily::Proportional)
-                .or_default()
-                .insert(0, "microsoft-yahei".to_owned());
-            fonts
-                .families
-                .entry(egui::FontFamily::Monospace)
-                .or_default()
-                .insert(0, "microsoft-yahei".to_owned());
-            _cc.egui_ctx.set_fonts(fonts);
-        }
+        install_cjk_fonts(&_cc.egui_ctx);
         if let Ok(mut context) = repaint.lock() {
             *context = Some(_cc.egui_ctx.clone());
         }
         Self {
             state,
             package,
-            app,
+            action_sink,
             details_open: false,
             detail_last_open: false,
             detail_side: -1,
@@ -271,7 +473,15 @@ impl DesktopPetApp {
             action: action.to_string(),
             alert_id,
         };
-        let _ = self.app.emit("desktop_pet_action", &payload);
+        match &self.action_sink {
+            DesktopPetActionSink::Stdout => {
+                let event = DesktopPetProcessEvent::Action(payload);
+                if let Ok(line) = serde_json::to_string(&event) {
+                    println!("{line}");
+                    let _ = std::io::stdout().flush();
+                }
+            }
+        }
     }
 
     fn package_key(package: &DesktopPetPackage) -> String {
@@ -733,6 +943,77 @@ impl DesktopPetApp {
         self.last_size = next;
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(next));
     }
+}
+
+fn install_cjk_fonts(ctx: &egui::Context) {
+    let Some((font_name, font_bytes)) = load_cjk_font() else {
+        native_pet_log("no cjk font found for desktop pet; using egui default fonts");
+        return;
+    };
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        font_name.clone(),
+        egui::FontData::from_owned(font_bytes).into(),
+    );
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, font_name.clone());
+    fonts
+        .families
+        .entry(egui::FontFamily::Monospace)
+        .or_default()
+        .insert(0, font_name);
+    ctx.set_fonts(fonts);
+}
+
+fn load_cjk_font() -> Option<(String, Vec<u8>)> {
+    for path in cjk_font_candidates() {
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+        if !bytes.is_empty() {
+            native_pet_log(&format!("desktop pet loaded cjk font: {}", path.display()));
+            return Some((
+                path.file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("lanchat-cjk")
+                    .to_string(),
+                bytes,
+            ));
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn cjk_font_candidates() -> Vec<&'static Path> {
+    vec![
+        Path::new("C:/Windows/Fonts/msyh.ttc"),
+        Path::new("C:/Windows/Fonts/simhei.ttf"),
+        Path::new("C:/Windows/Fonts/simsun.ttc"),
+    ]
+}
+
+#[cfg(target_os = "macos")]
+fn cjk_font_candidates() -> Vec<&'static Path> {
+    vec![
+        Path::new("/System/Library/Fonts/PingFang.ttc"),
+        Path::new("/System/Library/Fonts/STHeiti Light.ttc"),
+        Path::new("/System/Library/Fonts/STHeiti Medium.ttc"),
+        Path::new("/System/Library/Fonts/Hiragino Sans GB.ttc"),
+        Path::new("/Library/Fonts/Arial Unicode.ttf"),
+    ]
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+fn cjk_font_candidates() -> Vec<&'static Path> {
+    vec![
+        Path::new("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+        Path::new("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"),
+        Path::new("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"),
+    ]
 }
 
 impl eframe::App for DesktopPetApp {
