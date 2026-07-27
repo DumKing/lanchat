@@ -16,7 +16,7 @@ pub const DESKTOP_PET_STATES: [PetStateKind; 5] = [
     PetStateKind::Interact,
     PetStateKind::Life,
 ];
-pub const DEFAULT_DESKTOP_PET_ID: &str = "violet-tail-girl";
+pub const DEFAULT_DESKTOP_PET_ID: &str = "frog-buddy";
 pub const FALLBACK_DESKTOP_PET_ID: &str = "frog-buddy";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -878,6 +878,7 @@ pub struct DesktopPetManager {
 }
 
 impl DesktopPetManager {
+    #[allow(dead_code)]
     pub fn new(roots: Vec<PetResourceRoot>, user_root: PathBuf, settings_path: PathBuf) -> Self {
         let _ = fs::create_dir_all(&user_root);
         let registry = DesktopPetRegistry::scan_roots(roots.clone());
@@ -904,6 +905,23 @@ impl DesktopPetManager {
             settings: Arc::new(Mutex::new(settings)),
             signature: Arc::new(Mutex::new(signature)),
             disk_signature: Arc::new(Mutex::new(disk_signature)),
+        }
+    }
+
+    pub fn new_lazy(
+        roots: Vec<PetResourceRoot>,
+        user_root: PathBuf,
+        settings_path: PathBuf,
+    ) -> Self {
+        let _ = fs::create_dir_all(&user_root);
+        Self {
+            roots: Arc::new(roots),
+            user_root,
+            settings_path: settings_path.clone(),
+            registry: Arc::new(RwLock::new(DesktopPetRegistry::default())),
+            settings: Arc::new(Mutex::new(DesktopPetSettings::load(&settings_path))),
+            signature: Arc::new(Mutex::new(String::new())),
+            disk_signature: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -939,6 +957,7 @@ impl DesktopPetManager {
             .lock()
             .unwrap_or_else(|error| error.into_inner()) =
             resource_roots_signature(self.roots.as_ref());
+        self.ensure_valid_selection();
         changed
     }
 
@@ -1213,6 +1232,32 @@ impl DesktopPetManager {
 
     pub fn user_root(&self) -> &Path {
         &self.user_root
+    }
+
+    fn ensure_valid_selection(&self) {
+        let registry = self
+            .registry
+            .read()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut settings = self.settings();
+        let selection_is_valid = settings
+            .selected_pet_id
+            .as_deref()
+            .is_some_and(|id| registry.package(id).is_some());
+        if selection_is_valid {
+            return;
+        }
+        settings.selected_pet_id = registry
+            .package(DEFAULT_DESKTOP_PET_ID)
+            .or_else(|| registry.package(FALLBACK_DESKTOP_PET_ID))
+            .or_else(|| registry.packages.values().next())
+            .map(|package| package.id().to_string());
+        drop(registry);
+        let _ = settings.save(&self.settings_path);
+        *self
+            .settings
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = settings;
     }
 }
 

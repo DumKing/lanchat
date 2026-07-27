@@ -1224,6 +1224,8 @@ impl eframe::App for DesktopPetApp {
                     } else {
                         self.emit_action("quick_alert", None);
                     }
+                } else if pet_response.secondary_clicked() {
+                    self.emit_action("configure_pet", None);
                 } else if pet_response.clicked() {
                     let alert_active = runtime_state == PetStateKind::Alert
                         || state.flashing

@@ -355,11 +355,11 @@ fn manager_selects_the_builtin_default_pet_when_settings_have_no_selection() {
 
     assert_eq!(
         manager.settings().selected_pet_id.as_deref(),
-        Some("violet-tail-girl")
+        Some("frog-buddy")
     );
     assert_eq!(
         manager.selected_package().expect("default pet").id(),
-        "violet-tail-girl"
+        "frog-buddy"
     );
 }
 
@@ -444,11 +444,11 @@ fn manager_repairs_a_missing_selection_to_default_pet() {
 
     assert_eq!(
         manager.settings().selected_pet_id.as_deref(),
-        Some("violet-tail-girl")
+        Some("frog-buddy")
     );
     assert_eq!(
         manager.selected_package().expect("fallback pet").id(),
-        "violet-tail-girl"
+        "frog-buddy"
     );
 }
 
