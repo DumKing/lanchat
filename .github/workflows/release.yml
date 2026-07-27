@@ -65,6 +65,17 @@ jobs:
           APPLE_SIGNING_IDENTITY: "-"
         run: npm run tauri build -- --bundles ${{ matrix.bundle }}
 
+      - name: Preserve Full bundle assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release-assets/bundles/full | Out-Null
+          if (Test-Path -LiteralPath "src-tauri/target/release/bundle/nsis") {
+            Copy-Item -Path "src-tauri/target/release/bundle/nsis/*.exe" -Destination "release-assets/bundles/full" -Force
+          }
+          if (Test-Path -LiteralPath "src-tauri/target/release/bundle/dmg") {
+            Copy-Item -Path "src-tauri/target/release/bundle/dmg/*.dmg" -Destination "release-assets/bundles/full" -Force
+          }
+
       - name: Build Windows portable package
         if: matrix.os == 'windows-latest'
         shell: pwsh
@@ -89,6 +100,17 @@ jobs:
         env:
           APPLE_SIGNING_IDENTITY: "-"
         run: npm run tauri:build:lite -- --bundles ${{ matrix.bundle }}
+
+      - name: Preserve Lite bundle assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release-assets/bundles/lite | Out-Null
+          if (Test-Path -LiteralPath "src-tauri/target/release/bundle/nsis") {
+            Copy-Item -Path "src-tauri/target/release/bundle/nsis/*lite*.exe" -Destination "release-assets/bundles/lite" -Force
+          }
+          if (Test-Path -LiteralPath "src-tauri/target/release/bundle/dmg") {
+            Copy-Item -Path "src-tauri/target/release/bundle/dmg/*lite*.dmg" -Destination "release-assets/bundles/lite" -Force
+          }
 
       - name: Build Windows Lite portable package
         if: matrix.os == 'windows-latest'
@@ -117,8 +139,8 @@ jobs:
           name: ${{ matrix.artifact }}
           if-no-files-found: error
           path: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/dmg/*.dmg
+            release-assets/bundles/**/*.exe
+            release-assets/bundles/**/*.dmg
             release-assets/portable/*.zip
             release-assets/desktop-pets/*.zip
 
@@ -145,5 +167,6 @@ jobs:
           body_path: docs/releases/v0.2.0.md
           draft: false
           prerelease: false
+          overwrite_files: true
           files: |
             release-downloads/**/*
