@@ -1,23 +1,23 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "lanchat",
-  "mainBinaryName": "lanchat",
+  "productName": "lanchat-lite",
+  "mainBinaryName": "lanchat-lite",
   "version": "0.2.0",
-  "identifier": "com.lanchat.desktop",
+  "identifier": "com.lanchat.lite",
   "build": {
-    "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist"
+    "beforeDevCommand": "npm run dev:lite",
+    "devUrl": "http://localhost:1430",
+    "beforeBuildCommand": "npm run build:lite",
+    "frontendDist": "../dist-lite"
   },
   "app": {
     "windows": [
       {
-        "title": "LanChat",
-        "width": 1180,
-        "height": 760,
-        "minWidth": 960,
-        "minHeight": 640,
+        "title": "LanChat Lite",
+        "width": 420,
+        "height": 680,
+        "minWidth": 360,
+        "minHeight": 560,
         "center": true,
         "fullscreen": false,
         "maximized": false,
@@ -54,4 +54,3 @@
     }
   }
 }
-

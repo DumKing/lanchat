@@ -25,6 +25,8 @@ pub struct Peer {
     pub port: u16,
     pub online: bool,
     pub last_seen_at: i64,
+    pub client_kind: String,
+    pub supports_chat: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -239,6 +241,8 @@ impl Storage {
         ensure_column(&conn, "messages", "file_duration_ms", "INTEGER")?;
         ensure_column(&conn, "profile", "avatar", "TEXT")?;
         ensure_column(&conn, "peers", "avatar", "TEXT")?;
+        ensure_column(&conn, "peers", "client_kind", "TEXT NOT NULL DEFAULT 'full'")?;
+        ensure_column(&conn, "peers", "supports_chat", "INTEGER NOT NULL DEFAULT 1")?;
         ensure_column(
             &conn,
             "channel_members",
@@ -334,6 +338,8 @@ impl Storage {
             port: peer.port,
             online: peer.online,
             last_seen_at: peer.last_seen_at,
+            client_kind: normalize_client_kind(&peer.client_kind),
+            supports_chat: peer.supports_chat,
         };
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         let duplicate_ids = find_duplicate_peer_ids(&conn, &normalized)?;
@@ -351,15 +357,17 @@ impl Storage {
         }
         conn.execute(
             "
-            INSERT INTO peers (device_id, nickname, avatar, address, port, online, last_seen_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            INSERT INTO peers (device_id, nickname, avatar, address, port, online, last_seen_at, client_kind, supports_chat)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             ON CONFLICT(device_id) DO UPDATE SET
                 nickname = excluded.nickname,
                 avatar = COALESCE(excluded.avatar, peers.avatar),
                 address = excluded.address,
                 port = excluded.port,
                 online = excluded.online,
-                last_seen_at = excluded.last_seen_at
+                last_seen_at = excluded.last_seen_at,
+                client_kind = excluded.client_kind,
+                supports_chat = excluded.supports_chat
             ",
             params![
                 normalized.device_id,
@@ -368,18 +376,24 @@ impl Storage {
                 normalized.address,
                 normalized.port,
                 if normalized.online { 1 } else { 0 },
-                normalized.last_seen_at
+                normalized.last_seen_at,
+                normalized.client_kind,
+                if normalized.supports_chat { 1 } else { 0 }
             ],
         )
         .map_err(|err| format!("保存局域网设备失败：{err}"))?;
         drop(conn);
-        self.ensure_direct_conversation(&normalized)
+        if normalized.supports_chat {
+            self.ensure_direct_conversation(&normalized)
+        } else {
+            Ok(())
+        }
     }
 
     pub fn get_peer(&self, device_id: &str) -> Result<Option<Peer>, String> {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         conn.query_row(
-            "SELECT device_id, nickname, avatar, address, port, online, last_seen_at FROM peers WHERE device_id = ?1",
+            "SELECT device_id, nickname, avatar, address, port, online, last_seen_at, client_kind, supports_chat FROM peers WHERE device_id = ?1",
             params![normalize_device_id(device_id)],
             |row| {
                 Ok(Peer {
@@ -390,6 +404,8 @@ impl Storage {
                     port: row.get::<_, i64>(4)? as u16,
                     online: row.get::<_, i64>(5)? == 1,
                     last_seen_at: row.get(6)?,
+                    client_kind: row.get(7)?,
+                    supports_chat: row.get::<_, i64>(8)? == 1,
                 })
             },
         )
@@ -401,8 +417,8 @@ impl Storage {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT device_id, nickname, avatar, address, port, online, last_seen_at
-                 FROM peers ORDER BY online DESC, last_seen_at DESC, nickname ASC",
+                "SELECT device_id, nickname, avatar, address, port, online, last_seen_at, client_kind, supports_chat
+                 FROM peers WHERE supports_chat = 1 ORDER BY online DESC, last_seen_at DESC, nickname ASC",
             )
             .map_err(|err| format!("读取局域网设备失败：{err}"))?;
         let rows = stmt
@@ -415,6 +431,8 @@ impl Storage {
                     port: row.get::<_, i64>(4)? as u16,
                     online: row.get::<_, i64>(5)? == 1,
                     last_seen_at: row.get(6)?,
+                    client_kind: row.get(7)?,
+                    supports_chat: row.get::<_, i64>(8)? == 1,
                 })
             })
             .map_err(|err| format!("读取局域网设备失败：{err}"))?;
@@ -1051,6 +1069,13 @@ fn dedupe_peer_list(peers: Vec<Peer>) -> Vec<Peer> {
     }
     result
 }
+
+fn normalize_client_kind(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "lite" => "lite".to_string(),
+        _ => "full".to_string(),
+    }
+}
 fn default_nickname() -> String {
     std::env::var("USERNAME")
         .or_else(|_| std::env::var("USER"))
@@ -1116,6 +1141,8 @@ mod tests {
                 port: 18145,
                 online: true,
                 last_seen_at: 10,
+                client_kind: "full".to_string(),
+                supports_chat: true,
             })
             .expect("peer saved");
         storage
@@ -1127,6 +1154,8 @@ mod tests {
                 port: 18146,
                 online: true,
                 last_seen_at: 20,
+                client_kind: "full".to_string(),
+                supports_chat: true,
             })
             .expect("peer updated");
 
@@ -1157,6 +1186,8 @@ mod tests {
                 port: 18145,
                 online: true,
                 last_seen_at: 10,
+                client_kind: "full".to_string(),
+                supports_chat: true,
             })
             .expect("peer");
 
@@ -1260,6 +1291,8 @@ mod tests {
                 port: 18145,
                 online: true,
                 last_seen_at: 10,
+                client_kind: "full".to_string(),
+                supports_chat: true,
             })
             .expect("peer");
 
@@ -1268,5 +1301,39 @@ mod tests {
 
         assert_eq!(vec!["peer-1".to_string()], offline);
         assert!(!peer.online);
+    }
+
+    #[test]
+    fn lite_peer_is_stored_but_not_listed_as_chat_peer() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db_path = temp.path().join("lanchat.sqlite3");
+        let storage = Storage::open(&db_path).expect("storage opens");
+
+        storage
+            .upsert_peer(&Peer {
+                device_id: "lite-1".to_string(),
+                nickname: "Lite 报警器".to_string(),
+                avatar: None,
+                address: "192.168.1.50".to_string(),
+                port: 18145,
+                online: true,
+                last_seen_at: 10,
+                client_kind: "lite".to_string(),
+                supports_chat: false,
+            })
+            .expect("lite peer saved");
+
+        assert!(storage
+            .get_peer("lite-1")
+            .expect("peer")
+            .expect("exists")
+            .client_kind
+            == "lite");
+        assert!(storage.list_peers().expect("peers").is_empty());
+        assert!(!storage
+            .list_conversations()
+            .expect("conversations")
+            .iter()
+            .any(|conversation| conversation.id == "lite-1"));
     }
 }

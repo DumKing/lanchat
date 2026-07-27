@@ -102,6 +102,20 @@ fn desktop_pet_resource_roots(app: &tauri::App, app_dir: &Path) -> Vec<PetResour
     roots
 }
 
+fn shared_desktop_pet_app_dir(app_dir: &Path) -> PathBuf {
+    if app_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("com.lanchat.desktop"))
+    {
+        return app_dir.to_path_buf();
+    }
+    app_dir
+        .parent()
+        .map(|parent| parent.join("com.lanchat.desktop"))
+        .unwrap_or_else(|| app_dir.to_path_buf())
+}
+
 fn alert_mode_label(mode: &str) -> &'static str {
     if mode.eq_ignore_ascii_case("disco") {
         "蹦迪报警"
@@ -1192,12 +1206,12 @@ fn start_desktop_pet_watcher(
     std::thread::Builder::new()
         .name("lanchat-desktop-pet-watcher".to_string())
         .spawn(move || loop {
-            std::thread::sleep(Duration::from_secs(2));
             if manager.refresh_if_changed() {
                 controller.set_package(manager.selected_package());
                 app.emit("desktop_pet_registry_changed", manager.snapshot())
                     .ok();
             }
+            std::thread::sleep(Duration::from_secs(2));
         })
         .ok();
 }
@@ -1670,6 +1684,15 @@ fn reset_main_window(app: &tauri::App) -> Result<(), String> {
         .map_err(|err| format!("窗口居中失败：{err}"))?;
     Ok(())
 }
+
+fn app_client_kind(app: &tauri::App) -> &'static str {
+    if app.config().identifier.ends_with(".lite") {
+        "lite"
+    } else {
+        "full"
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1702,15 +1725,17 @@ pub fn run() {
                     .map_err(|err| format!("初始化本地存储失败：{err}"))?,
             );
             storage.get_or_create_profile()?;
-            let network = Network::new(storage.clone());
+            let client_kind = app_client_kind(app);
+            let network = Network::new_with_client_kind(storage.clone(), client_kind);
             network.start(app.handle().clone())?;
             let file_server = FileServer::new();
             file_server.start();
-            let pet_roots = desktop_pet_resource_roots(app, &app_dir);
-            let desktop_pet = DesktopPetManager::new(
+            let desktop_pet_app_dir = shared_desktop_pet_app_dir(&app_dir);
+            let pet_roots = desktop_pet_resource_roots(app, &desktop_pet_app_dir);
+            let desktop_pet = DesktopPetManager::new_lazy(
                 pet_roots,
-                app_dir.join("desktop-pets"),
-                app_dir.join("desktop-pet-settings.json"),
+                desktop_pet_app_dir.join("desktop-pets"),
+                desktop_pet_app_dir.join("desktop-pet-settings.json"),
             );
             let desktop_pet_controller = DesktopPetController::start(app.handle().clone());
             let pet_settings = desktop_pet.settings();

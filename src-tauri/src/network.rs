@@ -48,13 +48,24 @@ struct EncryptedChatPayload {
 pub struct Network {
     storage: Arc<Storage>,
     senders: PeerSenders,
+    client_kind: String,
+    supports_chat: bool,
 }
 
 impl Network {
+    #[allow(dead_code)]
     pub fn new(storage: Arc<Storage>) -> Self {
+        Self::new_with_client_kind(storage, "full")
+    }
+
+    pub fn new_with_client_kind(storage: Arc<Storage>, client_kind: &str) -> Self {
+        let client_kind = normalize_client_kind(client_kind);
+        let supports_chat = client_kind != "lite";
         Self {
             storage,
             senders: Arc::new(Mutex::new(HashMap::new())),
+            client_kind,
+            supports_chat,
         }
     }
 
@@ -126,6 +137,17 @@ impl Network {
         Ok(())
     }
 
+    fn status_frame(&self, profile: &Profile) -> PeerStatusFrame {
+        status_frame_with_capabilities(profile, &self.client_kind, self.supports_chat)
+    }
+
+    fn status_frame_without_avatar(&self, profile: &Profile) -> PeerStatusFrame {
+        PeerStatusFrame {
+            avatar: None,
+            ..self.status_frame(profile)
+        }
+    }
+
     pub async fn connect_peer(
         &self,
         app: AppHandle,
@@ -154,7 +176,7 @@ impl Network {
         app: AppHandle,
         profile: &Profile,
     ) -> Result<(), String> {
-        let frame = WireFrame::PeerStatus(status_frame(profile));
+        let frame = WireFrame::PeerStatus(self.status_frame(profile));
         let senders = self
             .senders
             .lock()
@@ -821,6 +843,8 @@ impl Network {
             avatar: profile.avatar.clone(),
             protocol_version: PROTOCOL_VERSION,
             listen_port: profile.listen_port,
+            client_kind: self.client_kind.clone(),
+            supports_chat: self.supports_chat,
             public_key: None,
         });
         writer
@@ -858,6 +882,8 @@ impl Network {
             },
             online: true,
             last_seen_at: chrono::Utc::now().timestamp_millis(),
+            client_kind: remote_hello.client_kind.clone(),
+            supports_chat: remote_hello.supports_chat,
         };
         self.storage.upsert_peer(&peer)?;
         emit_debug_log(
@@ -867,7 +893,9 @@ impl Network {
             "TCP 握手完成，设备在线",
             Some(format!("{} {}:{}", peer.nickname, peer.address, peer.port)),
         );
-        app.emit("peer_online", &peer).ok();
+        if peer.supports_chat {
+            app.emit("peer_online", &peer).ok();
+        }
 
         let (tx, mut rx) = mpsc::unbounded_channel::<WireFrame>();
         let connection_id = Uuid::new_v4().to_string();
@@ -881,7 +909,7 @@ impl Network {
                     sender: tx.clone(),
                 },
             );
-        tx.send(WireFrame::PeerStatus(status_frame(&profile))).ok();
+        tx.send(WireFrame::PeerStatus(self.status_frame(&profile))).ok();
 
         let writer_app = app.clone();
         let peer_id = peer.device_id.clone();
@@ -1040,7 +1068,9 @@ impl Network {
                                         peer.nickname, peer.address, peer.port
                                     )),
                                 );
-                                read_app.emit("peer_online", &peer).ok();
+                                if peer.supports_chat {
+                                    read_app.emit("peer_online", &peer).ok();
+                                }
                             }
                         }
                     }
@@ -1190,7 +1220,9 @@ impl Network {
                                         read_app.emit("profile_updated", &updated).ok();
                                         if let Some(sender) = &ack_sender {
                                             sender
-                                                .send(WireFrame::PeerStatus(status_frame(&updated)))
+                                                .send(WireFrame::PeerStatus(
+                                                    read_network.status_frame(&updated),
+                                                ))
                                                 .ok();
                                         }
                                     }
@@ -1371,7 +1403,9 @@ impl Network {
                 )),
             );
             if self.storage.upsert_peer(&peer).is_ok() {
-                app.emit("peer_online", &peer).ok();
+                if peer.supports_chat {
+                    app.emit("peer_online", &peer).ok();
+                }
                 let should_connect = self
                     .senders
                     .lock()
@@ -1465,7 +1499,7 @@ impl Network {
             let Ok(profile) = self.storage.get_or_create_profile() else {
                 continue;
             };
-            let frame = WireFrame::PeerStatus(status_frame_without_avatar(&profile));
+            let frame = WireFrame::PeerStatus(self.status_frame_without_avatar(&profile));
             if let Some(socket) = &udp_socket {
                 if let Ok(line) = encode_frame(&frame) {
                     if let Err(err) = socket
@@ -1513,7 +1547,11 @@ impl Network {
     }
 }
 
-fn status_frame(profile: &Profile) -> PeerStatusFrame {
+fn status_frame_with_capabilities(
+    profile: &Profile,
+    client_kind: &str,
+    supports_chat: bool,
+) -> PeerStatusFrame {
     PeerStatusFrame {
         device_id: profile.device_id.clone(),
         nickname: profile.nickname.clone(),
@@ -1521,14 +1559,9 @@ fn status_frame(profile: &Profile) -> PeerStatusFrame {
         address: None,
         protocol_version: PROTOCOL_VERSION,
         listen_port: profile.listen_port,
+        client_kind: normalize_client_kind(client_kind),
+        supports_chat,
         updated_at: chrono::Utc::now().timestamp_millis(),
-    }
-}
-
-fn status_frame_without_avatar(profile: &Profile) -> PeerStatusFrame {
-    PeerStatusFrame {
-        avatar: None,
-        ..status_frame(profile)
     }
 }
 
@@ -1553,6 +1586,15 @@ fn peer_from_status_at(frame: PeerStatusFrame, source_address: String, seen_at: 
         port: frame.listen_port,
         online: true,
         last_seen_at: seen_at,
+        client_kind: frame.client_kind,
+        supports_chat: frame.supports_chat,
+    }
+}
+
+fn normalize_client_kind(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "lite" => "lite".to_string(),
+        _ => "full".to_string(),
     }
 }
 
@@ -1601,7 +1643,12 @@ fn mdns_instance_name(device_id: &str) -> String {
 fn start_mdns(app: AppHandle, network: Network) -> Result<(), String> {
     let profile = network.storage.get_or_create_profile()?;
     let mdns = ServiceDaemon::new().map_err(|err| format!("启动 mDNS 失败：{err}"))?;
-    register_mdns_service(&mdns, &profile)?;
+    register_mdns_service(
+        &mdns,
+        &profile,
+        &network.client_kind,
+        network.supports_chat,
+    )?;
     let receiver = mdns
         .browse(SERVICE_TYPE)
         .map_err(|err| format!("启动 mDNS 浏览失败：{err}"))?;
@@ -1620,6 +1667,14 @@ fn start_mdns(app: AppHandle, network: Network) -> Result<(), String> {
                 .map(|v| v.val_str())
                 .unwrap_or("局域网用户")
                 .to_string();
+            let client_kind = props
+                .get("client_kind")
+                .map(|v| normalize_client_kind(v.val_str()))
+                .unwrap_or_else(|| "full".to_string());
+            let supports_chat = props
+                .get("supports_chat")
+                .map(|v| v.val_str() != "false")
+                .unwrap_or(true);
             let address = info
                 .get_addresses()
                 .iter()
@@ -1635,6 +1690,8 @@ fn start_mdns(app: AppHandle, network: Network) -> Result<(), String> {
                 port: info.get_port(),
                 online: true,
                 last_seen_at: chrono::Utc::now().timestamp_millis(),
+                client_kind,
+                supports_chat,
             };
             if network.storage.upsert_peer(&peer).is_ok() {
                 emit_debug_log(
@@ -1644,7 +1701,9 @@ fn start_mdns(app: AppHandle, network: Network) -> Result<(), String> {
                     "mDNS 发现设备",
                     Some(format!("{} {}:{}", peer.nickname, peer.address, peer.port)),
                 );
-                app.emit("peer_online", &peer).ok();
+                if peer.supports_chat {
+                    app.emit("peer_online", &peer).ok();
+                }
                 let connect_network = network.clone();
                 let connect_app = app.clone();
                 let connect_address = peer.address.clone();
@@ -1669,7 +1728,12 @@ fn start_mdns(app: AppHandle, network: Network) -> Result<(), String> {
     Ok(())
 }
 
-fn register_mdns_service(mdns: &ServiceDaemon, profile: &Profile) -> Result<(), String> {
+fn register_mdns_service(
+    mdns: &ServiceDaemon,
+    profile: &Profile,
+    client_kind: &str,
+    supports_chat: bool,
+) -> Result<(), String> {
     let ip = local_ip_address();
     let host_name = format!("{}.local.", mdns_instance_name(&profile.device_id));
     let instance_name = mdns_instance_name(&profile.device_id);
@@ -1677,6 +1741,8 @@ fn register_mdns_service(mdns: &ServiceDaemon, profile: &Profile) -> Result<(), 
         ("device_id", profile.device_id.as_str()),
         ("nickname", profile.nickname.as_str()),
         ("protocol_version", "1"),
+        ("client_kind", client_kind),
+        ("supports_chat", if supports_chat { "true" } else { "false" }),
     ];
     let service = ServiceInfo::new(
         SERVICE_TYPE,
@@ -1812,6 +1878,8 @@ mod tests {
                 address: Some("10.0.0.99".to_string()),
                 protocol_version: 1,
                 listen_port: 18145,
+                client_kind: "full".to_string(),
+                supports_chat: true,
                 updated_at: 1,
             },
             "192.168.1.22".to_string(),

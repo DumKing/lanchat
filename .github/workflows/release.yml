@@ -65,6 +65,52 @@ jobs:
           APPLE_SIGNING_IDENTITY: "-"
         run: npm run tauri build -- --bundles ${{ matrix.bundle }}
 
+      - name: Build Windows portable package
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $portableRoot = "release-assets/portable/lanchat-windows-portable"
+          if (Test-Path -LiteralPath $portableRoot) { Remove-Item -LiteralPath $portableRoot -Recurse -Force }
+          New-Item -ItemType Directory -Force $portableRoot | Out-Null
+          Copy-Item -LiteralPath "src-tauri/target/release/lanchat.exe" -Destination $portableRoot
+          if (Test-Path -LiteralPath "src-tauri/target/release/resources") {
+            Copy-Item -LiteralPath "src-tauri/target/release/resources" -Destination $portableRoot -Recurse
+          }
+          @"
+          LanChat Windows 绿色版
+
+          1. 解压后直接运行 lanchat.exe。
+          2. 默认内置 frog-buddy 桌宠。
+          3. 如系统缺少 WebView2 Runtime，请先安装 Microsoft Edge WebView2 Runtime。
+          "@ | Set-Content -Encoding UTF8 (Join-Path $portableRoot "README.txt")
+          Compress-Archive -Path "$portableRoot/*" -DestinationPath "release-assets/portable/lanchat-windows-portable.zip" -Force
+
+      - name: Build Lite Tauri bundle
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        run: npm run tauri:build:lite -- --bundles ${{ matrix.bundle }}
+
+      - name: Build Windows Lite portable package
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $portableRoot = "release-assets/portable/lanchat-lite-windows-portable"
+          if (Test-Path -LiteralPath $portableRoot) { Remove-Item -LiteralPath $portableRoot -Recurse -Force }
+          New-Item -ItemType Directory -Force $portableRoot | Out-Null
+          Copy-Item -LiteralPath "src-tauri/target/release/lanchat-lite.exe" -Destination $portableRoot
+          if (Test-Path -LiteralPath "src-tauri/target/release/resources") {
+            Copy-Item -LiteralPath "src-tauri/target/release/resources" -Destination $portableRoot -Recurse
+          }
+          @"
+          LanChat Lite Windows 绿色版
+
+          1. 解压后直接运行 lanchat-lite.exe。
+          2. Lite 仅包含桌宠告警器、狼来了排行榜、桌宠设置和外部推送配置。
+          3. 默认内置 frog-buddy 桌宠。
+          4. 如系统缺少 WebView2 Runtime，请先安装 Microsoft Edge WebView2 Runtime。
+          "@ | Set-Content -Encoding UTF8 (Join-Path $portableRoot "README.txt")
+          Compress-Archive -Path "$portableRoot/*" -DestinationPath "release-assets/portable/lanchat-lite-windows-portable.zip" -Force
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -73,6 +119,7 @@ jobs:
           path: |
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/dmg/*.dmg
+            release-assets/portable/*.zip
             release-assets/desktop-pets/*.zip
 
   publish:
@@ -82,6 +129,9 @@ jobs:
     timeout-minutes: 20
 
     steps:
+      - name: Checkout release notes
+        uses: actions/checkout@v4
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -92,6 +142,7 @@ jobs:
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           name: LanChat ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          body_path: docs/releases/v0.2.0.md
           draft: false
           prerelease: false
           files: |

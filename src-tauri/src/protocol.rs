@@ -30,6 +30,10 @@ pub struct HelloFrame {
     pub avatar: Option<String>,
     pub protocol_version: u16,
     pub listen_port: u16,
+    #[serde(default = "default_client_kind")]
+    pub client_kind: String,
+    #[serde(default = "default_supports_chat")]
+    pub supports_chat: bool,
     pub public_key: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,7 +44,19 @@ pub struct PeerStatusFrame {
     pub address: Option<String>,
     pub protocol_version: u16,
     pub listen_port: u16,
+    #[serde(default = "default_client_kind")]
+    pub client_kind: String,
+    #[serde(default = "default_supports_chat")]
+    pub supports_chat: bool,
     pub updated_at: i64,
+}
+
+fn default_client_kind() -> String {
+    "full".to_string()
+}
+
+fn default_supports_chat() -> bool {
+    true
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatMessageFrame {
@@ -227,6 +243,8 @@ mod tests {
             avatar: Some("data:image/png;base64,abc".to_string()),
             protocol_version: 1,
             listen_port: 18145,
+            client_kind: "full".to_string(),
+            supports_chat: true,
             public_key: None,
         });
 
@@ -388,6 +406,8 @@ mod tests {
             address: Some("192.168.1.20".to_string()),
             protocol_version: 1,
             listen_port: 18145,
+            client_kind: "full".to_string(),
+            supports_chat: true,
             updated_at: 10,
         });
 

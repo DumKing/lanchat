@@ -59,6 +59,11 @@ jobs:
           APPLE_SIGNING_IDENTITY: "-"
         run: npm run tauri build -- --bundles app,dmg
 
+      - name: Build macOS Lite bundle
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        run: npm run tauri:build:lite -- --bundles app,dmg
+
       - name: Verify ad-hoc signature
         run: |
           codesign --verify --deep --strict --verbose=4 src-tauri/target/release/bundle/macos/*.app
