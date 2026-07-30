@@ -19,6 +19,7 @@ use desktop_pet::{
 };
 use desktop_pet_runtime::{DesktopPetController, DesktopPetRuntimeState};
 use file_server::FileServer;
+use fs2::FileExt;
 use network::{local_ip_address, Network};
 use protocol::GameFrame;
 use protocol::MessageRecallFrame;
@@ -28,9 +29,10 @@ use protocol::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use storage::{
     ChannelMember, ChannelMemberSeed, Conversation, Message, MessageType, Peer, Profile, Storage,
@@ -42,6 +44,8 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{Emitter, LogicalSize, Manager, Size, State, UserAttentionType, WindowEvent};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use uuid::Uuid;
+
+static LANCHAT_INSTANCE_LOCK: OnceLock<File> = OnceLock::new();
 
 pub fn run_desktop_pet_process() {
     desktop_pet_runtime::run_desktop_pet_process();
@@ -266,6 +270,14 @@ struct AppState {
     desktop_pet_stop_hotkey: Arc<Mutex<Option<Shortcut>>>,
 }
 
+fn ensure_full_client(state: &AppState, capability: &str) -> Result<(), String> {
+    if state.network.supports_chat() {
+        Ok(())
+    } else {
+        Err(format!("Lite 版本不支持{capability}"))
+    }
+}
+
 const TRAY_NORMAL_ICON: &[u8] = include_bytes!("../icons/32x32.png");
 const TRAY_ALERT_ICON: &[u8] = include_bytes!("../icons/tray-alert.png");
 
@@ -411,6 +423,7 @@ async fn connect_peer(
 
 #[tauri::command]
 fn list_conversations(state: State<'_, AppState>) -> Result<Vec<Conversation>, String> {
+    ensure_full_client(&state, "聊天和频道")?;
     state.storage.list_conversations()
 }
 
@@ -419,6 +432,7 @@ fn list_channel_members(
     state: State<'_, AppState>,
     conversation_id: String,
 ) -> Result<Vec<ChannelMember>, String> {
+    ensure_full_client(&state, "频道成员")?;
     if conversation_id.trim().is_empty() {
         return Err("请选择频道".to_string());
     }
@@ -432,6 +446,7 @@ async fn create_private_channel(
     title: String,
     _member_device_ids: Vec<String>,
 ) -> Result<Conversation, String> {
+    ensure_full_client(&state, "创建私有频道")?;
     let title = title.trim().to_string();
     if title.is_empty() {
         return Err("频道名称不能为空".to_string());
@@ -465,6 +480,7 @@ async fn invite_private_channel_members(
     member_device_ids: Vec<String>,
     super_admin: bool,
 ) -> Result<Vec<ChannelMember>, String> {
+    ensure_full_client(&state, "邀请频道成员")?;
     let channel = state
         .storage
         .get_private_channel(&conversation_id)?
@@ -485,6 +501,7 @@ async fn remove_private_channel_member(
     member_device_id: String,
     super_admin: bool,
 ) -> Result<Vec<ChannelMember>, String> {
+    ensure_full_client(&state, "频道成员管理")?;
     let channel = state
         .storage
         .get_private_channel(&conversation_id)?
@@ -521,6 +538,7 @@ async fn set_private_channel_member_muted(
     muted: bool,
     super_admin: bool,
 ) -> Result<Vec<ChannelMember>, String> {
+    ensure_full_client(&state, "频道禁言")?;
     let channel = state
         .storage
         .get_private_channel(&conversation_id)?
@@ -556,6 +574,7 @@ async fn dissolve_private_channel(
     conversation_id: String,
     super_admin: bool,
 ) -> Result<(), String> {
+    ensure_full_client(&state, "解散频道")?;
     let channel = state
         .storage
         .get_private_channel(&conversation_id)?
@@ -591,6 +610,7 @@ async fn admin_mute_channel_member(
     target_device_id: String,
     muted: bool,
 ) -> Result<(), String> {
+    ensure_full_client(&state, "频道管控")?;
     let profile = state.storage.get_or_create_profile()?;
     if target_device_id == profile.device_id {
         return Err("不能禁言自己".to_string());
@@ -612,6 +632,7 @@ fn build_private_channel_invite_card(
     conversation_id: String,
     super_admin: bool,
 ) -> Result<PrivateChannelInviteCardPayload, String> {
+    ensure_full_client(&state, "频道邀请")?;
     let channel = state
         .storage
         .get_private_channel(&conversation_id)?
@@ -648,6 +669,7 @@ async fn accept_private_channel_invite(
     state: State<'_, AppState>,
     invite: PrivateChannelInviteCardPayload,
 ) -> Result<Conversation, String> {
+    ensure_full_client(&state, "加入私有频道")?;
     if invite.channel_id.trim().is_empty() || invite.title.trim().is_empty() {
         return Err("频道邀请无效".to_string());
     }
@@ -715,6 +737,7 @@ async fn broadcast_channel_notice(
     conversation_id: String,
     notice: String,
 ) -> Result<(), String> {
+    ensure_full_client(&state, "频道公告")?;
     state
         .network
         .broadcast_channel_notice(app, conversation_id, notice)
@@ -726,6 +749,7 @@ fn list_messages(
     state: State<'_, AppState>,
     conversation_id: String,
 ) -> Result<Vec<Message>, String> {
+    ensure_full_client(&state, "聊天记录")?;
     state.storage.list_messages(&conversation_id)
 }
 
@@ -736,6 +760,7 @@ async fn send_message(
     conversation_id: String,
     content: String,
 ) -> Result<Message, String> {
+    ensure_full_client(&state, "聊天")?;
     let content = content.trim().to_string();
     if content.is_empty() {
         return Err("消息内容不能为空".to_string());
@@ -766,6 +791,7 @@ fn save_system_notice(
     conversation_id: String,
     content: String,
 ) -> Result<Message, String> {
+    ensure_full_client(&state, "系统聊天通知")?;
     let content = content.trim().to_string();
     if content.is_empty() {
         return Err("系统通知不能为空".to_string());
@@ -795,6 +821,7 @@ async fn recall_message(
     state: State<'_, AppState>,
     message_id: String,
 ) -> Result<Message, String> {
+    ensure_full_client(&state, "消息撤回")?;
     let message = state
         .storage
         .update_message_after_recall(&message_id)?
@@ -822,6 +849,7 @@ async fn send_file_message(
     conversation_id: String,
     path: String,
 ) -> Result<Message, String> {
+    ensure_full_client(&state, "文件消息")?;
     let file_meta = state
         .file_server
         .share_file(std::path::PathBuf::from(path))?;
@@ -845,6 +873,7 @@ async fn send_voice_message(
     bytes: Vec<u8>,
     duration_ms: u64,
 ) -> Result<Message, String> {
+    ensure_full_client(&state, "语音消息")?;
     const MAX_VOICE_MS: u64 = 60_000;
     const MAX_VOICE_BYTES: usize = 8 * 1024 * 1024;
     if duration_ms == 0 || duration_ms > MAX_VOICE_MS {
@@ -1214,6 +1243,63 @@ fn start_desktop_pet_watcher(
             std::thread::sleep(Duration::from_secs(2));
         })
         .ok();
+}
+
+fn acquire_lanchat_instance_lock() -> Result<(), String> {
+    let lock_dir = std::env::temp_dir().join("lanchat");
+    std::fs::create_dir_all(&lock_dir).map_err(|err| format!("创建实例锁目录失败：{err}"))?;
+    let lock_path = lock_dir.join("lanchat-app.lock");
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&lock_path)
+        .map_err(|err| format!("打开实例锁失败：{err}"))?;
+    file.try_lock_exclusive()
+        .map_err(|_| "LanChat Full/Lite 已有一个版本正在运行".to_string())?;
+    let _ = LANCHAT_INSTANCE_LOCK.set(file);
+    Ok(())
+}
+
+fn show_instance_lock_message(message: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+
+        #[link(name = "user32")]
+        extern "system" {
+            fn MessageBoxW(
+                hwnd: *mut std::ffi::c_void,
+                lp_text: *const u16,
+                lp_caption: *const u16,
+                u_type: u32,
+            ) -> i32;
+        }
+
+        const MB_OK: u32 = 0x0000_0000;
+        const MB_ICONINFORMATION: u32 = 0x0000_0040;
+        const MB_SETFOREGROUND: u32 = 0x0001_0000;
+
+        fn wide(value: &str) -> Vec<u16> {
+            OsStr::new(value).encode_wide().chain(Some(0)).collect()
+        }
+
+        let text = wide(message);
+        let caption = wide("LanChat");
+        unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                text.as_ptr(),
+                caption.as_ptr(),
+                MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND,
+            );
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        eprintln!("{message}");
+    }
 }
 
 fn parse_shortcut_code(value: &str) -> Option<Code> {
@@ -1695,6 +1781,11 @@ fn app_client_kind(app: &tauri::App) -> &'static str {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if let Err(error) = acquire_lanchat_instance_lock() {
+        eprintln!("{error}");
+        show_instance_lock_message(&error);
+        return;
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             let _ = show_main_window(app, None);

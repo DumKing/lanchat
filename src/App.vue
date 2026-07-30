@@ -472,6 +472,7 @@ const pickerPeerOptions = computed(() => {
     : new Set<string>();
   return peers.value.filter((peer) => {
     if (!peer.online) return false;
+    if (!peerSupportsFullFeatures(peer)) return false;
     if (recipientPickerMode.value === "privateChannelInvite" && existingPrivateMembers.has(peer.device_id)) return false;
     return true;
   });
@@ -552,6 +553,8 @@ const activePeerStatusType = computed(() => (activePeer.value?.online ? "success
 const composerPlaceholder = computed(() => {
   if (canSendActive.value) return "输入消息";
   if (activeSelfMuted.value) return "你已被禁言，暂不能发言";
+  const peer = activePeer.value;
+  if (activeConversation.value?.kind === "direct" && peer && !peerSupportsFullFeatures(peer)) return "Lite 告警器不支持聊天发送";
   return activeConversation.value?.kind === "direct" ? "对方已离线，暂不能发送私聊消息" : "当前不可发送消息";
 });
 const activeGameRoom = computed(() => gameRoomsState.value.find((room) => room.roomId === activeGameRoomId.value) ?? null);
@@ -3360,6 +3363,12 @@ function peerLastSeenLabel(peer?: Peer | null) {
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
   return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(peer.last_seen_at));
 }
+function peerSupportsFullFeatures(peer?: Peer | null) {
+  return !!peer && peer.supports_chat !== false && peer.client_kind !== "lite";
+}
+function peerClientKindLabel(peer?: Peer | null) {
+  return peer?.client_kind === "lite" || peer?.supports_chat === false ? "Lite 告警器" : "完整版";
+}
 function readSavedSuperAdminEnabled() {
   if (typeof window === "undefined") return false;
   return window.localStorage.getItem("lanchat-super-admin-enabled") === "true";
@@ -3436,6 +3445,7 @@ function conversationTagType(conversation: Conversation) {
 function conversationSubtitle(conversation: Conversation) {
   if (conversation.kind === "group") return conversation.is_private ? "私有加密频道" : `${onlinePeers.value.length} 台设备在线`;
   const peer = conversationPeer(conversation);
+  if (peer && !peerSupportsFullFeatures(peer)) return "Lite 告警器";
   return peer ? `${peer.address}:${peer.port}` : "设备未在列表中";
 }
 function messageClass(message: Message) {
@@ -3475,7 +3485,8 @@ async function selectMessageContextAction(key: string | number) {
   }
 }
 function peerSubtitle(peer: Peer) {
-  return `${peer.address}:${peer.port}`;
+  const kind = peerSupportsFullFeatures(peer) ? "完整版" : "Lite 告警器";
+  return `${kind} · ${peer.address}:${peer.port}`;
 }
 function memberSubtitle(member: ChannelMember | Peer) {
   if ("address" in member) return peerSubtitle(member);
@@ -4554,6 +4565,8 @@ async function closeWindow() {
                     <span>端口</span><strong>{{ selectedPeerDetail.port }}</strong>
                     <span>MAC 地址</span><strong>{{ selectedPeerDetail.device_id }}</strong>
                     <span>昵称</span><strong>{{ selectedPeerDetail.nickname }}</strong>
+                    <span>客户端</span><strong>{{ peerClientKindLabel(selectedPeerDetail) }}</strong>
+                    <span>支持能力</span><strong>{{ peerSupportsFullFeatures(selectedPeerDetail) ? "告警、聊天、频道、游戏、文件" : "桌宠告警" }}</strong>
                     <span>最近在线</span><strong>{{ peerLastSeenLabel(selectedPeerDetail) }}</strong>
                   </div>
                   <div v-if="superAdminEnabled" class="admin-rename-box">
@@ -4566,7 +4579,9 @@ async function closeWindow() {
                     <NText depth="3">目标设备在线时会立即更新本机昵称，并通过在线广播同步给局域网。</NText>
                   </div>
                   <div class="device-detail-actions">
-                    <NButton type="primary" :disabled="!selectedPeerDetail.online" @click="startDirectChat(selectedPeerDetail)">发起单聊</NButton>
+                    <NButton type="primary" :disabled="!selectedPeerDetail.online && peerSupportsFullFeatures(selectedPeerDetail)" @click="startDirectChat(selectedPeerDetail)">
+                      {{ peerSupportsFullFeatures(selectedPeerDetail) ? "发起单聊" : "查看历史" }}
+                    </NButton>
                     <NButton secondary type="error" @click="deleteSelectedPeer">删除设备</NButton>
                   </div>
                 </div>

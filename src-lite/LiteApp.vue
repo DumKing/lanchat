@@ -332,6 +332,9 @@ const PET_PLAYBACK_DEFAULTS: Record<PetStateKind, PetStatePlaybackConfig> = {
   Interact: { minDurationMs: 0, maxDurationMs: 0, minActionCount: 1, maxActionCount: 1, minIntervalMs: 0, maxIntervalMs: 0 },
   Life: { minDurationMs: 0, maxDurationMs: 0, minActionCount: 2, maxActionCount: 4, minIntervalMs: 800, maxIntervalMs: 2000 },
 };
+const QUICK_ALERT_TRUST_RESET_ALL_TARGET = "__all__";
+const ALERT_SEND_COOLDOWN_MS = 20_000;
+const PET_DISCO_ALERT_DURATION_MS = 60_000;
 
 const activePage = ref<PageKey>("leaderboard");
 const navCollapsed = ref(readStored("lanchat-lite-nav-collapsed") === "1");
@@ -347,6 +350,10 @@ const petEditorOpen = ref(false);
 const petEditorSaving = ref(false);
 const petEditorTarget = ref<DesktopPetPackage | null>(null);
 const petEditorState = ref<PetStateKind>("Idle");
+const ownAlertFlashUntil = ref(0);
+const lastOwnAlertSentAt = ref(0);
+const discoModeUntil = ref(0);
+const visuallyStoppedAlertIds = ref<Set<string>>(new Set());
 const petPlaybackDraft = reactive<Record<PetStateKind, PetStatePlaybackConfig>>({
   Idle: { ...PET_PLAYBACK_DEFAULTS.Idle },
   Alert: { ...PET_PLAYBACK_DEFAULTS.Alert },
@@ -371,7 +378,21 @@ const settings = reactive<DesktopPetSettings>({
 });
 
 const pendingAlerts = computed(() => alertRecords.value.filter((item) => item.incoming && !item.handled && item.senderDeviceId !== profile.value?.device_id));
-const activeAlert = computed(() => pendingAlerts.value[0] ?? alertRecords.value.find((item) => !item.handled) ?? null);
+const latestPendingAlert = computed(() =>
+  [...alertRecords.value]
+    .filter((item) => item.incoming && !item.handled && item.senderDeviceId !== profile.value?.device_id)
+    .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null,
+);
+const latestOwnAlert = computed(() =>
+  [...alertRecords.value]
+    .filter((item) => !item.incoming && item.senderDeviceId === profile.value?.device_id)
+    .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null,
+);
+const activeAlert = computed(() =>
+  (latestPendingAlert.value && !visuallyStoppedAlertIds.value.has(latestPendingAlert.value.alertId) ? latestPendingAlert.value : null)
+  ?? (latestOwnAlert.value && ownAlertFlashUntil.value > 0 && !visuallyStoppedAlertIds.value.has(latestOwnAlert.value.alertId) ? latestOwnAlert.value : null),
+);
+const discoModeActive = computed(() => discoModeUntil.value > nowTick.value);
 const selectedPet = computed(() => packages.value.find((pet) => pet.manifest.id === settings.selectedPetId) ?? packages.value[0] ?? null);
 const rankingRows = computed(() => {
   const rows = new Map<string, { deviceId: string; nickname: string; total: number; feedbackTotal: number; real: number; falseCount: number; lastAt: number }>();
@@ -619,7 +640,8 @@ function captureHotkey(event: KeyboardEvent) {
   void saveHotkey();
 }
 
-function alertRecordFromFrame(alert: QuickAlert, incoming: boolean): AlertRecord {
+function alertRecordFromFrame(alert: QuickAlert): AlertRecord {
+  const incoming = alert.sender_device_id !== profile.value?.device_id;
   return {
     alertId: alert.alert_id,
     senderDeviceId: alert.sender_device_id,
@@ -629,21 +651,36 @@ function alertRecordFromFrame(alert: QuickAlert, incoming: boolean): AlertRecord
     mode: normalizeAlertMode(alert.mode),
     createdAt: alert.created_at,
     incoming,
-    handled: false,
+    handled: !incoming,
     feedbacks: [],
   };
 }
 
-function upsertAlert(alert: QuickAlert, incoming: boolean) {
+function applyAlert(alert: QuickAlert) {
+  const nextStopped = new Set(visuallyStoppedAlertIds.value);
+  nextStopped.delete(alert.alert_id);
+  visuallyStoppedAlertIds.value = nextStopped;
   const current = alertRecords.value.find((item) => item.alertId === alert.alert_id);
   if (current) {
     alertRecords.value = normalizeAlertRecords(alertRecords.value.map((item) =>
       item.alertId === alert.alert_id
-        ? { ...item, ...alertRecordFromFrame(alert, incoming), feedbacks: item.feedbacks, handled: item.handled }
+        ? {
+            ...item,
+            senderNickname: alert.sender_nickname,
+            senderAddress: alert.sender_address ?? item.senderAddress ?? null,
+            content: alert.content || item.content,
+            mode: normalizeAlertMode(alert.mode || item.mode),
+            createdAt: alert.created_at || item.createdAt,
+          }
         : item,
     ));
+    syncPet();
+    return;
   } else {
-    alertRecords.value = normalizeAlertRecords([alertRecordFromFrame(alert, incoming), ...alertRecords.value]);
+    alertRecords.value = normalizeAlertRecords([alertRecordFromFrame(alert), ...alertRecords.value]);
+  }
+  if (normalizeAlertMode(alert.mode) === "disco") {
+    discoModeUntil.value = Math.max(discoModeUntil.value, Date.now() + PET_DISCO_ALERT_DURATION_MS);
   }
   syncPet();
 }
@@ -665,14 +702,27 @@ function applyFeedback(feedback: QuickAlertFeedback) {
 }
 
 function applyTrustReset(reset: QuickAlertTrustReset) {
+  if (reset.target_device_id === QUICK_ALERT_TRUST_RESET_ALL_TARGET) {
+    alertRecords.value = [];
+    visuallyStoppedAlertIds.value = new Set();
+    ownAlertFlashUntil.value = 0;
+    discoModeUntil.value = 0;
+    syncPet(false);
+    return;
+  }
   alertRecords.value = normalizeAlertRecords(alertRecords.value.filter((alert) => alert.senderDeviceId !== reset.target_device_id));
   syncPet();
 }
 
 async function sendAlert(mode: string) {
   saveAlertText();
+  const now = Date.now();
+  if (now - lastOwnAlertSentAt.value < ALERT_SEND_COOLDOWN_MS) return;
   const sent = await api.sendQuickAlert(alertText.value.trim() || "呱呱~呱~~", normalizeAlertMode(mode));
-  upsertAlert(sent, false);
+  applyAlert(sent);
+  lastOwnAlertSentAt.value = now;
+  ownAlertFlashUntil.value = Date.now();
+  syncPet();
 }
 
 async function feedback(alert: AlertRecord, result: AlertFeedbackResult) {
@@ -682,7 +732,12 @@ async function feedback(alert: AlertRecord, result: AlertFeedbackResult) {
 }
 
 function stopVisuals() {
-  alertRecords.value = alertRecords.value.map((item) => ({ ...item, handled: true }));
+  if (activeAlert.value) {
+    visuallyStoppedAlertIds.value = new Set([...visuallyStoppedAlertIds.value, activeAlert.value.alertId]);
+  }
+  ownAlertFlashUntil.value = 0;
+  lastOwnAlertSentAt.value = 0;
+  discoModeUntil.value = 0;
   syncPet(false);
 }
 
@@ -701,7 +756,7 @@ function formatTime(value: number) {
 }
 
 function syncPet(flashing = Boolean(activeAlert.value)) {
-  const latest = activeAlert.value ?? alertRecords.value[0] ?? null;
+  const latest = activeAlert.value;
   api.updateDesktopPetState({
     enabled: settings.enabled,
     pending_count: pendingAlerts.value.length,
@@ -711,9 +766,10 @@ function syncPet(flashing = Boolean(activeAlert.value)) {
     latest_sender_address: latest?.senderAddress ?? null,
     latest_content: latest?.content ?? null,
     latest_created_at: latest?.createdAt ?? null,
-    feedbackable: Boolean(latest && latest.incoming && !latest.handled && latest.senderDeviceId !== profile.value?.device_id),
+    feedbackable: Boolean(latestPendingAlert.value),
     flashing,
-    disco: flashing && latest?.mode === "disco",
+    disco: discoModeActive.value && Boolean(latest),
+    theme_accent: "#159A8C",
     random_move_enabled: settings.randomMoveEnabled,
     random_life_enabled: settings.randomLifeEnabled,
     disco_movement_mode: settings.discoMovementMode,
@@ -721,6 +777,9 @@ function syncPet(flashing = Boolean(activeAlert.value)) {
 }
 
 watch(alertRecords, saveAlertRecords, { deep: true });
+watch([activeAlert, discoModeActive, pendingAlerts], () => {
+  syncPet();
+});
 watch(navCollapsed, (collapsed) => {
   window.localStorage.setItem("lanchat-lite-nav-collapsed", collapsed ? "1" : "0");
 });
@@ -729,28 +788,44 @@ setInterval(() => {
 }, 1000);
 
 onMounted(async () => {
-  await load();
-  await listen<QuickAlert>("quick_alert_received", (event) => upsertAlert(event.payload, event.payload.sender_device_id !== profile.value?.device_id));
-  await listen<QuickAlertFeedback>("quick_alert_feedback_received", (event) => applyFeedback(event.payload));
-  await listen<QuickAlertTrustReset>("quick_alert_trust_reset_received", (event) => applyTrustReset(event.payload));
-  await listen<{ action: string; alert_id?: string | null }>("desktop_pet_action", async (event) => {
-    if (event.payload.action === "quick_alert") await sendAlert(settings.alertMode);
-    if (event.payload.action === "broadcast_disco_alert") await sendAlert("disco");
-    if (event.payload.action === "stop_visuals") stopVisuals();
-    if (event.payload.action === "feedback_real" && activeAlert.value) await feedback(activeAlert.value, "real");
-    if (event.payload.action === "feedback_false" && activeAlert.value) await feedback(activeAlert.value, "false");
-    if (event.payload.action === "configure_pet" || event.payload.action === "open_main_window") {
-      activePage.value = "settings";
-      await api.showFromTray();
+  try {
+    await load();
+  } catch (error) {
+    console.error("lite app initialization failed", error);
+  }
+  try {
+    await listen<QuickAlert>("quick_alert_received", (event) => applyAlert(event.payload));
+    await listen<QuickAlertFeedback>("quick_alert_feedback_received", (event) => applyFeedback(event.payload));
+    await listen<QuickAlertTrustReset>("quick_alert_trust_reset_received", (event) => applyTrustReset(event.payload));
+    await listen<{ action: string; alert_id?: string | null }>("desktop_pet_action", async (event) => {
+    try {
+      if (event.payload.action === "quick_alert") {
+        await sendAlert(settings.alertMode);
+      } else if (event.payload.action === "broadcast_disco_alert") {
+        await sendAlert("disco");
+      } else if (event.payload.action === "stop_visuals") {
+        stopVisuals();
+      } else if (event.payload.action === "feedback_real" || event.payload.action === "feedback_false") {
+        const target = alertRecords.value.find((item) => item.alertId === event.payload.alert_id) ?? latestPendingAlert.value;
+        if (target) await feedback(target, event.payload.action === "feedback_real" ? "real" : "false");
+      } else if (event.payload.action === "configure_pet" || event.payload.action === "open_main_window") {
+        activePage.value = "settings";
+        await api.showFromTray();
+      }
+    } catch (error) {
+      console.error("desktop pet action failed", error);
     }
-  });
-  await listen("desktop_pet_stop_hotkey_received", async () => {
-    if (activeAlert.value) stopVisuals();
-    else await sendAlert("disco");
-  });
-  await listen<{ packages: DesktopPetPackage[]; issues: DesktopPetPackageIssue[] }>("desktop_pet_registry_changed", (event) => {
-    packages.value = event.payload.packages;
-    petIssues.value = event.payload.issues;
-  });
+    });
+    await listen("desktop_pet_stop_hotkey_received", async () => {
+      if (activeAlert.value || discoModeActive.value) stopVisuals();
+      else await sendAlert("disco");
+    });
+    await listen<{ packages: DesktopPetPackage[]; issues: DesktopPetPackageIssue[] }>("desktop_pet_registry_changed", (event) => {
+      packages.value = event.payload.packages;
+      petIssues.value = event.payload.issues;
+    });
+  } catch (error) {
+    console.error("lite event registration failed", error);
+  }
 });
 </script>

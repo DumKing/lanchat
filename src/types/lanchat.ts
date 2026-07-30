@@ -20,6 +20,8 @@ export type Peer = {
   port: number;
   online: boolean;
   last_seen_at: number;
+  client_kind?: "full" | "lite" | string;
+  supports_chat?: boolean;
 };
 
 export type ConversationKind = "direct" | "group";

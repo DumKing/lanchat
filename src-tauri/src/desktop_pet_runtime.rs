@@ -18,6 +18,10 @@ const DISCO_HOP_SECONDS: f32 = 0.72;
 const DISCO_HOPS_PER_LEG: i32 = 8;
 const DISCO_CROUCH_OUT_END: f32 = 0.25;
 const DISCO_LEAP_END: f32 = 0.78;
+const PET_CLICK_DRAG_THRESHOLD_SQ: f32 = 16.0;
+const PET_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(420);
+const PET_SINGLE_CLICK_DELAY: Duration = Duration::from_millis(450);
+const PET_DOUBLE_CLICK_DISTANCE_SQ: f32 = 900.0;
 fn native_pet_log(message: &str) {
     let path = std::env::temp_dir().join("lanchat-desktop-pet.log");
     if let Ok(mut file) = std::fs::OpenOptions::new()
@@ -424,6 +428,12 @@ struct DesktopPetApp {
     sequence_finished: bool,
     sequence_key: Option<(String, PetStateKind, Option<String>)>,
     last_package_frame: Option<PetFrame>,
+    pet_press_pos: Option<Pos2>,
+    pet_press_dragged: bool,
+    last_pet_click_at: Option<Instant>,
+    last_pet_click_pos: Option<Pos2>,
+    pending_single_click_at: Option<Instant>,
+    pending_single_click_alert_active: bool,
 }
 
 impl DesktopPetApp {
@@ -465,10 +475,17 @@ impl DesktopPetApp {
             sequence_finished: false,
             sequence_key: None,
             last_package_frame: None,
+            pet_press_pos: None,
+            pet_press_dragged: false,
+            last_pet_click_at: None,
+            last_pet_click_pos: None,
+            pending_single_click_at: None,
+            pending_single_click_alert_active: false,
         }
     }
 
     fn emit_action(&self, action: &str, alert_id: Option<String>) {
+        native_pet_log(&format!("emit action: {action}"));
         let payload = DesktopPetAction {
             action: action.to_string(),
             alert_id,
@@ -943,6 +960,61 @@ impl DesktopPetApp {
         self.last_size = next;
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(next));
     }
+
+    fn alert_visual_active(runtime_state: PetStateKind, state: &DesktopPetRuntimeState) -> bool {
+        runtime_state == PetStateKind::Alert
+            || state.flashing
+            || state.pending_count > 0
+            || state.disco
+    }
+
+    fn run_single_pet_click(&mut self, alert_active: bool) {
+        if alert_active {
+            self.emit_action("stop_visuals", None);
+        } else {
+            self.transition_runtime(PetEvent::PointerInteract);
+            self.emit_action("open_main_window", None);
+        }
+    }
+
+    fn finish_pending_single_click(&mut self) {
+        let Some(started_at) = self.pending_single_click_at else {
+            return;
+        };
+        if started_at.elapsed() < PET_SINGLE_CLICK_DELAY {
+            return;
+        }
+        let alert_active = self.pending_single_click_alert_active;
+        self.pending_single_click_at = None;
+        self.run_single_pet_click(alert_active);
+    }
+
+    fn handle_primary_pet_click(&mut self, ctx: &egui::Context, pos: Pos2, alert_active: bool) {
+        let now = Instant::now();
+        let is_double_click = self
+            .last_pet_click_at
+            .zip(self.last_pet_click_pos)
+            .map(|(last_at, last_pos)| {
+                now.duration_since(last_at) <= PET_DOUBLE_CLICK_WINDOW
+                    && (pos - last_pos).length_sq() <= PET_DOUBLE_CLICK_DISTANCE_SQ
+            })
+            .unwrap_or(false);
+
+        self.last_pet_click_at = Some(now);
+        self.last_pet_click_pos = Some(pos);
+
+        if is_double_click {
+            self.pending_single_click_at = None;
+            if ctx.input(|input| input.modifiers.ctrl) {
+                self.emit_action("broadcast_disco_alert", None);
+            } else {
+                self.emit_action("quick_alert", None);
+            }
+        } else {
+            self.pending_single_click_at = Some(now);
+            self.pending_single_click_alert_active = alert_active;
+        }
+    }
 }
 
 fn install_cjk_fonts(ctx: &egui::Context) {
@@ -1208,36 +1280,36 @@ impl eframe::App for DesktopPetApp {
                     egui::Sense::click_and_drag(),
                 );
                 if pet_response.drag_started_by(egui::PointerButton::Primary) {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                    self.pet_press_pos = pet_response.interact_pointer_pos();
+                    self.pet_press_dragged = false;
                 }
                 let manually_dragging = pet_response.dragged();
+                if manually_dragging
+                    && pet_response.drag_delta().length_sq() > PET_CLICK_DRAG_THRESHOLD_SQ
+                {
+                    self.pet_press_dragged = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
                 if manually_dragging && !state.disco {
                     let delta_x = pet_response.drag_delta().x;
                     if delta_x.abs() > 1.0 {
                         self.move_direction = if delta_x < 0.0 { -1 } else { 1 };
                     }
                 }
-                if pet_response.double_clicked() {
-                    let ctrl_pressed = ctx.input(|input| input.modifiers.ctrl);
-                    if ctrl_pressed {
-                        self.emit_action("broadcast_disco_alert", None);
-                    } else {
-                        self.emit_action("quick_alert", None);
-                    }
-                } else if pet_response.secondary_clicked() {
+                let alert_active = Self::alert_visual_active(runtime_state, &state);
+                if pet_response.secondary_clicked() {
+                    self.pending_single_click_at = None;
                     self.emit_action("configure_pet", None);
                 } else if pet_response.clicked() {
-                    let alert_active = runtime_state == PetStateKind::Alert
-                        || state.flashing
-                        || state.pending_count > 0
-                        || state.disco;
-                    if alert_active {
-                        self.emit_action("stop_visuals", None);
-                    } else {
-                        self.transition_runtime(PetEvent::PointerInteract);
-                        self.emit_action("open_main_window", None);
+                    let click_pos = pet_response
+                        .interact_pointer_pos()
+                        .or(self.pet_press_pos)
+                        .unwrap_or(pet_rect.center());
+                    if !self.pet_press_dragged {
+                        self.handle_primary_pet_click(ctx, click_pos, alert_active);
                     }
                 }
+                self.finish_pending_single_click();
                 let dynamic_state = if state.disco || manually_dragging {
                     PetStateKind::Move
                 } else {

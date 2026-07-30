@@ -29,6 +29,16 @@ pub struct Peer {
     pub supports_chat: bool,
 }
 
+impl Peer {
+    pub fn is_lite(&self) -> bool {
+        self.client_kind.eq_ignore_ascii_case("lite")
+    }
+
+    pub fn supports_full_features(&self) -> bool {
+        self.supports_chat && !self.is_lite()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Conversation {
     pub id: String,
@@ -241,8 +251,18 @@ impl Storage {
         ensure_column(&conn, "messages", "file_duration_ms", "INTEGER")?;
         ensure_column(&conn, "profile", "avatar", "TEXT")?;
         ensure_column(&conn, "peers", "avatar", "TEXT")?;
-        ensure_column(&conn, "peers", "client_kind", "TEXT NOT NULL DEFAULT 'full'")?;
-        ensure_column(&conn, "peers", "supports_chat", "INTEGER NOT NULL DEFAULT 1")?;
+        ensure_column(
+            &conn,
+            "peers",
+            "client_kind",
+            "TEXT NOT NULL DEFAULT 'full'",
+        )?;
+        ensure_column(
+            &conn,
+            "peers",
+            "supports_chat",
+            "INTEGER NOT NULL DEFAULT 1",
+        )?;
         ensure_column(
             &conn,
             "channel_members",
@@ -418,7 +438,7 @@ impl Storage {
         let mut stmt = conn
             .prepare(
                 "SELECT device_id, nickname, avatar, address, port, online, last_seen_at, client_kind, supports_chat
-                 FROM peers WHERE supports_chat = 1 ORDER BY online DESC, last_seen_at DESC, nickname ASC",
+                 FROM peers ORDER BY online DESC, last_seen_at DESC, nickname ASC",
             )
             .map_err(|err| format!("读取局域网设备失败：{err}"))?;
         let rows = stmt
@@ -1304,7 +1324,7 @@ mod tests {
     }
 
     #[test]
-    fn lite_peer_is_stored_but_not_listed_as_chat_peer() {
+    fn lite_peer_is_listed_as_device_but_not_as_chat_conversation() {
         let temp = tempfile::tempdir().expect("tempdir");
         let db_path = temp.path().join("lanchat.sqlite3");
         let storage = Storage::open(&db_path).expect("storage opens");
@@ -1323,13 +1343,10 @@ mod tests {
             })
             .expect("lite peer saved");
 
-        assert!(storage
-            .get_peer("lite-1")
-            .expect("peer")
-            .expect("exists")
-            .client_kind
-            == "lite");
-        assert!(storage.list_peers().expect("peers").is_empty());
+        let listed_peers = storage.list_peers().expect("peers");
+        assert_eq!(1, listed_peers.len());
+        assert_eq!("lite", listed_peers[0].client_kind);
+        assert!(!listed_peers[0].supports_chat);
         assert!(!storage
             .list_conversations()
             .expect("conversations")
