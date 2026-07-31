@@ -466,6 +466,20 @@ impl Storage {
         }
     }
 
+    pub fn update_peer_avatar(
+        &self,
+        device_id: &str,
+        avatar: Option<String>,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        conn.execute(
+            "UPDATE peers SET avatar = ?1 WHERE device_id = ?2",
+            params![avatar, normalize_device_id(device_id)],
+        )
+        .map_err(|err| format!("更新设备头像失败：{err}"))?;
+        Ok(())
+    }
+
     pub fn get_peer(&self, device_id: &str) -> Result<Option<Peer>, String> {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         conn.query_row(
@@ -1264,6 +1278,32 @@ mod tests {
         assert_eq!(20, peers[0].build_timestamp);
         assert_eq!("192.168.1.12", peers[0].address);
         assert_eq!(18146, peer.port);
+
+        let mut heartbeat = peer.clone();
+        heartbeat.avatar = None;
+        heartbeat.last_seen_at = 30;
+        storage.upsert_peer(&heartbeat).expect("heartbeat saved");
+        assert_eq!(
+            Some("A".to_string()),
+            storage
+                .get_peer("peer-1")
+                .expect("peer")
+                .expect("peer exists")
+                .avatar
+        );
+
+        storage
+            .update_peer_avatar("peer-1", None)
+            .expect("avatar cleared");
+        storage.upsert_peer(&heartbeat).expect("heartbeat saved");
+        assert_eq!(
+            None,
+            storage
+                .get_peer("peer-1")
+                .expect("peer")
+                .expect("peer exists")
+                .avatar
+        );
     }
 
     #[test]

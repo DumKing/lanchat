@@ -156,8 +156,20 @@ impl Network {
     fn status_frame_without_avatar(&self, profile: &Profile) -> PeerStatusFrame {
         PeerStatusFrame {
             avatar: None,
+            includes_avatar: false,
             ..self.status_frame(profile)
         }
+    }
+
+    fn store_peer_update(&self, peer: Peer, includes_avatar: bool) -> Result<Peer, String> {
+        if includes_avatar || peer.avatar.is_some() {
+            self.storage
+                .update_peer_avatar(&peer.device_id, peer.avatar.clone())?;
+        }
+        self.storage.upsert_peer(&peer)?;
+        self.storage
+            .get_peer(&peer.device_id)?
+            .ok_or_else(|| "读取更新后的设备资料失败".to_string())
     }
 
     pub async fn connect_peer(
@@ -962,7 +974,7 @@ impl Network {
             build_version: remote_hello.build_version.clone(),
             build_timestamp: remote_hello.build_timestamp,
         };
-        self.storage.upsert_peer(&peer)?;
+        let peer = self.store_peer_update(peer, true)?;
         emit_debug_log(
             &app,
             "info",
@@ -1143,8 +1155,10 @@ impl Network {
                     }
                     Ok(WireFrame::PeerStatus(frame)) => {
                         if normalize_device_id(&frame.device_id) != local_device_id {
+                            let includes_avatar = frame.includes_avatar || frame.avatar.is_some();
                             let peer = peer_from_status(frame, peer_address.clone());
-                            if read_storage.upsert_peer(&peer).is_ok() {
+                            if let Ok(peer) = read_network.store_peer_update(peer, includes_avatar)
+                            {
                                 emit_debug_log(
                                     &read_app,
                                     "info",
@@ -1537,6 +1551,7 @@ impl Network {
             if normalize_device_id(&frame.device_id) == profile.device_id {
                 continue;
             }
+            let includes_avatar = frame.includes_avatar || frame.avatar.is_some();
             let peer = peer_from_status(frame, addr.ip().to_string());
             emit_debug_log(
                 &app,
@@ -1548,7 +1563,7 @@ impl Network {
                     peer.nickname, peer.address, peer.port, addr
                 )),
             );
-            if self.storage.upsert_peer(&peer).is_ok() {
+            if let Ok(peer) = self.store_peer_update(peer, includes_avatar) {
                 app.emit("peer_online", &peer).ok();
                 let should_connect = self
                     .senders
@@ -1638,14 +1653,21 @@ impl Network {
         }
         let mut interval =
             tokio::time::interval(std::time::Duration::from_secs(STATUS_BROADCAST_SECONDS));
+        let mut first_broadcast = true;
         loop {
             interval.tick().await;
             let Ok(profile) = self.storage.get_or_create_profile() else {
                 continue;
             };
-            let frame = WireFrame::PeerStatus(self.status_frame_without_avatar(&profile));
+            let udp_frame = WireFrame::PeerStatus(self.status_frame_without_avatar(&profile));
+            let tcp_frame = WireFrame::PeerStatus(if first_broadcast {
+                first_broadcast = false;
+                self.status_frame(&profile)
+            } else {
+                self.status_frame_without_avatar(&profile)
+            });
             if let Some(socket) = &udp_socket {
-                if let Ok(line) = encode_frame(&frame) {
+                if let Ok(line) = encode_frame(&udp_frame) {
                     if let Err(err) = socket
                         .send_to(line.as_bytes(), ("255.255.255.255", UDP_PRESENCE_PORT))
                         .await
@@ -1675,7 +1697,7 @@ impl Network {
             let mut pushed = 0;
             if let Ok(senders) = self.senders.lock() {
                 for sender in senders.values() {
-                    if sender.sender.send(frame.clone()).is_ok() {
+                    if sender.sender.send(tcp_frame.clone()).is_ok() {
                         pushed += 1;
                     }
                 }
@@ -1700,6 +1722,7 @@ fn status_frame_with_capabilities(
         device_id: profile.device_id.clone(),
         nickname: profile.nickname.clone(),
         avatar: profile.avatar.clone(),
+        includes_avatar: true,
         address: None,
         protocol_version: PROTOCOL_VERSION,
         listen_port: profile.listen_port,
@@ -1840,7 +1863,7 @@ fn start_mdns(app: AppHandle, network: Network) -> Result<(), String> {
                 build_version: String::new(),
                 build_timestamp: 0,
             };
-            if network.storage.upsert_peer(&peer).is_ok() {
+            if let Ok(peer) = network.store_peer_update(peer, false) {
                 emit_debug_log(
                     &app,
                     "info",
@@ -2023,6 +2046,7 @@ mod tests {
                 device_id: "peer-b".to_string(),
                 nickname: "B".to_string(),
                 avatar: None,
+                includes_avatar: false,
                 nickname_locked: false,
                 address: Some("10.0.0.99".to_string()),
                 protocol_version: 1,

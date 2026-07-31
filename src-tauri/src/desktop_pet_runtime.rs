@@ -983,18 +983,27 @@ impl DesktopPetApp {
             || state.disco
     }
 
-    fn run_single_pet_click(&mut self, alert_active: bool) {
+    fn start_pointer_interaction(&mut self, ctx: &egui::Context) {
+        self.runtime_machine.handle(PetEvent::PointerInteract);
+        if self.runtime_machine.current() == PetStateKind::Interact {
+            self.runtime_state_started = Instant::now();
+            self.reset_active_sequence();
+            ctx.request_repaint();
+        }
+    }
+
+    fn run_single_pet_click(&mut self, ctx: &egui::Context, alert_active: bool) {
         if alert_active {
             native_pet_log("single pet click resolved as stop_visuals");
             self.emit_action("stop_visuals", None);
         } else {
-            native_pet_log("single pet click resolved as open_main_window");
-            self.transition_runtime(PetEvent::PointerInteract);
+            native_pet_log("single pet click resolved as interact_and_open_main_window");
+            self.start_pointer_interaction(ctx);
             self.emit_action("open_main_window", None);
         }
     }
 
-    fn finish_pending_single_click(&mut self) {
+    fn finish_pending_single_click(&mut self, ctx: &egui::Context) {
         let Some(started_at) = self.pending_single_click_at else {
             return;
         };
@@ -1003,7 +1012,7 @@ impl DesktopPetApp {
         }
         let alert_active = self.pending_single_click_alert_active;
         self.pending_single_click_at = None;
-        self.run_single_pet_click(alert_active);
+        self.run_single_pet_click(ctx, alert_active);
     }
 
     fn ctrl_pressed(ctx: &egui::Context) -> bool {
@@ -1349,7 +1358,7 @@ impl eframe::App for DesktopPetApp {
                         self.handle_primary_pet_click(ctx, click_pos, alert_active);
                     }
                 }
-                self.finish_pending_single_click();
+                self.finish_pending_single_click(ctx);
                 let dynamic_state = if state.disco || manually_dragging {
                     PetStateKind::Move
                 } else {

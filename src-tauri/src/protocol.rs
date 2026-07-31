@@ -48,6 +48,8 @@ pub struct PeerStatusFrame {
     pub nickname: String,
     pub avatar: Option<String>,
     #[serde(default)]
+    pub includes_avatar: bool,
+    #[serde(default)]
     pub nickname_locked: bool,
     pub address: Option<String>,
     pub protocol_version: u16,
@@ -424,6 +426,7 @@ mod tests {
             device_id: "aa:bb:cc:dd:ee:ff".to_string(),
             nickname: "Alice".to_string(),
             avatar: Some("A".to_string()),
+            includes_avatar: true,
             nickname_locked: true,
             address: Some("192.168.1.20".to_string()),
             protocol_version: 1,

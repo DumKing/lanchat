@@ -1149,6 +1149,51 @@ async fn send_file_message(
 }
 
 #[tauri::command]
+async fn send_pasted_image_message(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    conversation_id: String,
+    file_name: String,
+    bytes: Vec<u8>,
+    mime_type: String,
+) -> Result<Message, String> {
+    ensure_full_client(&state, "图片消息")?;
+    const MAX_PASTE_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+    if bytes.is_empty() {
+        return Err("粘贴的图片为空".to_string());
+    }
+    if bytes.len() > MAX_PASTE_IMAGE_BYTES {
+        return Err("粘贴图片不能超过 20MB".to_string());
+    }
+    let safe_mime = mime_type.trim();
+    if !safe_mime.starts_with("image/") {
+        return Err("只能粘贴图片发送".to_string());
+    }
+    let safe_name = if file_name.trim().is_empty() {
+        "paste-image.png".to_string()
+    } else {
+        file_name.trim().replace(['\\', '/'], "_")
+    };
+    let dir = std::env::temp_dir().join("lanchat-paste-images");
+    std::fs::create_dir_all(&dir).map_err(|err| format!("创建图片缓存目录失败：{err}"))?;
+    let path = dir.join(format!("{}-{}", Uuid::new_v4(), safe_name));
+    std::fs::write(&path, bytes).map_err(|err| format!("保存粘贴图片失败：{err}"))?;
+    let file_meta =
+        state
+            .file_server
+            .share_file_with_options(path, Some(safe_mime.to_string()), None)?;
+    send_rich_message(
+        app,
+        state,
+        conversation_id,
+        MessageType::File,
+        "图片消息".to_string(),
+        Some(file_meta),
+    )
+    .await
+}
+
+#[tauri::command]
 async fn send_voice_message(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -2205,6 +2250,7 @@ pub fn run() {
             save_system_notice,
             recall_message,
             send_file_message,
+            send_pasted_image_message,
             send_voice_message,
             send_game_frame,
             send_quick_alert,

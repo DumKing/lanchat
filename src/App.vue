@@ -319,6 +319,8 @@ const {
 } = storeToRefs(store);
 const messagePane = ref<HTMLElement | null>(null);
 const roomChatPane = ref<HTMLElement | null>(null);
+const mentionPickerOpen = ref(false);
+const mentionSearch = ref("");
 const platformInfo = ref<PlatformInfo | null>(null);
 const nicknameDraft = ref("");
 const portDraft = ref(18145);
@@ -563,11 +565,30 @@ const normalizedChannelMembers = computed<Array<ChannelMember | Peer>>(() => cha
     last_seen_at: Date.now(),
   };
 }));
+const canMentionInActiveConversation = computed(() => activeConversation.value?.kind === "group" && canSendActive.value);
+const mentionPickerMembers = computed<Array<ChannelMember | Peer>>(() => {
+  if (!canMentionInActiveConversation.value) return [];
+  const keyword = mentionSearch.value.trim().toLowerCase();
+  const seen = new Set<string>();
+  return normalizedChannelMembers.value
+    .filter((member) => {
+      if (seen.has(member.device_id)) return false;
+      seen.add(member.device_id);
+      const text = `${member.nickname} ${member.device_id}`.toLowerCase();
+      return !keyword || text.includes(keyword);
+    })
+    .slice(0, 80);
+});
 const channelMembersOnlineCount = computed(() => normalizedChannelMembers.value.filter((member) => member.device_id === profile.value?.device_id || member.online).length);
 const canManageActivePrivateChannel = computed(() => !!activeConversation.value?.is_private && (activeConversation.value.owner_device_id === profile.value?.device_id || superAdminEnabled.value));
 const groupInspectorAvailable = computed(() => activeSection.value === "chat" && activeConversation.value?.kind === "group");
 const canManageActivePublicChannel = computed(() => !!superAdminEnabled.value && activeConversation.value?.id === DEFAULT_GROUP_ID);
-const canEditActiveChannelNotice = computed(() => !!superAdminEnabled.value && groupInspectorAvailable.value);
+const canEditActiveChannelNotice = computed(() => {
+  const conversation = activeConversation.value;
+  if (!conversation || conversation.kind !== "group") return false;
+  if (!conversation.is_private) return superAdminEnabled.value;
+  return conversation.owner_device_id === profile.value?.device_id || superAdminEnabled.value;
+});
 const activeChannelNotice = computed(() => {
   const conversation = activeConversation.value;
   if (!conversation?.id) return DEFAULT_CHANNEL_NOTICE;
@@ -1527,7 +1548,12 @@ function readSavedChannelNotices(): Record<string, string> {
   if (typeof window === "undefined") return {};
   try {
     const raw = window.localStorage.getItem("lanchat-channel-notices-v1");
-    return raw ? JSON.parse(raw) as Record<string, string> : {};
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>).filter(([, value]) => typeof value === "string"),
+    ) as Record<string, string>;
   } catch {
     return {};
   }
@@ -3425,6 +3451,14 @@ function appendEmojiToDraft(emoji: string) {
   draft.value += emoji;
   chatEmojiOpen.value = false;
 }
+function insertMentionToDraft(member?: ChannelMember | Peer) {
+  if (!canMentionInActiveConversation.value) return;
+  const name = member?.nickname?.trim() || "所有人";
+  const prefix = draft.value && !/\s$/.test(draft.value) ? " " : "";
+  draft.value = `${draft.value}${prefix}@${name} `;
+  mentionPickerOpen.value = false;
+  mentionSearch.value = "";
+}
 function appendEmojiToRoomDraft(emoji: string) {
   roomChatDraft.value += emoji;
   roomEmojiOpen.value = false;
@@ -3455,29 +3489,40 @@ async function inviteSelectedDeviceChannelMembers() {
   openRecipientPicker("privateChannelInvite");
 }
 function startEditChannelNotice() {
-  channelNoticeDraft.value = activeChannelNotice.value;
-  channelNoticeEditing.value = true;
+  try {
+    channelNoticeDraft.value = activeChannelNotice.value || DEFAULT_CHANNEL_NOTICE;
+    channelNoticeEditing.value = true;
+  } catch (err) {
+    store.error = stringifyError(err);
+  }
 }
 function cancelEditChannelNotice() {
-  channelNoticeDraft.value = activeChannelNotice.value;
-  channelNoticeEditing.value = false;
+  try {
+    channelNoticeDraft.value = activeChannelNotice.value || DEFAULT_CHANNEL_NOTICE;
+    channelNoticeEditing.value = false;
+  } catch (err) {
+    store.error = stringifyError(err);
+  }
 }
 async function saveActiveChannelNotice() {
   const conversationId = activeConversation.value?.id;
   if (!conversationId) return;
   store.error = "";
-  const text = channelNoticeDraft.value.trim();
-  const notice = text || DEFAULT_CHANNEL_NOTICE;
-  const updater = profile.value?.nickname ?? "管理员";
-  channelNotices.value = {
-    ...channelNotices.value,
-    [conversationId]: notice,
-  };
-  channelNoticeEditing.value = false;
-  await store.addSystemNotice(conversationId, `${updater} 更新了群公告`);
+  const previousNotice = activeChannelNotice.value || DEFAULT_CHANNEL_NOTICE;
   try {
+    const text = channelNoticeDraft.value.trim();
+    const notice = text || DEFAULT_CHANNEL_NOTICE;
+    const updater = profile.value?.nickname ?? "管理员";
     await api.broadcastChannelNotice(conversationId, notice);
+    channelNotices.value = {
+      ...channelNotices.value,
+      [conversationId]: notice,
+    };
+    channelNoticeEditing.value = false;
+    await store.addSystemNotice(conversationId, `${updater} 更新了群公告`);
   } catch (err) {
+    channelNoticeDraft.value = previousNotice;
+    channelNoticeEditing.value = true;
     store.error = stringifyError(err);
   }
 }
@@ -3738,6 +3783,12 @@ function messageSenderTitle(message: Message) {
   if (message.message_type === "system") return "";
   return messageClass(message) === "mine" ? `我 · ${senderName(message)}` : senderName(message);
 }
+function messageTextSegments(content: string) {
+  return content
+    .split(/(@[^\s@]{1,32})/g)
+    .filter(Boolean)
+    .map((text) => ({ text, mention: text.startsWith("@") }));
+}
 function canRecallMessage(message?: Message | null) {
   return !!message && message.sender_device_id === profile.value?.device_id && message.message_type !== "system" && message.status !== "failed";
 }
@@ -3889,6 +3940,20 @@ async function chooseAndSendFile() {
   const path = Array.isArray(selected) ? selected[0] : selected;
   if (typeof path === "string" && path) {
     await store.sendFile(path);
+  }
+}
+async function sendPastedImageFile(file: File) {
+  if (!file.type.startsWith("image/")) return;
+  const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+  await store.sendPastedImage(file.name || `paste-image-${Date.now()}.png`, bytes, file.type || "image/png");
+}
+async function handleComposerPaste(event: ClipboardEvent) {
+  if (!canSendActive.value) return;
+  const files = Array.from(event.clipboardData?.files ?? []).filter((file) => file.type.startsWith("image/"));
+  if (files.length === 0) return;
+  event.preventDefault();
+  for (const file of files) {
+    await sendPastedImageFile(file);
   }
 }
 async function toggleVoiceRecording() {
@@ -4336,7 +4401,13 @@ async function closeWindow() {
                             </button>
                           </template>
                           <template v-else-if="message.message_type === 'text'">
-                            <p>{{ message.content }}</p>
+                            <p>
+                              <span
+                                v-for="(segment, index) in messageTextSegments(message.content)"
+                                :key="`${message.id}-segment-${index}`"
+                                :class="{ 'message-mention': segment.mention }"
+                              >{{ segment.text }}</span>
+                            </p>
                           </template>
                           <div v-else-if="message.file_meta" class="file-message">
                             <img v-if="isImageFile(message)" class="file-preview-image" :src="message.file_meta.url" :alt="message.file_meta.name" />
@@ -4381,9 +4452,38 @@ async function closeWindow() {
                       <button v-for="emoji in emojiOptions" :key="emoji" @click="appendEmojiToDraft(emoji)">{{ emoji }}</button>
                     </div>
                   </div>
+                  <div v-if="activeConversation?.kind === 'group'" class="mention-wrap">
+                    <button class="composer-tool mention-trigger" title="@成员" :disabled="!canMentionInActiveConversation" @click="mentionPickerOpen = !mentionPickerOpen">@</button>
+                    <div v-if="mentionPickerOpen" class="mention-panel">
+                      <NInput v-model:value="mentionSearch" size="small" clearable placeholder="搜索成员" />
+                      <div class="mention-list">
+                        <button class="mention-row mention-all" type="button" @click="insertMentionToDraft()">
+                          <span class="mention-avatar">@</span>
+                          <span>
+                            <strong>所有人</strong>
+                            <small>提醒频道内所有成员</small>
+                          </span>
+                        </button>
+                        <button
+                          v-for="member in mentionPickerMembers"
+                          :key="member.device_id"
+                          class="mention-row"
+                          type="button"
+                          @click="insertMentionToDraft(member)"
+                        >
+                          <img v-if="avatarImage(member.avatar)" class="avatar-image mention-avatar" :src="avatarImage(member.avatar)" alt="成员头像" />
+                          <span v-else class="mention-avatar">{{ firstLetter(member.nickname) }}</span>
+                          <span>
+                            <strong>{{ member.device_id === profile?.device_id ? `我 · ${member.nickname}` : member.nickname }}</strong>
+                            <small>{{ memberSubtitle(member) }}</small>
+                          </span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                   <button class="composer-tool" title="清空输入" @click="draft = ''">⌫</button>
                 </div>
-                <div class="composer-input-frame">
+                <div class="composer-input-frame" @paste="handleComposerPaste">
                   <NInput
                     v-model:value="draft"
                     class="composer-textarea"
@@ -5444,7 +5544,7 @@ async function closeWindow() {
                     </NButton>
                   </div>
                   <div v-if="channelNoticeEditing" class="group-notice-editor">
-                    <NInput v-model:value="channelNoticeDraft" type="textarea" maxlength="240" show-count :autosize="{ minRows: 4, maxRows: 4 }" />
+                    <NInput v-model:value="channelNoticeDraft" type="textarea" maxlength="240" show-count :rows="4" />
                     <NButton size="small" type="primary" @click="saveActiveChannelNotice">保存公告</NButton>
                   </div>
                   <p v-else class="group-notice-text">{{ activeChannelNotice }}</p>
