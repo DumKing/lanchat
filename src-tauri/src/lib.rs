@@ -19,6 +19,7 @@ use desktop_pet::{
 };
 use desktop_pet_runtime::{DesktopPetController, DesktopPetRuntimeState};
 use file_server::FileServer;
+use fs2::FileExt;
 use network::{local_ip_address, Network};
 use protocol::GameFrame;
 use protocol::MessageRecallFrame;
@@ -28,9 +29,10 @@ use protocol::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use storage::{
     ChannelMember, ChannelMemberSeed, Conversation, Message, MessageType, Peer, Profile, Storage,
@@ -42,6 +44,17 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{Emitter, LogicalSize, Manager, Size, State, UserAttentionType, WindowEvent};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use uuid::Uuid;
+
+const UPDATE_REPOSITORY: &str = "DumKing/lanchat";
+const UPDATE_API_URL: &str = "https://api.github.com/repos/DumKing/lanchat/releases/latest";
+const UPDATE_METADATA_ASSET: &str = "lanchat-update.json";
+const LOCAL_BUILD_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    "+",
+    env!("LANCHAT_BUILD_TIMESTAMP")
+);
+
+static LANCHAT_INSTANCE_LOCK: OnceLock<File> = OnceLock::new();
 
 pub fn run_desktop_pet_process() {
     desktop_pet_runtime::run_desktop_pet_process();
@@ -256,6 +269,75 @@ struct PlatformInfo {
     global_shortcut_requires_permission: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppVersionInfo {
+    version: String,
+    build_version: String,
+    build_timestamp: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateDownloadLinks {
+    windows_portable: Option<String>,
+    windows_installer: Option<String>,
+    macos_dmg: Option<String>,
+    release_page: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateCheckResult {
+    repository: String,
+    current: AppVersionInfo,
+    latest_version: String,
+    latest_build: Option<String>,
+    title: String,
+    notes: String,
+    release_url: String,
+    downloads: UpdateDownloadLinks,
+    update_available: bool,
+    force: bool,
+    min_supported_version: Option<String>,
+    force_required: bool,
+    checked_at: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubRelease {
+    tag_name: String,
+    name: Option<String>,
+    body: Option<String>,
+    html_url: String,
+    assets: Vec<GithubReleaseAsset>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubReleaseAsset {
+    name: String,
+    browser_download_url: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ReleaseUpdateMetadata {
+    version: Option<String>,
+    build: Option<String>,
+    force: Option<bool>,
+    min_supported_version: Option<String>,
+    title: Option<String>,
+    notes: Option<String>,
+    downloads: Option<ReleaseDownloadMetadata>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ReleaseDownloadMetadata {
+    windows_portable: Option<String>,
+    windows_installer: Option<String>,
+    macos_dmg: Option<String>,
+    release_page: Option<String>,
+}
+
 struct AppState {
     storage: Arc<Storage>,
     network: Network,
@@ -263,7 +345,16 @@ struct AppState {
     tray: Arc<Mutex<TrayState>>,
     desktop_pet_controller: DesktopPetController,
     desktop_pet: DesktopPetManager,
+    desktop_pet_send_hotkey: Arc<Mutex<Option<Shortcut>>>,
     desktop_pet_stop_hotkey: Arc<Mutex<Option<Shortcut>>>,
+}
+
+fn ensure_full_client(state: &AppState, capability: &str) -> Result<(), String> {
+    if state.network.supports_chat() {
+        Ok(())
+    } else {
+        Err(format!("当前客户端不支持{capability}"))
+    }
 }
 
 const TRAY_NORMAL_ICON: &[u8] = include_bytes!("../icons/32x32.png");
@@ -285,6 +376,197 @@ fn platform_info_value() -> PlatformInfo {
 #[tauri::command]
 fn get_platform_info() -> PlatformInfo {
     platform_info_value()
+}
+
+fn local_app_version_info() -> AppVersionInfo {
+    AppVersionInfo {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        build_version: LOCAL_BUILD_VERSION.to_string(),
+        build_timestamp: env!("LANCHAT_BUILD_TIMESTAMP").parse().unwrap_or(0),
+    }
+}
+
+fn normalize_version(value: &str) -> String {
+    value
+        .trim()
+        .trim_start_matches('v')
+        .split('+')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+fn version_segments(value: &str) -> Vec<u64> {
+    normalize_version(value)
+        .split('.')
+        .map(|part| {
+            part.chars()
+                .take_while(|ch| ch.is_ascii_digit())
+                .collect::<String>()
+                .parse::<u64>()
+                .unwrap_or(0)
+        })
+        .collect()
+}
+
+fn compare_versions(left: &str, right: &str) -> std::cmp::Ordering {
+    let left = version_segments(left);
+    let right = version_segments(right);
+    let max_len = left.len().max(right.len()).max(1);
+    for index in 0..max_len {
+        let a = *left.get(index).unwrap_or(&0);
+        let b = *right.get(index).unwrap_or(&0);
+        match a.cmp(&b) {
+            std::cmp::Ordering::Equal => {}
+            ordering => return ordering,
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+fn find_release_asset<'a>(
+    release: &'a GithubRelease,
+    predicate: impl Fn(&str) -> bool,
+) -> Option<&'a GithubReleaseAsset> {
+    release
+        .assets
+        .iter()
+        .find(|asset| predicate(&asset.name.to_ascii_lowercase()))
+}
+
+async fn fetch_release_metadata(
+    client: &reqwest::Client,
+    release: &GithubRelease,
+) -> Option<ReleaseUpdateMetadata> {
+    let asset = find_release_asset(release, |name| name == UPDATE_METADATA_ASSET)?;
+    let response = client
+        .get(&asset.browser_download_url)
+        .header("User-Agent", "LanChat")
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    response.json::<ReleaseUpdateMetadata>().await.ok()
+}
+
+fn asset_url(release: &GithubRelease, predicate: impl Fn(&str) -> bool) -> Option<String> {
+    find_release_asset(release, predicate).map(|asset| asset.browser_download_url.clone())
+}
+
+async fn build_update_result(release: GithubRelease) -> UpdateCheckResult {
+    let client = reqwest::Client::new();
+    let metadata = fetch_release_metadata(&client, &release)
+        .await
+        .unwrap_or_default();
+    let latest_version = metadata
+        .version
+        .clone()
+        .unwrap_or_else(|| normalize_version(&release.tag_name));
+    let release_page = metadata
+        .downloads
+        .as_ref()
+        .and_then(|downloads| downloads.release_page.clone())
+        .unwrap_or_else(|| release.html_url.clone());
+    let windows_portable = metadata
+        .downloads
+        .as_ref()
+        .and_then(|downloads| downloads.windows_portable.clone())
+        .or_else(|| {
+            asset_url(&release, |name| {
+                name.contains("windows")
+                    && (name.contains("portable") || name.contains("green"))
+                    && name.ends_with(".zip")
+            })
+        });
+    let windows_installer = metadata
+        .downloads
+        .as_ref()
+        .and_then(|downloads| downloads.windows_installer.clone())
+        .or_else(|| {
+            asset_url(&release, |name| {
+                (name.ends_with(".exe") || name.ends_with(".msi")) && !name.contains("lite")
+            })
+        });
+    let macos_dmg = metadata
+        .downloads
+        .as_ref()
+        .and_then(|downloads| downloads.macos_dmg.clone())
+        .or_else(|| asset_url(&release, |name| name.ends_with(".dmg")));
+    let current = local_app_version_info();
+    let update_available =
+        compare_versions(&latest_version, &current.version) == std::cmp::Ordering::Greater;
+    let min_supported_version = metadata.min_supported_version.clone();
+    let force = metadata.force.unwrap_or(false);
+    let force_required = force
+        && min_supported_version.as_ref().is_some_and(|minimum| {
+            compare_versions(&current.version, minimum) == std::cmp::Ordering::Less
+        });
+
+    UpdateCheckResult {
+        repository: UPDATE_REPOSITORY.to_string(),
+        current,
+        latest_version,
+        latest_build: metadata.build.clone(),
+        title: metadata
+            .title
+            .clone()
+            .or_else(|| release.name.clone())
+            .unwrap_or_else(|| release.tag_name.clone()),
+        notes: metadata
+            .notes
+            .clone()
+            .or_else(|| release.body.clone())
+            .unwrap_or_default(),
+        release_url: release.html_url.clone(),
+        downloads: UpdateDownloadLinks {
+            windows_portable,
+            windows_installer,
+            macos_dmg,
+            release_page,
+        },
+        update_available,
+        force,
+        min_supported_version,
+        force_required,
+        checked_at: chrono::Utc::now().timestamp_millis(),
+    }
+}
+
+#[tauri::command]
+fn get_app_version_info() -> AppVersionInfo {
+    local_app_version_info()
+}
+
+#[tauri::command]
+async fn check_for_update() -> Result<UpdateCheckResult, String> {
+    let release = reqwest::Client::new()
+        .get(UPDATE_API_URL)
+        .header("User-Agent", "LanChat")
+        .send()
+        .await
+        .map_err(|err| format!("检查更新失败：{err}"))?
+        .error_for_status()
+        .map_err(|err| format!("检查更新失败：{err}"))?
+        .json::<GithubRelease>()
+        .await
+        .map_err(|err| format!("解析更新信息失败：{err}"))?;
+    Ok(build_update_result(release).await)
+}
+
+#[tauri::command]
+fn open_update_url(url: String) -> Result<(), String> {
+    let url = url.trim();
+    if !(url.starts_with("https://github.com/")
+        || url.starts_with("https://api.github.com/")
+        || url.starts_with("https://objects.githubusercontent.com/"))
+    {
+        return Err("更新链接不合法".to_string());
+    }
+    tauri_plugin_opener::open_url(url, None::<&str>)
+        .map_err(|error| format!("打开更新页面失败：{error}"))
 }
 
 #[cfg(test)]
@@ -342,8 +624,8 @@ fn update_profile(
             .map(|(_, payload)| payload)
             .unwrap_or(value);
         let approx_bytes = encoded.len().saturating_mul(3) / 4;
-        if approx_bytes > 500 * 1024 {
-            return Err("头像图片不能超过 500KB".to_string());
+        if approx_bytes > 5 * 1024 * 1024 {
+            return Err("头像图片不能超过 5M".to_string());
         }
     }
     let profile = state
@@ -371,23 +653,37 @@ async fn admin_rename_peer(
     state: State<'_, AppState>,
     target_device_id: String,
     nickname: String,
+    nickname_locked: Option<bool>,
+    use_system_username: Option<bool>,
 ) -> Result<Peer, String> {
     let nickname = nickname.trim().to_string();
+    let use_system_username = use_system_username.unwrap_or(false);
     if target_device_id.trim().is_empty() {
         return Err("请选择要修改的设备".to_string());
     }
-    if nickname.is_empty() {
+    if nickname.is_empty() && !use_system_username {
         return Err("昵称不能为空".to_string());
     }
     state
         .network
-        .send_admin_nickname(app, target_device_id.clone(), nickname.clone())
+        .send_admin_nickname(
+            app,
+            target_device_id.clone(),
+            nickname.clone(),
+            nickname_locked,
+            use_system_username,
+        )
         .await?;
     let mut peer = state
         .storage
         .get_peer(&target_device_id)?
         .ok_or_else(|| "设备已发送修改，但本地列表未找到该设备".to_string())?;
-    peer.nickname = nickname;
+    if !use_system_username {
+        peer.nickname = nickname;
+    }
+    if let Some(locked) = nickname_locked {
+        peer.nickname_locked = locked;
+    }
     peer.last_seen_at = chrono::Utc::now().timestamp_millis();
     state.storage.upsert_peer(&peer)?;
     Ok(peer)
@@ -411,6 +707,7 @@ async fn connect_peer(
 
 #[tauri::command]
 fn list_conversations(state: State<'_, AppState>) -> Result<Vec<Conversation>, String> {
+    ensure_full_client(&state, "聊天和频道")?;
     state.storage.list_conversations()
 }
 
@@ -419,6 +716,7 @@ fn list_channel_members(
     state: State<'_, AppState>,
     conversation_id: String,
 ) -> Result<Vec<ChannelMember>, String> {
+    ensure_full_client(&state, "频道成员")?;
     if conversation_id.trim().is_empty() {
         return Err("请选择频道".to_string());
     }
@@ -432,6 +730,7 @@ async fn create_private_channel(
     title: String,
     _member_device_ids: Vec<String>,
 ) -> Result<Conversation, String> {
+    ensure_full_client(&state, "创建私有频道")?;
     let title = title.trim().to_string();
     if title.is_empty() {
         return Err("频道名称不能为空".to_string());
@@ -465,6 +764,7 @@ async fn invite_private_channel_members(
     member_device_ids: Vec<String>,
     super_admin: bool,
 ) -> Result<Vec<ChannelMember>, String> {
+    ensure_full_client(&state, "邀请频道成员")?;
     let channel = state
         .storage
         .get_private_channel(&conversation_id)?
@@ -485,6 +785,7 @@ async fn remove_private_channel_member(
     member_device_id: String,
     super_admin: bool,
 ) -> Result<Vec<ChannelMember>, String> {
+    ensure_full_client(&state, "频道成员管理")?;
     let channel = state
         .storage
         .get_private_channel(&conversation_id)?
@@ -521,6 +822,7 @@ async fn set_private_channel_member_muted(
     muted: bool,
     super_admin: bool,
 ) -> Result<Vec<ChannelMember>, String> {
+    ensure_full_client(&state, "频道禁言")?;
     let channel = state
         .storage
         .get_private_channel(&conversation_id)?
@@ -556,6 +858,7 @@ async fn dissolve_private_channel(
     conversation_id: String,
     super_admin: bool,
 ) -> Result<(), String> {
+    ensure_full_client(&state, "解散频道")?;
     let channel = state
         .storage
         .get_private_channel(&conversation_id)?
@@ -591,6 +894,7 @@ async fn admin_mute_channel_member(
     target_device_id: String,
     muted: bool,
 ) -> Result<(), String> {
+    ensure_full_client(&state, "频道管控")?;
     let profile = state.storage.get_or_create_profile()?;
     if target_device_id == profile.device_id {
         return Err("不能禁言自己".to_string());
@@ -612,6 +916,7 @@ fn build_private_channel_invite_card(
     conversation_id: String,
     super_admin: bool,
 ) -> Result<PrivateChannelInviteCardPayload, String> {
+    ensure_full_client(&state, "频道邀请")?;
     let channel = state
         .storage
         .get_private_channel(&conversation_id)?
@@ -648,6 +953,7 @@ async fn accept_private_channel_invite(
     state: State<'_, AppState>,
     invite: PrivateChannelInviteCardPayload,
 ) -> Result<Conversation, String> {
+    ensure_full_client(&state, "加入私有频道")?;
     if invite.channel_id.trim().is_empty() || invite.title.trim().is_empty() {
         return Err("频道邀请无效".to_string());
     }
@@ -715,6 +1021,7 @@ async fn broadcast_channel_notice(
     conversation_id: String,
     notice: String,
 ) -> Result<(), String> {
+    ensure_full_client(&state, "频道公告")?;
     state
         .network
         .broadcast_channel_notice(app, conversation_id, notice)
@@ -726,6 +1033,7 @@ fn list_messages(
     state: State<'_, AppState>,
     conversation_id: String,
 ) -> Result<Vec<Message>, String> {
+    ensure_full_client(&state, "聊天记录")?;
     state.storage.list_messages(&conversation_id)
 }
 
@@ -736,6 +1044,7 @@ async fn send_message(
     conversation_id: String,
     content: String,
 ) -> Result<Message, String> {
+    ensure_full_client(&state, "聊天")?;
     let content = content.trim().to_string();
     if content.is_empty() {
         return Err("消息内容不能为空".to_string());
@@ -766,6 +1075,7 @@ fn save_system_notice(
     conversation_id: String,
     content: String,
 ) -> Result<Message, String> {
+    ensure_full_client(&state, "系统聊天通知")?;
     let content = content.trim().to_string();
     if content.is_empty() {
         return Err("系统通知不能为空".to_string());
@@ -795,6 +1105,7 @@ async fn recall_message(
     state: State<'_, AppState>,
     message_id: String,
 ) -> Result<Message, String> {
+    ensure_full_client(&state, "消息撤回")?;
     let message = state
         .storage
         .update_message_after_recall(&message_id)?
@@ -822,6 +1133,7 @@ async fn send_file_message(
     conversation_id: String,
     path: String,
 ) -> Result<Message, String> {
+    ensure_full_client(&state, "文件消息")?;
     let file_meta = state
         .file_server
         .share_file(std::path::PathBuf::from(path))?;
@@ -845,6 +1157,7 @@ async fn send_voice_message(
     bytes: Vec<u8>,
     duration_ms: u64,
 ) -> Result<Message, String> {
+    ensure_full_client(&state, "语音消息")?;
     const MAX_VOICE_MS: u64 = 60_000;
     const MAX_VOICE_BYTES: usize = 8 * 1024 * 1024;
     if duration_ms == 0 || duration_ms > MAX_VOICE_MS {
@@ -1216,6 +1529,63 @@ fn start_desktop_pet_watcher(
         .ok();
 }
 
+fn acquire_lanchat_instance_lock() -> Result<(), String> {
+    let lock_dir = std::env::temp_dir().join("lanchat");
+    std::fs::create_dir_all(&lock_dir).map_err(|err| format!("创建实例锁目录失败：{err}"))?;
+    let lock_path = lock_dir.join("lanchat-app.lock");
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&lock_path)
+        .map_err(|err| format!("打开实例锁失败：{err}"))?;
+    file.try_lock_exclusive()
+        .map_err(|_| "LanChat Full/Lite 已有一个版本正在运行".to_string())?;
+    let _ = LANCHAT_INSTANCE_LOCK.set(file);
+    Ok(())
+}
+
+fn show_instance_lock_message(message: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+
+        #[link(name = "user32")]
+        extern "system" {
+            fn MessageBoxW(
+                hwnd: *mut std::ffi::c_void,
+                lp_text: *const u16,
+                lp_caption: *const u16,
+                u_type: u32,
+            ) -> i32;
+        }
+
+        const MB_OK: u32 = 0x0000_0000;
+        const MB_ICONINFORMATION: u32 = 0x0000_0040;
+        const MB_SETFOREGROUND: u32 = 0x0001_0000;
+
+        fn wide(value: &str) -> Vec<u16> {
+            OsStr::new(value).encode_wide().chain(Some(0)).collect()
+        }
+
+        let text = wide(message);
+        let caption = wide("LanChat");
+        unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                text.as_ptr(),
+                caption.as_ptr(),
+                MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND,
+            );
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        eprintln!("{message}");
+    }
+}
+
 fn parse_shortcut_code(value: &str) -> Option<Code> {
     let normalized = match value.trim() {
         key if key.len() == 1 && key.chars().all(|ch| ch.is_ascii_alphabetic()) => {
@@ -1246,7 +1616,7 @@ fn parse_shortcut_code(value: &str) -> Option<Code> {
     Code::from_str(&normalized).ok()
 }
 
-fn parse_desktop_pet_stop_hotkey(value: &str) -> Result<Shortcut, String> {
+fn parse_desktop_pet_hotkey(value: &str) -> Result<Shortcut, String> {
     let mut modifiers = Modifiers::empty();
     let mut code = None;
     for part in value
@@ -1269,13 +1639,40 @@ fn parse_desktop_pet_stop_hotkey(value: &str) -> Result<Shortcut, String> {
 }
 
 #[tauri::command]
+fn register_desktop_pet_send_hotkey(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    hotkey: String,
+) -> Result<(), String> {
+    register_desktop_pet_hotkey(
+        &app,
+        &state.desktop_pet_send_hotkey,
+        &hotkey,
+        "注册发送告警快捷键失败",
+    )
+}
+
+#[tauri::command]
 fn register_desktop_pet_stop_hotkey(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     hotkey: String,
 ) -> Result<(), String> {
-    let mut current = state
-        .desktop_pet_stop_hotkey
+    register_desktop_pet_hotkey(
+        &app,
+        &state.desktop_pet_stop_hotkey,
+        &hotkey,
+        "注册停止提醒快捷键失败",
+    )
+}
+
+fn register_desktop_pet_hotkey(
+    app: &tauri::AppHandle,
+    holder: &Arc<Mutex<Option<Shortcut>>>,
+    hotkey: &str,
+    error_prefix: &str,
+) -> Result<(), String> {
+    let mut current = holder
         .lock()
         .map_err(|_| "快捷键状态锁定失败".to_string())?;
     if let Some(previous) = current.take() {
@@ -1285,10 +1682,10 @@ fn register_desktop_pet_stop_hotkey(
     if hotkey.is_empty() {
         return Ok(());
     }
-    let shortcut = parse_desktop_pet_stop_hotkey(hotkey)?;
+    let shortcut = parse_desktop_pet_hotkey(hotkey)?;
     app.global_shortcut()
         .register(shortcut)
-        .map_err(|err| format!("注册停止蹦迪快捷键失败：{err}"))?;
+        .map_err(|err| format!("{error_prefix}：{err}"))?;
     *current = Some(shortcut);
     Ok(())
 }
@@ -1685,24 +2082,39 @@ fn reset_main_window(app: &tauri::App) -> Result<(), String> {
     Ok(())
 }
 
-fn app_client_kind(app: &tauri::App) -> &'static str {
-    if app.config().identifier.ends_with(".lite") {
-        "lite"
-    } else {
-        "full"
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if let Err(error) = acquire_lanchat_instance_lock() {
+        eprintln!("{error}");
+        show_instance_lock_message(&error);
+        return;
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             let _ = show_main_window(app, None);
         }))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
-                    if event.state == ShortcutState::Pressed {
+                .with_handler(|app, shortcut, event| {
+                    if event.state != ShortcutState::Pressed {
+                        return;
+                    }
+                    let state = app.state::<AppState>();
+                    let is_send = state
+                        .desktop_pet_send_hotkey
+                        .lock()
+                        .ok()
+                        .and_then(|current| *current)
+                        .is_some_and(|registered| registered == *shortcut);
+                    let is_stop = state
+                        .desktop_pet_stop_hotkey
+                        .lock()
+                        .ok()
+                        .and_then(|current| *current)
+                        .is_some_and(|registered| registered == *shortcut);
+                    if is_send {
+                        let _ = app.emit("desktop_pet_send_hotkey_received", ());
+                    } else if is_stop {
                         let _ = app.emit("desktop_pet_stop_hotkey_received", ());
                     }
                 })
@@ -1725,8 +2137,7 @@ pub fn run() {
                     .map_err(|err| format!("初始化本地存储失败：{err}"))?,
             );
             storage.get_or_create_profile()?;
-            let client_kind = app_client_kind(app);
-            let network = Network::new_with_client_kind(storage.clone(), client_kind);
+            let network = Network::new(storage.clone());
             network.start(app.handle().clone())?;
             let file_server = FileServer::new();
             file_server.start();
@@ -1753,6 +2164,7 @@ pub fn run() {
                 tray: tray_state,
                 desktop_pet_controller,
                 desktop_pet,
+                desktop_pet_send_hotkey: Arc::new(Mutex::new(None)),
                 desktop_pet_stop_hotkey: Arc::new(Mutex::new(None)),
             });
             Ok(())
@@ -1767,6 +2179,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_platform_info,
+            get_app_version_info,
+            check_for_update,
+            open_update_url,
             get_profile,
             update_profile,
             list_peers,
@@ -1809,6 +2224,7 @@ pub fn run() {
             set_desktop_pet_enabled,
             update_desktop_pet_state,
             register_desktop_pet_stop_hotkey,
+            register_desktop_pet_send_hotkey,
             start_main_window_drag,
             minimize_main_window,
             toggle_main_window_maximized,

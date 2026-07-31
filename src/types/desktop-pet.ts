@@ -91,6 +91,7 @@ export type DesktopPetSettings = {
   positionY?: number | null;
   monitorId?: string | null;
   alertMode: string;
+  sendHotkey: string;
   stopHotkey: string;
   randomMoveEnabled: boolean;
   randomLifeEnabled: boolean;

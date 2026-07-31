@@ -96,43 +96,6 @@ jobs:
           "@ | Set-Content -Encoding UTF8 (Join-Path $portableRoot "README.txt")
           Compress-Archive -Path "$portableRoot/*" -DestinationPath "release-assets/portable/lanchat-windows-portable.zip" -Force
 
-      - name: Build Lite Tauri bundle
-        env:
-          APPLE_SIGNING_IDENTITY: "-"
-        run: npm run tauri:build:lite -- --bundles ${{ matrix.bundle }}
-
-      - name: Preserve Lite bundle assets
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force release-assets/bundles/lite | Out-Null
-          if (Test-Path -LiteralPath "src-tauri/target/release/bundle/nsis") {
-            Copy-Item -Path "src-tauri/target/release/bundle/nsis/*lite*.exe" -Destination "release-assets/bundles/lite" -Force
-          }
-          if (Test-Path -LiteralPath "src-tauri/target/release/bundle/dmg") {
-            Copy-Item -Path "src-tauri/target/release/bundle/dmg/*lite*.dmg" -Destination "release-assets/bundles/lite" -Force
-          }
-
-      - name: Build Windows Lite portable package
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          $portableRoot = "release-assets/portable/lanchat-lite-windows-portable"
-          if (Test-Path -LiteralPath $portableRoot) { Remove-Item -LiteralPath $portableRoot -Recurse -Force }
-          New-Item -ItemType Directory -Force $portableRoot | Out-Null
-          Copy-Item -LiteralPath "src-tauri/target/release/lanchat-lite.exe" -Destination $portableRoot
-          if (Test-Path -LiteralPath "src-tauri/target/release/resources") {
-            Copy-Item -LiteralPath "src-tauri/target/release/resources" -Destination $portableRoot -Recurse
-          }
-          @"
-          LanChat Lite Windows 绿色版
-
-          1. 解压后直接运行 lanchat-lite.exe。
-          2. Lite 仅包含桌宠告警器、狼来了排行榜、桌宠设置和外部推送配置。
-          3. 默认内置 frog-buddy 桌宠。
-          4. 如系统缺少 WebView2 Runtime，请先安装 Microsoft Edge WebView2 Runtime。
-          "@ | Set-Content -Encoding UTF8 (Join-Path $portableRoot "README.txt")
-          Compress-Archive -Path "$portableRoot/*" -DestinationPath "release-assets/portable/lanchat-lite-windows-portable.zip" -Force
-
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -159,12 +122,31 @@ jobs:
         with:
           path: release-downloads
 
+      - name: Create update metadata
+        shell: bash
+        run: |
+          TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          cat > release-downloads/lanchat-update.json <<EOF
+          {
+            "version": "${VERSION}",
+            "force": true,
+            "min_supported_version": "${VERSION}",
+            "title": "LanChat ${TAG}",
+            "notes": "这是强制升级版本。旧版本检测到该版本后必须更新才能继续使用。",
+            "downloads": {
+              "windows_portable": "https://github.com/${{ github.repository }}/releases/download/${TAG}/lanchat-windows-portable.zip",
+              "release_page": "https://github.com/${{ github.repository }}/releases/tag/${TAG}"
+            }
+          }
+          EOF
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           name: LanChat ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-          body_path: docs/releases/v0.2.0.md
+          body_path: docs/releases/${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}.md
           draft: false
           prerelease: false
           overwrite_files: true

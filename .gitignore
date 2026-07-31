@@ -15,6 +15,7 @@ dist-ssr
 # Tauri / Rust build outputs
 src-tauri/target*/
 src-tauri/gen/
+src-tauri/build-timestamp.txt
 
 # Local preview, verification and packaging outputs
 .worktrees/

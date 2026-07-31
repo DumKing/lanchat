@@ -42,7 +42,8 @@ export const useLanChatStore = defineStore("lanchat", () => {
     () => messagesByConversation.value[activeConversationId.value] ?? [],
   );
 
-  const onlinePeers = computed(() => peers.value.filter((peer) => peer.online));
+  const chatCapablePeers = computed(() => peers.value.filter((peer) => peer.supports_chat !== false));
+  const onlinePeers = computed(() => chatCapablePeers.value.filter((peer) => peer.online));
   const totalUnread = computed(() => Object.values(unreadByConversation.value).reduce((sum, value) => sum + value, 0));
 
   const activePeer = computed(() => {
@@ -55,7 +56,10 @@ export const useLanChatStore = defineStore("lanchat", () => {
   const canSendActive = computed(() => {
     const conversation = activeConversation.value;
     if (!conversation) return false;
-    if (conversation.kind === "direct") return activePeer.value?.online === true;
+    if (conversation.kind === "direct") {
+      const peer = activePeer.value;
+      return peer?.online === true && peer.supports_chat !== false;
+    }
     if (channelMutedByConversation.value[conversation.id] === true) return false;
     const selfMember = channelMembersByConversation.value[conversation.id]?.find((member) => member.device_id === profile.value?.device_id);
     return selfMember?.muted !== true;
@@ -379,10 +383,10 @@ export const useLanChatStore = defineStore("lanchat", () => {
     }
   }
 
-  async function adminRenamePeer(deviceId: string, nickname: string) {
+  async function adminRenamePeer(deviceId: string, nickname: string, nicknameLocked?: boolean | null, useSystemUsername = false) {
     error.value = "";
     try {
-      const peer = await api.adminRenamePeer(deviceId, nickname);
+      const peer = await api.adminRenamePeer(deviceId, nickname, nicknameLocked, useSystemUsername);
       upsertPeer(peer);
       await refreshConversations();
       return peer;
@@ -405,12 +409,19 @@ export const useLanChatStore = defineStore("lanchat", () => {
 
   async function openDirect(peer: Peer) {
     await refreshConversations();
+    if (peer.supports_chat === false && !conversations.value.some((item) => item.id === peer.device_id)) {
+      error.value = "该设备不支持聊天，暂无历史会话";
+      return;
+    }
     await selectConversation(peer.device_id);
   }
 
   async function sendActiveMessage() {
     if (!canSendActive.value) {
-      error.value = "对方已离线，不能发送私聊消息";
+      const peer = activePeer.value;
+      error.value = peer?.supports_chat === false
+        ? "该设备不支持聊天"
+        : "对方已离线，不能发送私聊消息";
       return;
     }
     const content = draft.value.trim();
@@ -429,6 +440,10 @@ export const useLanChatStore = defineStore("lanchat", () => {
       const peer = peers.value.find((item) => item.device_id === peerId);
       if (peer?.online !== true) {
         error.value = "对方已离线，不能发送私聊消息";
+        return null;
+      }
+      if (peer.supports_chat === false) {
+        error.value = "该设备不支持聊天";
         return null;
       }
     }
@@ -450,7 +465,10 @@ export const useLanChatStore = defineStore("lanchat", () => {
   async function sendFile(path: string) {
     if (!path) return;
     if (!canSendActive.value) {
-      error.value = "对方已离线，不能发送私聊文件";
+      const peer = activePeer.value;
+      error.value = peer?.supports_chat === false
+        ? "该设备不支持文件消息"
+        : "对方已离线，不能发送私聊文件";
       return;
     }
     error.value = "";
@@ -465,7 +483,10 @@ export const useLanChatStore = defineStore("lanchat", () => {
 
   async function sendVoice(fileName: string, bytes: number[], durationMs: number) {
     if (!canSendActive.value) {
-      error.value = "对方已离线，不能发送语音消息";
+      const peer = activePeer.value;
+      error.value = peer?.supports_chat === false
+        ? "该设备不支持语音消息"
+        : "对方已离线，不能发送语音消息";
       return;
     }
     error.value = "";

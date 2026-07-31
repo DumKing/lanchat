@@ -70,29 +70,6 @@ jobs:
           "@ | Set-Content -Encoding UTF8 (Join-Path $portableRoot "README.txt")
           Compress-Archive -Path "$portableRoot\*" -DestinationPath "release-assets\portable\lanchat-windows-portable.zip" -Force
 
-      - name: Build Windows Lite installer
-        run: npm run tauri:build:lite -- --bundles nsis
-
-      - name: Build Windows Lite portable package
-        shell: pwsh
-        run: |
-          $portableRoot = "release-assets\portable\lanchat-lite-windows-portable"
-          if (Test-Path -LiteralPath $portableRoot) { Remove-Item -LiteralPath $portableRoot -Recurse -Force }
-          New-Item -ItemType Directory -Force $portableRoot | Out-Null
-          Copy-Item -LiteralPath "src-tauri\target\release\lanchat-lite.exe" -Destination $portableRoot
-          if (Test-Path -LiteralPath "src-tauri\target\release\resources") {
-            Copy-Item -LiteralPath "src-tauri\target\release\resources" -Destination $portableRoot -Recurse
-          }
-          @"
-          LanChat Lite Windows 绿色版
-
-          1. 解压后直接运行 lanchat-lite.exe。
-          2. Lite 仅包含桌宠告警器、狼来了排行榜、桌宠设置和外部推送配置。
-          3. 默认内置 frog-buddy 桌宠。
-          4. 如系统缺少 WebView2 Runtime，请先安装 Microsoft Edge WebView2 Runtime。
-          "@ | Set-Content -Encoding UTF8 (Join-Path $portableRoot "README.txt")
-          Compress-Archive -Path "$portableRoot\*" -DestinationPath "release-assets\portable\lanchat-lite-windows-portable.zip" -Force
-
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:

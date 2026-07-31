@@ -1,3 +1,15 @@
 fn main() {
+    println!("cargo:rerun-if-changed=build-timestamp.txt");
+    let timestamp = std::fs::read_to_string("build-timestamp.txt")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|value| value.as_secs().to_string())
+                .unwrap_or_else(|_| "0".to_string())
+        });
+    println!("cargo:rustc-env=LANCHAT_BUILD_TIMESTAMP={timestamp}");
     tauri_build::build()
 }

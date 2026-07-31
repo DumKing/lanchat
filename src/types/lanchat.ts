@@ -3,6 +3,7 @@ export type Profile = {
   nickname: string;
   listen_port: number;
   avatar?: string | null;
+  nickname_locked: boolean;
 };
 
 export type PlatformInfo = {
@@ -10,6 +11,35 @@ export type PlatformInfo = {
   windowsFirewallRepairSupported: boolean;
   desktopPetSupported: boolean;
   globalShortcutRequiresPermission: boolean;
+};
+
+export type AppVersionInfo = {
+  version: string;
+  buildVersion: string;
+  buildTimestamp: number;
+};
+
+export type UpdateDownloadLinks = {
+  windowsPortable?: string | null;
+  windowsInstaller?: string | null;
+  macosDmg?: string | null;
+  releasePage: string;
+};
+
+export type UpdateCheckResult = {
+  repository: string;
+  current: AppVersionInfo;
+  latestVersion: string;
+  latestBuild?: string | null;
+  title: string;
+  notes: string;
+  releaseUrl: string;
+  downloads: UpdateDownloadLinks;
+  updateAvailable: boolean;
+  force: boolean;
+  minSupportedVersion?: string | null;
+  forceRequired: boolean;
+  checkedAt: number;
 };
 
 export type Peer = {
@@ -20,6 +50,11 @@ export type Peer = {
   port: number;
   online: boolean;
   last_seen_at: number;
+  client_kind?: "full" | string;
+  supports_chat?: boolean;
+  nickname_locked?: boolean;
+  build_version?: string;
+  build_timestamp?: number;
 };
 
 export type ConversationKind = "direct" | "group";

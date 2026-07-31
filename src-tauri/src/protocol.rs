@@ -28,12 +28,18 @@ pub struct HelloFrame {
     pub device_id: String,
     pub nickname: String,
     pub avatar: Option<String>,
+    #[serde(default)]
+    pub nickname_locked: bool,
     pub protocol_version: u16,
     pub listen_port: u16,
     #[serde(default = "default_client_kind")]
     pub client_kind: String,
     #[serde(default = "default_supports_chat")]
     pub supports_chat: bool,
+    #[serde(default)]
+    pub build_version: String,
+    #[serde(default)]
+    pub build_timestamp: i64,
     pub public_key: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +47,8 @@ pub struct PeerStatusFrame {
     pub device_id: String,
     pub nickname: String,
     pub avatar: Option<String>,
+    #[serde(default)]
+    pub nickname_locked: bool,
     pub address: Option<String>,
     pub protocol_version: u16,
     pub listen_port: u16,
@@ -48,6 +56,10 @@ pub struct PeerStatusFrame {
     pub client_kind: String,
     #[serde(default = "default_supports_chat")]
     pub supports_chat: bool,
+    #[serde(default)]
+    pub build_version: String,
+    #[serde(default)]
+    pub build_timestamp: i64,
     pub updated_at: i64,
 }
 
@@ -84,6 +96,10 @@ pub struct AckFrame {
 pub struct AdminNicknameFrame {
     pub target_device_id: String,
     pub nickname: String,
+    #[serde(default)]
+    pub nickname_locked: Option<bool>,
+    #[serde(default)]
+    pub use_system_username: bool,
     pub issued_by_device_id: String,
     pub issued_by_nickname: String,
     pub created_at: i64,
@@ -241,10 +257,13 @@ mod tests {
             device_id: "device-a".to_string(),
             nickname: "LanChat A".to_string(),
             avatar: Some("data:image/png;base64,abc".to_string()),
+            nickname_locked: false,
             protocol_version: 1,
             listen_port: 18145,
             client_kind: "full".to_string(),
             supports_chat: true,
+            build_version: "0.3.0+1".to_string(),
+            build_timestamp: 1,
             public_key: None,
         });
 
@@ -276,6 +295,8 @@ mod tests {
         let frame = WireFrame::AdminNickname(AdminNicknameFrame {
             target_device_id: "aa:bb:cc:dd:ee:ff".to_string(),
             nickname: "新昵称".to_string(),
+            nickname_locked: Some(true),
+            use_system_username: false,
             issued_by_device_id: "11:22:33:44:55:66".to_string(),
             issued_by_nickname: "管理员".to_string(),
             created_at: 30,
@@ -403,11 +424,14 @@ mod tests {
             device_id: "aa:bb:cc:dd:ee:ff".to_string(),
             nickname: "Alice".to_string(),
             avatar: Some("A".to_string()),
+            nickname_locked: true,
             address: Some("192.168.1.20".to_string()),
             protocol_version: 1,
             listen_port: 18145,
             client_kind: "full".to_string(),
             supports_chat: true,
+            build_version: "0.3.0+10".to_string(),
+            build_timestamp: 10,
             updated_at: 10,
         });
 
