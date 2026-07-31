@@ -18,7 +18,8 @@ assert.match(appVue, /const petAlertMode = ref<PetAlertMode>\(readSavedPetAlertM
 assert.match(appVue, /NRadioGroup v-model:value="petAlertMode"/, "设置页应提供本机报警模式选择");
 assert.match(appVue, /broadcast_disco_alert[\s\S]{0,120}sendPetQuickAlert\("disco"\)/, "Ctrl 双击应发送蹦迪报警");
 assert.match(appVue, /normalizePetAlertMode\(alert\.mode\) === "disco"[\s\S]{0,160}discoModeUntil/, "收到蹦迪报警应更新运行时状态");
-assert.match(runtime, /modifiers\.ctrl[\s\S]{0,180}broadcast_disco_alert/, "桌宠运行时应识别 Ctrl 双击");
+assert.match(runtime, /fn ctrl_pressed[\s\S]{0,180}modifiers\.ctrl/, "桌宠运行时应读取 Ctrl 状态");
+assert.match(runtime, /ctrl_pressed\(ctx\)[\s\S]{0,220}broadcast_disco_alert/, "桌宠运行时应识别 Ctrl 双击");
 assert.match(lib, /send_admin_alert_mode/, "Rust 应暴露超管报警模式命令");
 assert.doesNotMatch(appVue, /FrogAlertMode|sendFrogQuickAlert|normalizeFrogAlertMode/, "前端不应保留旧青蛙报警接口");
 

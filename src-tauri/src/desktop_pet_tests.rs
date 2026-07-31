@@ -306,6 +306,8 @@ fn desktop_pet_settings_are_persisted_for_native_startup() {
     assert_eq!(restored.scale, 1.35);
     assert!(!restored.random_move_enabled);
     assert_eq!(restored.disco_movement_mode, "jump");
+    assert_eq!(restored.send_hotkey, "Ctrl+Alt+G");
+    assert_eq!(restored.stop_hotkey, "Ctrl+Alt+S");
 }
 
 #[test]
@@ -333,6 +335,8 @@ fn desktop_pet_settings_load_old_files_with_jump_movement_default() {
     let restored = DesktopPetSettings::load(&path);
     assert_eq!(restored.selected_pet_id.as_deref(), Some("frog"));
     assert_eq!(restored.disco_movement_mode, "jump");
+    assert_eq!(restored.send_hotkey, "Ctrl+Alt+G");
+    assert_eq!(restored.stop_hotkey, "Ctrl+Alt+S");
 }
 
 #[test]

@@ -14,6 +14,7 @@ pub struct Profile {
     pub nickname: String,
     pub listen_port: u16,
     pub avatar: Option<String>,
+    pub nickname_locked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,15 +28,14 @@ pub struct Peer {
     pub last_seen_at: i64,
     pub client_kind: String,
     pub supports_chat: bool,
+    pub nickname_locked: bool,
+    pub build_version: String,
+    pub build_timestamp: i64,
 }
 
 impl Peer {
-    pub fn is_lite(&self) -> bool {
-        self.client_kind.eq_ignore_ascii_case("lite")
-    }
-
     pub fn supports_full_features(&self) -> bool {
-        self.supports_chat && !self.is_lite()
+        self.supports_chat
     }
 }
 
@@ -250,6 +250,12 @@ impl Storage {
         ensure_column(&conn, "messages", "file_mime_type", "TEXT")?;
         ensure_column(&conn, "messages", "file_duration_ms", "INTEGER")?;
         ensure_column(&conn, "profile", "avatar", "TEXT")?;
+        ensure_column(
+            &conn,
+            "profile",
+            "nickname_locked",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
         ensure_column(&conn, "peers", "avatar", "TEXT")?;
         ensure_column(
             &conn,
@@ -262,6 +268,19 @@ impl Storage {
             "peers",
             "supports_chat",
             "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        ensure_column(
+            &conn,
+            "peers",
+            "nickname_locked",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column(&conn, "peers", "build_version", "TEXT NOT NULL DEFAULT ''")?;
+        ensure_column(
+            &conn,
+            "peers",
+            "build_timestamp",
+            "INTEGER NOT NULL DEFAULT 0",
         )?;
         ensure_column(
             &conn,
@@ -293,11 +312,12 @@ impl Storage {
             nickname: default_nickname(),
             listen_port: 18145,
             avatar: None,
+            nickname_locked: false,
         };
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         conn.execute(
-            "INSERT INTO profile (id, device_id, nickname, listen_port, avatar) VALUES (1, ?1, ?2, ?3, ?4)",
-            params![profile.device_id, profile.nickname, profile.listen_port, profile.avatar],
+            "INSERT INTO profile (id, device_id, nickname, listen_port, avatar, nickname_locked) VALUES (1, ?1, ?2, ?3, ?4, ?5)",
+            params![profile.device_id, profile.nickname, profile.listen_port, profile.avatar, if profile.nickname_locked { 1 } else { 0 }],
         )
         .map_err(|err| format!("保存本机身份失败：{err}"))?;
         drop(conn);
@@ -308,7 +328,7 @@ impl Storage {
     pub fn get_profile(&self) -> Result<Option<Profile>, String> {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         conn.query_row(
-            "SELECT device_id, nickname, listen_port, avatar FROM profile WHERE id = 1",
+            "SELECT device_id, nickname, listen_port, avatar, nickname_locked FROM profile WHERE id = 1",
             [],
             |row| {
                 Ok(Profile {
@@ -316,6 +336,7 @@ impl Storage {
                     nickname: row.get(1)?,
                     listen_port: row.get::<_, i64>(2)? as u16,
                     avatar: row.get(3)?,
+                    nickname_locked: row.get::<_, i64>(4)? == 1,
                 })
             },
         )
@@ -330,7 +351,11 @@ impl Storage {
         avatar: Option<String>,
     ) -> Result<Profile, String> {
         let mut profile = self.get_or_create_profile()?;
-        profile.nickname = nickname.trim().to_string();
+        let next_nickname = nickname.trim().to_string();
+        if profile.nickname_locked && next_nickname != profile.nickname {
+            return Err("管理员已禁止本机修改昵称".to_string());
+        }
+        profile.nickname = next_nickname;
         profile.listen_port = listen_port;
         profile.avatar = avatar.and_then(|value| {
             let trimmed = value.trim().to_string();
@@ -349,6 +374,28 @@ impl Storage {
         Ok(profile)
     }
 
+    pub fn apply_admin_nickname(
+        &self,
+        nickname: &str,
+        nickname_locked: Option<bool>,
+    ) -> Result<Profile, String> {
+        let mut profile = self.get_or_create_profile()?;
+        profile.nickname = nickname.trim().to_string();
+        if let Some(locked) = nickname_locked {
+            profile.nickname_locked = locked;
+        }
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        conn.execute(
+            "UPDATE profile SET nickname = ?1, nickname_locked = ?2 WHERE id = 1",
+            params![
+                profile.nickname,
+                if profile.nickname_locked { 1 } else { 0 }
+            ],
+        )
+        .map_err(|err| format!("应用管理员昵称失败：{err}"))?;
+        Ok(profile)
+    }
+
     pub fn upsert_peer(&self, peer: &Peer) -> Result<(), String> {
         let normalized = Peer {
             device_id: normalize_device_id(&peer.device_id),
@@ -360,6 +407,9 @@ impl Storage {
             last_seen_at: peer.last_seen_at,
             client_kind: normalize_client_kind(&peer.client_kind),
             supports_chat: peer.supports_chat,
+            nickname_locked: peer.nickname_locked,
+            build_version: peer.build_version.trim().to_string(),
+            build_timestamp: peer.build_timestamp,
         };
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         let duplicate_ids = find_duplicate_peer_ids(&conn, &normalized)?;
@@ -377,8 +427,8 @@ impl Storage {
         }
         conn.execute(
             "
-            INSERT INTO peers (device_id, nickname, avatar, address, port, online, last_seen_at, client_kind, supports_chat)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            INSERT INTO peers (device_id, nickname, avatar, address, port, online, last_seen_at, client_kind, supports_chat, nickname_locked, build_version, build_timestamp)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
             ON CONFLICT(device_id) DO UPDATE SET
                 nickname = excluded.nickname,
                 avatar = COALESCE(excluded.avatar, peers.avatar),
@@ -387,7 +437,10 @@ impl Storage {
                 online = excluded.online,
                 last_seen_at = excluded.last_seen_at,
                 client_kind = excluded.client_kind,
-                supports_chat = excluded.supports_chat
+                supports_chat = excluded.supports_chat,
+                nickname_locked = excluded.nickname_locked,
+                build_version = excluded.build_version,
+                build_timestamp = excluded.build_timestamp
             ",
             params![
                 normalized.device_id,
@@ -398,7 +451,10 @@ impl Storage {
                 if normalized.online { 1 } else { 0 },
                 normalized.last_seen_at,
                 normalized.client_kind,
-                if normalized.supports_chat { 1 } else { 0 }
+                if normalized.supports_chat { 1 } else { 0 },
+                if normalized.nickname_locked { 1 } else { 0 },
+                normalized.build_version,
+                normalized.build_timestamp
             ],
         )
         .map_err(|err| format!("保存局域网设备失败：{err}"))?;
@@ -413,7 +469,7 @@ impl Storage {
     pub fn get_peer(&self, device_id: &str) -> Result<Option<Peer>, String> {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         conn.query_row(
-            "SELECT device_id, nickname, avatar, address, port, online, last_seen_at, client_kind, supports_chat FROM peers WHERE device_id = ?1",
+            "SELECT device_id, nickname, avatar, address, port, online, last_seen_at, client_kind, supports_chat, nickname_locked, build_version, build_timestamp FROM peers WHERE device_id = ?1",
             params![normalize_device_id(device_id)],
             |row| {
                 Ok(Peer {
@@ -426,6 +482,9 @@ impl Storage {
                     last_seen_at: row.get(6)?,
                     client_kind: row.get(7)?,
                     supports_chat: row.get::<_, i64>(8)? == 1,
+                    nickname_locked: row.get::<_, i64>(9)? == 1,
+                    build_version: row.get(10)?,
+                    build_timestamp: row.get(11)?,
                 })
             },
         )
@@ -437,7 +496,7 @@ impl Storage {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT device_id, nickname, avatar, address, port, online, last_seen_at, client_kind, supports_chat
+                "SELECT device_id, nickname, avatar, address, port, online, last_seen_at, client_kind, supports_chat, nickname_locked, build_version, build_timestamp
                  FROM peers ORDER BY online DESC, last_seen_at DESC, nickname ASC",
             )
             .map_err(|err| format!("读取局域网设备失败：{err}"))?;
@@ -453,6 +512,9 @@ impl Storage {
                     last_seen_at: row.get(6)?,
                     client_kind: row.get(7)?,
                     supports_chat: row.get::<_, i64>(8)? == 1,
+                    nickname_locked: row.get::<_, i64>(9)? == 1,
+                    build_version: row.get(10)?,
+                    build_timestamp: row.get(11)?,
                 })
             })
             .map_err(|err| format!("读取局域网设备失败：{err}"))?;
@@ -1092,17 +1154,20 @@ fn dedupe_peer_list(peers: Vec<Peer>) -> Vec<Peer> {
 
 fn normalize_client_kind(value: &str) -> String {
     match value.trim().to_ascii_lowercase().as_str() {
-        "lite" => "lite".to_string(),
         _ => "full".to_string(),
     }
 }
-fn default_nickname() -> String {
+pub fn system_login_nickname() -> String {
     std::env::var("USERNAME")
         .or_else(|_| std::env::var("USER"))
         .map(|value| value.trim().to_string())
         .ok()
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "LanChat 用户".to_string())
+}
+
+fn default_nickname() -> String {
+    system_login_nickname()
 }
 fn ensure_column(
     conn: &Connection,
@@ -1163,6 +1228,9 @@ mod tests {
                 last_seen_at: 10,
                 client_kind: "full".to_string(),
                 supports_chat: true,
+                nickname_locked: false,
+                build_version: "0.3.0+10".to_string(),
+                build_timestamp: 10,
             })
             .expect("peer saved");
         storage
@@ -1176,6 +1244,9 @@ mod tests {
                 last_seen_at: 20,
                 client_kind: "full".to_string(),
                 supports_chat: true,
+                nickname_locked: true,
+                build_version: "0.3.0+20".to_string(),
+                build_timestamp: 20,
             })
             .expect("peer updated");
 
@@ -1188,6 +1259,9 @@ mod tests {
         assert_eq!(1, peers.len());
         assert_eq!("改名后", peers[0].nickname);
         assert_eq!(Some("A".to_string()), peers[0].avatar);
+        assert!(peers[0].nickname_locked);
+        assert_eq!("0.3.0+20", peers[0].build_version);
+        assert_eq!(20, peers[0].build_timestamp);
         assert_eq!("192.168.1.12", peers[0].address);
         assert_eq!(18146, peer.port);
     }
@@ -1208,6 +1282,9 @@ mod tests {
                 last_seen_at: 10,
                 client_kind: "full".to_string(),
                 supports_chat: true,
+                nickname_locked: false,
+                build_version: "0.3.0+10".to_string(),
+                build_timestamp: 10,
             })
             .expect("peer");
 
@@ -1313,6 +1390,9 @@ mod tests {
                 last_seen_at: 10,
                 client_kind: "full".to_string(),
                 supports_chat: true,
+                nickname_locked: false,
+                build_version: "0.3.0+10".to_string(),
+                build_timestamp: 10,
             })
             .expect("peer");
 
@@ -1324,33 +1404,36 @@ mod tests {
     }
 
     #[test]
-    fn lite_peer_is_listed_as_device_but_not_as_chat_conversation() {
+    fn unsupported_peer_is_listed_as_device_but_not_as_chat_conversation() {
         let temp = tempfile::tempdir().expect("tempdir");
         let db_path = temp.path().join("lanchat.sqlite3");
         let storage = Storage::open(&db_path).expect("storage opens");
 
         storage
             .upsert_peer(&Peer {
-                device_id: "lite-1".to_string(),
-                nickname: "Lite 报警器".to_string(),
+                device_id: "limited-1".to_string(),
+                nickname: "受限设备".to_string(),
                 avatar: None,
                 address: "192.168.1.50".to_string(),
                 port: 18145,
                 online: true,
                 last_seen_at: 10,
-                client_kind: "lite".to_string(),
+                client_kind: "unknown".to_string(),
                 supports_chat: false,
+                nickname_locked: false,
+                build_version: "0.3.0+10".to_string(),
+                build_timestamp: 10,
             })
-            .expect("lite peer saved");
+            .expect("limited peer saved");
 
         let listed_peers = storage.list_peers().expect("peers");
         assert_eq!(1, listed_peers.len());
-        assert_eq!("lite", listed_peers[0].client_kind);
+        assert_eq!("full", listed_peers[0].client_kind);
         assert!(!listed_peers[0].supports_chat);
         assert!(!storage
             .list_conversations()
             .expect("conversations")
             .iter()
-            .any(|conversation| conversation.id == "lite-1"));
+            .any(|conversation| conversation.id == "limited-1"));
     }
 }

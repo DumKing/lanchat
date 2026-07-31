@@ -43,7 +43,7 @@ import { api } from "./services/tauri-api";
 import { DEFAULT_GROUP_ID, useLanChatStore } from "./stores/lanchat";
 import { useDesktopPetStore } from "./stores/desktopPet";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, ExternalPushConfig, ExternalPushKind, PetPackageSource, PetStateKind, PetStatePlaybackConfig } from "./types/desktop-pet";
-import type { AdminAlertMode, AdminDiscoMode, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Peer, PetAlertMode, PlatformInfo, PrivateChannelInvitePayload, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem } from "./types/lanchat";
+import type { AdminAlertMode, AdminDiscoMode, AppVersionInfo, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Peer, PetAlertMode, PlatformInfo, PrivateChannelInvitePayload, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem, UpdateCheckResult } from "./types/lanchat";
 import { DDZ_TURN_TIMEOUT_MS, canBeat, dealHands, evaluatePlay, isTurnTimedOut, playLabel, sortCards, turnRemainingSeconds, type DdzCard, type DdzPhase, type DdzPlay } from "./games/doudizhu";
 import { GOMOKU_TURN_TIMEOUT_MS, chooseAutoGomokuPoint, cloneGomokuBoard, createGomokuBoard, gomokuStoneLabel, gomokuTurnRemainingSeconds, isGomokuTurnTimedOut, placeGomokuStone, type GomokuBoard, type GomokuPhase, type GomokuPoint, type GomokuStone } from "./games/gomoku";
 import { cloneXiangqiBoard, createXiangqiBoard, createXiangqiDisplayGrid, isLegalXiangqiMove, moveXiangqiPiece, otherXiangqiSide, resignXiangqiSide, undoXiangqiMove, xiangqiPieceLabel, xiangqiSideLabel, type XiangqiBoard, type XiangqiPhase, type XiangqiPiece, type XiangqiPoint, type XiangqiSide } from "./games/xiangqi";
@@ -324,7 +324,7 @@ const nicknameDraft = ref("");
 const portDraft = ref(18145);
 const avatarDraft = ref("");
 const profileAvatarInput = ref<HTMLInputElement | null>(null);
-const AVATAR_MAX_BYTES = 500 * 1024;
+const AVATAR_MAX_BYTES = 5 * 1024 * 1024;
 const canRepairWindowsNetwork = computed(() => platformInfo.value?.windowsFirewallRepairSupported ?? true);
 const networkRepairDescription = computed(() => {
   if (canRepairWindowsNetwork.value) {
@@ -335,6 +335,34 @@ const networkRepairDescription = computed(() => {
   }
   return "当前平台不支持 Windows 网络修复，请检查系统防火墙和本地网络权限。";
 });
+const preferredUpdateUrl = computed(() => {
+  const info = updateInfo.value;
+  if (!info) return "";
+  if (platformInfo.value?.os === "windows") {
+    return info.downloads.windowsInstaller || info.downloads.windowsPortable || info.downloads.releasePage || info.releaseUrl;
+  }
+  if (platformInfo.value?.os === "macos") {
+    return info.downloads.macosDmg || info.downloads.releasePage || info.releaseUrl;
+  }
+  return info.downloads.releasePage || info.releaseUrl;
+});
+const forceUpdateRequired = computed(() => updateInfo.value?.forceRequired === true);
+const updateStatusLabel = computed(() => {
+  const info = updateInfo.value;
+  if (updateChecking.value) return "正在检查更新";
+  if (!info) return "尚未检查";
+  if (info.forceRequired) return `必须更新到 ${info.latestVersion}`;
+  if (info.updateAvailable) return `发现新版本 ${info.latestVersion}`;
+  return "已是最新版本";
+});
+const updateStatusType = computed(() => {
+  if (forceUpdateRequired.value) return "error";
+  if (updateInfo.value?.updateAvailable) return "warning";
+  return "success";
+});
+const localVersionLabel = computed(() => appVersionInfo.value?.buildVersion ?? updateInfo.value?.current.buildVersion ?? "未知");
+const visibleUpdateAvailable = computed(() => updateInfo.value?.updateAvailable === true);
+const updateBadgeLabel = computed(() => (forceUpdateRequired.value ? "必升" : visibleUpdateAvailable.value ? "升级" : ""));
 const isRecording = ref(false);
 const recordingStartedAt = ref(0);
 let mediaRecorder: MediaRecorder | null = null;
@@ -345,12 +373,14 @@ let autoTurnRunning = false;
 let unlistenTrayOpenTarget: (() => void) | null = null;
 let unlistenDesktopPetAction: (() => void) | null = null;
 let unlistenDesktopPetStopHotkey: (() => void) | null = null;
+let unlistenDesktopPetSendHotkey: (() => void) | null = null;
 let unlistenDesktopPetRegistry: (() => void) | null = null;
 const conversationSearch = ref("");
 const deviceSearch = ref("");
 const selectedPeerId = ref("");
 const selectedDeviceChannelId = ref("");
 const adminNicknameDraft = ref("");
+const adminNicknameLockAfterIssue = ref(false);
 const superAdminEnabled = ref(readSavedSuperAdminEnabled());
 const superAdminTapCount = ref(0);
 const superAdminAuthOpen = ref(false);
@@ -360,6 +390,12 @@ const SUPER_ADMIN_PASSWORD_MD5 = "D7B9AF919901FA1598BDC21465E3EB3F";
 const alertTrustResetTargetId = ref<string | null>(null);
 const adminAlertModeTargetId = ref<string | null>(null);
 const adminAlertModeDraft = ref<PetAlertMode>("normal");
+const appVersionInfo = ref<AppVersionInfo | null>(null);
+const updateInfo = ref<UpdateCheckResult | null>(readSavedUpdateInfo());
+const updateChecking = ref(false);
+const updateError = ref("");
+const autoUpdateEnabled = ref(readSavedAutoUpdateEnabled());
+const updateReminderOpen = ref(false);
 const activeSection = ref<MainSection>("chat");
 const settingsCategory = ref<"basic" | "pet">("basic");
 const listPaneCollapsed = ref(false);
@@ -396,6 +432,7 @@ const messageContextMessage = ref<Message | null>(null);
 const petAlertEnabled = ref(readSavedPetAlertEnabled());
 const quickAlertDraft = ref(readSavedQuickAlertText());
 const petAlertMode = ref<PetAlertMode>(readSavedPetAlertMode());
+const petSendHotkey = ref(readSavedPetSendHotkey());
 const petStopHotkey = ref(readSavedPetStopHotkey());
 const alertRecords = ref<AlertRecord[]>(readSavedAlertRecords());
 const ownAlertFlashUntil = ref(0);
@@ -554,7 +591,7 @@ const composerPlaceholder = computed(() => {
   if (canSendActive.value) return "输入消息";
   if (activeSelfMuted.value) return "你已被禁言，暂不能发言";
   const peer = activePeer.value;
-  if (activeConversation.value?.kind === "direct" && peer && !peerSupportsFullFeatures(peer)) return "Lite 告警器不支持聊天发送";
+  if (activeConversation.value?.kind === "direct" && peer && !peerSupportsFullFeatures(peer)) return "该设备不支持聊天发送";
   return activeConversation.value?.kind === "direct" ? "对方已离线，暂不能发送私聊消息" : "当前不可发送消息";
 });
 const activeGameRoom = computed(() => gameRoomsState.value.find((room) => room.roomId === activeGameRoomId.value) ?? null);
@@ -1053,17 +1090,69 @@ async function removeExternalPushConfig(id: string) {
     externalPushConfigs: (settings.externalPushConfigs ?? []).filter((config) => config.id !== id),
   });
 }
+async function checkUpdates(manual = false) {
+  updateChecking.value = true;
+  updateError.value = "";
+  try {
+    const result = await api.checkForUpdate();
+    updateInfo.value = result;
+    saveUpdateInfo(result);
+    maybeOpenUpdateReminder(result, manual);
+    if (manual && !result.updateAvailable) {
+      store.error = "";
+    }
+  } catch (err) {
+    updateError.value = stringifyError(err);
+    if (manual) {
+      store.error = updateError.value;
+    }
+  } finally {
+    updateChecking.value = false;
+  }
+}
+async function autoCheckUpdatesIfNeeded() {
+  if (!shouldAutoCheckUpdate()) return;
+  if (typeof window === "undefined") return;
+  window.setTimeout(() => {
+    void checkUpdates(false);
+  }, 3500);
+}
+async function openPreferredUpdateUrl() {
+  const url = preferredUpdateUrl.value;
+  if (!url) return;
+  try {
+    updateReminderOpen.value = false;
+    await api.openUpdateUrl(url);
+  } catch (err) {
+    store.error = stringifyError(err);
+  }
+}
+async function openReleasePage() {
+  const url = updateInfo.value?.downloads.releasePage || updateInfo.value?.releaseUrl;
+  if (!url) return;
+  try {
+    updateReminderOpen.value = false;
+    await api.openUpdateUrl(url);
+  } catch (err) {
+    store.error = stringifyError(err);
+  }
+}
 onMounted(async () => {
   platformInfo.value = await api.getPlatformInfo().catch(() => null);
+  appVersionInfo.value = await api.getAppVersionInfo().catch(() => null);
   await store.initialize();
   await desktopPetStore.initialize();
   if (desktopPetSettings.value) {
     petAlertEnabled.value = desktopPetSettings.value.enabled;
+    petSendHotkey.value = desktopPetSettings.value.sendHotkey || petSendHotkey.value;
+    petStopHotkey.value = desktopPetSettings.value.stopHotkey || petStopHotkey.value;
   }
   nicknameDraft.value = profile.value?.nickname ?? "";
   portDraft.value = profile.value?.listen_port ?? 18145;
   avatarDraft.value = profile.value?.avatar ?? "";
+  void autoCheckUpdatesIfNeeded();
   await api.setDesktopPetEnabled(petAlertEnabled.value).catch(() => undefined);
+  await registerDesktopPetSendHotkey();
   await registerDesktopPetStopHotkey();
   await syncDesktopPetRuntime();
   try {
@@ -1087,7 +1176,10 @@ onMounted(async () => {
       }
     });
     unlistenDesktopPetStopHotkey = await listen("desktop_pet_stop_hotkey_received", () => {
-      handleDesktopPetStopHotkeyAction();
+      stopPetAlertVisuals();
+    });
+    unlistenDesktopPetSendHotkey = await listen("desktop_pet_send_hotkey_received", () => {
+      void sendPetQuickAlert("disco");
     });
     unlistenDesktopPetRegistry = await listen<DesktopPetRegistrySnapshot>("desktop_pet_registry_changed", (event) => {
       desktopPetStore.applySnapshot(event.payload);
@@ -1097,6 +1189,7 @@ onMounted(async () => {
   }
   await syncTrayAttention();
   if (typeof window !== "undefined") {
+    window.addEventListener("keydown", handleDesktopPetSendHotkey);
     window.addEventListener("keydown", handleDesktopPetStopHotkey);
     turnTicker = window.setInterval(() => {
       nowTick.value = Date.now();
@@ -1111,6 +1204,8 @@ onUnmounted(() => {
   unlistenDesktopPetAction = null;
   unlistenDesktopPetStopHotkey?.();
   unlistenDesktopPetStopHotkey = null;
+  unlistenDesktopPetSendHotkey?.();
+  unlistenDesktopPetSendHotkey = null;
   unlistenDesktopPetRegistry?.();
   unlistenDesktopPetRegistry = null;
   if (turnTicker !== null && typeof window !== "undefined") {
@@ -1118,6 +1213,7 @@ onUnmounted(() => {
     turnTicker = null;
   }
   if (typeof window !== "undefined") {
+    window.removeEventListener("keydown", handleDesktopPetSendHotkey);
     window.removeEventListener("keydown", handleDesktopPetStopHotkey);
   }
 });
@@ -1153,6 +1249,9 @@ watch(selectedLanguage, (next) => {
   if (typeof window !== "undefined") {
     window.localStorage.setItem("lanchat-language", next);
   }
+});
+watch(autoUpdateEnabled, (next) => {
+  saveAutoUpdateEnabled(next);
 });
 watch(latestIncomingMessage, async (message) => {
   if (!message || message.sender_device_id === profile.value?.device_id) return;
@@ -1247,8 +1346,14 @@ watch(quickAlertDraft, (next) => {
 watch(petAlertMode, (next) => {
   savePetAlertMode(next);
 });
+watch(petSendHotkey, (next) => {
+  savePetSendHotkey(next);
+  void updateDesktopPetSettingsPatch({ sendHotkey: next });
+  void registerDesktopPetSendHotkey(next);
+});
 watch(petStopHotkey, (next) => {
   savePetStopHotkey(next);
+  void updateDesktopPetSettingsPatch({ stopHotkey: next });
   void registerDesktopPetStopHotkey(next);
 });
 watch(alertRecords, saveAlertRecords, { deep: true });
@@ -1268,6 +1373,55 @@ function readSavedLanguage() {
   if (typeof window === "undefined") return "zh-CN";
   const saved = window.localStorage.getItem("lanchat-language");
   return languageOptions.some((item) => item.key === saved) ? saved! : "zh-CN";
+}
+function readSavedAutoUpdateEnabled() {
+  if (typeof window === "undefined") return true;
+  return window.localStorage.getItem("lanchat-auto-update-enabled") !== "false";
+}
+function saveAutoUpdateEnabled(value: boolean) {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem("lanchat-auto-update-enabled", String(value));
+  }
+}
+function readSavedUpdateInfo(): UpdateCheckResult | null {
+  if (typeof window === "undefined") return null;
+  const raw = window.localStorage.getItem("lanchat-last-update-info");
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as UpdateCheckResult;
+  } catch {
+    return null;
+  }
+}
+function saveUpdateInfo(value: UpdateCheckResult) {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem("lanchat-last-update-info", JSON.stringify(value));
+    window.localStorage.setItem("lanchat-last-update-check-at", String(Date.now()));
+  }
+}
+function updateReminderKey(info: UpdateCheckResult) {
+  return `${info.latestVersion}:${info.latestBuild ?? ""}`;
+}
+function readDismissedUpdateReminderKey() {
+  if (typeof window === "undefined") return "";
+  return window.localStorage.getItem("lanchat-dismissed-update-reminder") ?? "";
+}
+function dismissUpdateReminder() {
+  const info = updateInfo.value;
+  updateReminderOpen.value = false;
+  if (info && typeof window !== "undefined") {
+    window.localStorage.setItem("lanchat-dismissed-update-reminder", updateReminderKey(info));
+  }
+}
+function maybeOpenUpdateReminder(info: UpdateCheckResult, manual = false) {
+  if (!info.updateAvailable || info.forceRequired) return;
+  if (!manual && readDismissedUpdateReminderKey() === updateReminderKey(info)) return;
+  updateReminderOpen.value = true;
+}
+function shouldAutoCheckUpdate() {
+  if (!autoUpdateEnabled.value || typeof window === "undefined") return false;
+  const last = Number(window.localStorage.getItem("lanchat-last-update-check-at") ?? "0");
+  return !Number.isFinite(last) || Date.now() - last > 24 * 60 * 60 * 1000;
 }
 function readSavedNavExpanded() {
   if (typeof window === "undefined") return false;
@@ -1435,9 +1589,31 @@ function savePetAlertMode(value: PetAlertMode) {
 function normalizePetAlertMode(value: unknown): PetAlertMode {
   return value === "disco" ? "disco" : "normal";
 }
+function readSavedPetSendHotkey() {
+  if (typeof window === "undefined") return "Ctrl+Alt+G";
+  const current = window.localStorage.getItem("lanchat-pet-send-hotkey");
+  if (current !== null) return current || "Ctrl+Alt+G";
+  const legacy = readMigratedPetSetting("lanchat-pet-stop-hotkey", "lanchat-frog-stop-hotkey");
+  const migrated = legacy || "Ctrl+Alt+G";
+  window.localStorage.setItem("lanchat-pet-send-hotkey", migrated);
+  return migrated;
+}
+function savePetSendHotkey(value: string) {
+  if (typeof window !== "undefined") {
+    const text = value.trim();
+    if (text) {
+      window.localStorage.setItem("lanchat-pet-send-hotkey", text);
+    } else {
+      window.localStorage.removeItem("lanchat-pet-send-hotkey");
+    }
+  }
+}
 function readSavedPetStopHotkey() {
-  if (typeof window === "undefined") return "";
-  return readMigratedPetSetting("lanchat-pet-stop-hotkey", "lanchat-frog-stop-hotkey") || "";
+  if (typeof window === "undefined") return "Ctrl+Alt+S";
+  const current = window.localStorage.getItem("lanchat-pet-stop-hotkey");
+  const send = window.localStorage.getItem("lanchat-pet-send-hotkey");
+  if (current !== null) return current && current !== send ? current : "Ctrl+Alt+S";
+  return "Ctrl+Alt+S";
 }
 function savePetStopHotkey(value: string) {
   if (typeof window !== "undefined") {
@@ -1466,24 +1642,35 @@ function captureDesktopPetStopHotkey(event: KeyboardEvent) {
   event.preventDefault();
   petStopHotkey.value = hotkey;
 }
+function captureDesktopPetSendHotkey(event: KeyboardEvent) {
+  const hotkey = hotkeyFromEvent(event);
+  if (!hotkey) return;
+  event.preventDefault();
+  petSendHotkey.value = hotkey;
+}
+function clearDesktopPetSendHotkey() {
+  petSendHotkey.value = "";
+}
 function clearDesktopPetStopHotkey() {
   petStopHotkey.value = "";
 }
+async function registerDesktopPetSendHotkey(value = petSendHotkey.value) {
+  await api.registerDesktopPetSendHotkey(value).catch(() => undefined);
+}
 async function registerDesktopPetStopHotkey(value = petStopHotkey.value) {
   await api.registerDesktopPetStopHotkey(value).catch(() => undefined);
-}
-function handleDesktopPetStopHotkeyAction() {
-  if (activePetAlert.value || discoModeActive.value) {
-    stopPetAlertVisuals();
-    return;
-  }
-  void sendPetQuickAlert("disco");
 }
 function handleDesktopPetStopHotkey(event: KeyboardEvent) {
   if (!petStopHotkey.value) return;
   if (hotkeyFromEvent(event) !== petStopHotkey.value) return;
   event.preventDefault();
-  handleDesktopPetStopHotkeyAction();
+  stopPetAlertVisuals();
+}
+function handleDesktopPetSendHotkey(event: KeyboardEvent) {
+  if (!petSendHotkey.value) return;
+  if (hotkeyFromEvent(event) !== petSendHotkey.value) return;
+  event.preventDefault();
+  void sendPetQuickAlert("disco");
 }
 function normalizeAlertRecords(records: AlertRecord[]) {
   return records
@@ -3242,6 +3429,7 @@ function openDevice(peer: Peer) {
   selectedPeerId.value = peer.device_id;
   selectedDeviceChannelId.value = "";
   adminNicknameDraft.value = peer.nickname;
+  adminNicknameLockAfterIssue.value = !!peer.nickname_locked;
 }
 async function openDeviceChannel(conversation: Conversation) {
   selectedDeviceChannelId.value = conversation.id;
@@ -3273,15 +3461,21 @@ function cancelEditChannelNotice() {
 async function saveActiveChannelNotice() {
   const conversationId = activeConversation.value?.id;
   if (!conversationId) return;
+  store.error = "";
   const text = channelNoticeDraft.value.trim();
   const notice = text || DEFAULT_CHANNEL_NOTICE;
+  const updater = profile.value?.nickname ?? "管理员";
   channelNotices.value = {
     ...channelNotices.value,
     [conversationId]: notice,
   };
   channelNoticeEditing.value = false;
-  await api.broadcastChannelNotice(conversationId, notice);
-  await store.addSystemNotice(conversationId, `${profile.value?.nickname ?? "管理员"} 更新了群公告`);
+  await store.addSystemNotice(conversationId, `${updater} 更新了群公告`);
+  try {
+    await api.broadcastChannelNotice(conversationId, notice);
+  } catch (err) {
+    store.error = stringifyError(err);
+  }
 }
 function isChannelOwnerMember(member: ChannelMember | Peer) {
   return "is_owner" in member && member.is_owner;
@@ -3327,14 +3521,26 @@ async function dissolveActivePrivateChannel() {
   const conversation = activeConversation.value;
   if (!conversation?.is_private || !canManageActivePrivateChannel.value) return;
   if (typeof window !== "undefined" && !window.confirm(`确定解散「${conversation.title}」吗？解散后成员将无法继续在此频道聊天。`)) return;
-  await store.dissolvePrivateChannel(conversation.id, superAdminEnabled.value);
+  try {
+    await store.dissolvePrivateChannel(conversation.id, superAdminEnabled.value);
+    await store.selectConversation(DEFAULT_GROUP_ID);
+    activeSection.value = "chat";
+  } catch (err) {
+    store.error = stringifyError(err);
+  }
 }
 async function dissolveSelectedDeviceChannel() {
   const conversation = selectedDeviceChannelDetail.value;
   if (!conversation?.is_private || !canManageSelectedDeviceChannel.value) return;
   if (typeof window !== "undefined" && !window.confirm(`确定解散「${conversation.title}」吗？`)) return;
-  await store.dissolvePrivateChannel(conversation.id, superAdminEnabled.value);
-  selectedDeviceChannelId.value = "";
+  try {
+    await store.dissolvePrivateChannel(conversation.id, superAdminEnabled.value);
+    selectedDeviceChannelId.value = "";
+    await store.selectConversation(DEFAULT_GROUP_ID);
+    activeSection.value = "chat";
+  } catch (err) {
+    store.error = stringifyError(err);
+  }
 }
 async function startDirectChat(peer = selectedPeerDetail.value) {
   if (!peer) return;
@@ -3351,9 +3557,25 @@ async function adminRenameSelectedPeer() {
   const peer = selectedPeerDetail.value;
   const nickname = adminNicknameDraft.value.trim();
   if (!peer || !nickname) return;
-  const updated = await store.adminRenamePeer(peer.device_id, nickname);
+  const updated = await store.adminRenamePeer(peer.device_id, nickname, adminNicknameLockAfterIssue.value ? true : null);
   selectedPeerId.value = updated.device_id;
   adminNicknameDraft.value = updated.nickname;
+  adminNicknameLockAfterIssue.value = !!updated.nickname_locked;
+}
+async function adminUnlockSelectedPeerNickname() {
+  const peer = selectedPeerDetail.value;
+  const nickname = adminNicknameDraft.value.trim() || peer?.nickname || "";
+  if (!peer || !nickname) return;
+  const updated = await store.adminRenamePeer(peer.device_id, nickname, false);
+  selectedPeerId.value = updated.device_id;
+  adminNicknameDraft.value = updated.nickname;
+  adminNicknameLockAfterIssue.value = false;
+}
+async function adminUseSystemUsernameForSelectedPeer() {
+  const peer = selectedPeerDetail.value;
+  if (!peer) return;
+  const updated = await store.adminRenamePeer(peer.device_id, "", adminNicknameLockAfterIssue.value ? true : null, true);
+  selectedPeerId.value = updated.device_id;
 }
 function peerLastSeenLabel(peer?: Peer | null) {
   if (!peer?.last_seen_at) return "未知";
@@ -3364,10 +3586,45 @@ function peerLastSeenLabel(peer?: Peer | null) {
   return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(peer.last_seen_at));
 }
 function peerSupportsFullFeatures(peer?: Peer | null) {
-  return !!peer && peer.supports_chat !== false && peer.client_kind !== "lite";
+  return !!peer && peer.supports_chat !== false;
 }
 function peerClientKindLabel(peer?: Peer | null) {
-  return peer?.client_kind === "lite" || peer?.supports_chat === false ? "Lite 告警器" : "完整版";
+  return peer?.supports_chat === false ? "受限设备" : "完整版";
+}
+function peerBuildVersionLabel(peer?: Peer | null) {
+  return peer?.build_version?.trim() || "未知";
+}
+function peerBuildTimeLabel(peer?: Peer | null) {
+  const value = peer?.build_timestamp ?? 0;
+  if (!value) return "未知";
+  if (value >= 20_000_000_000_000) {
+    const text = String(value);
+    const date = new Date(
+      Number(text.slice(0, 4)),
+      Number(text.slice(4, 6)) - 1,
+      Number(text.slice(6, 8)),
+      Number(text.slice(8, 10)),
+      Number(text.slice(10, 12)),
+      Number(text.slice(12, 14)),
+    );
+    return `${value} · ${new Intl.DateTimeFormat("zh-CN", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    }).format(date)}`;
+  }
+  const millis = value > 10_000_000_000 ? value : value * 1000;
+  return `${value} · ${new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(millis))}`;
 }
 function readSavedSuperAdminEnabled() {
   if (typeof window === "undefined") return false;
@@ -3421,6 +3678,21 @@ function formatTime(value: number) {
     minute: "2-digit",
   }).format(new Date(value));
 }
+function formatDateTime(value?: number | null) {
+  if (!value) return "未知";
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+function updateNotesPreview(value?: string | null) {
+  const text = value?.trim() ?? "";
+  if (!text) return "暂无更新说明。";
+  return text.length > 260 ? `${text.slice(0, 260)}...` : text;
+}
 function formatDebugTime(value: number) {
   if (!value) return "";
   return new Intl.DateTimeFormat("zh-CN", {
@@ -3445,7 +3717,7 @@ function conversationTagType(conversation: Conversation) {
 function conversationSubtitle(conversation: Conversation) {
   if (conversation.kind === "group") return conversation.is_private ? "私有加密频道" : `${onlinePeers.value.length} 台设备在线`;
   const peer = conversationPeer(conversation);
-  if (peer && !peerSupportsFullFeatures(peer)) return "Lite 告警器";
+  if (peer && !peerSupportsFullFeatures(peer)) return "受限设备";
   return peer ? `${peer.address}:${peer.port}` : "设备未在列表中";
 }
 function messageClass(message: Message) {
@@ -3485,7 +3757,7 @@ async function selectMessageContextAction(key: string | number) {
   }
 }
 function peerSubtitle(peer: Peer) {
-  const kind = peerSupportsFullFeatures(peer) ? "完整版" : "Lite 告警器";
+  const kind = peerSupportsFullFeatures(peer) ? "完整版" : "受限设备";
   return `${kind} · ${peer.address}:${peer.port}`;
 }
 function memberSubtitle(member: ChannelMember | Peer) {
@@ -3519,13 +3791,29 @@ function statusIcon(status: Message["status"]) {
 function firstLetter(value: string | undefined) {
   return value?.trim().slice(0, 1).toUpperCase() || "L";
 }
+function stringifyError(err: unknown) {
+  return err instanceof Error ? err.message : String(err);
+}
 function avatarLabel(value: string | undefined | null, fallback?: string) {
   const text = value?.trim() || fallback?.trim() || "L";
   return text.slice(0, 1).toUpperCase();
 }
 function avatarImage(value: string | undefined | null) {
   const trimmed = value?.trim() ?? "";
-  return trimmed.startsWith("data:image/") ? trimmed : undefined;
+  if (!trimmed) return undefined;
+  if (trimmed.startsWith("data:image/") || trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return trimmed;
+  }
+  const payload = trimmed.includes(",") ? trimmed.split(",").pop()?.trim() ?? "" : trimmed;
+  if (!payload || !/^[A-Za-z0-9+/=_-]+$/.test(payload)) return undefined;
+  const mime = payload.startsWith("/9j/")
+    ? "image/jpeg"
+    : payload.startsWith("R0lG")
+      ? "image/gif"
+      : payload.startsWith("UklGR")
+        ? "image/webp"
+        : "image/png";
+  return `data:${mime};base64,${payload}`;
 }
 function peerAvatar(deviceId: string | undefined | null) {
   if (!deviceId) return undefined;
@@ -3556,7 +3844,7 @@ function handleProfileAvatarSelected(event: Event) {
     return;
   }
   if (file.size > AVATAR_MAX_BYTES) {
-    store.error = "头像图片不能超过 500KB";
+    store.error = "头像图片不能超过 5M";
     input.value = "";
     return;
   }
@@ -3694,6 +3982,42 @@ async function closeWindow() {
 <template>
   <NConfigProvider :theme-overrides="themeOverrides" :class="['provider-root', selectedTheme]">
     <NMessageProvider>
+      <NModal :show="forceUpdateRequired" preset="card" class="force-update-modal" :mask-closable="false" :closable="false">
+        <div class="force-update-panel">
+          <NTag type="error" :bordered="false">强制更新</NTag>
+          <h2>{{ updateInfo?.title || `LanChat ${updateInfo?.latestVersion ?? ''}` }}</h2>
+          <p>检测到当前版本低于最低支持版本，必须安装新版本后才能继续使用 LanChat。</p>
+          <div class="update-version-grid">
+            <span>当前版本</span><strong>{{ localVersionLabel }}</strong>
+            <span>最新版本</span><strong>{{ updateInfo?.latestVersion ?? "未知" }}</strong>
+            <span>最低支持</span><strong>{{ updateInfo?.minSupportedVersion ?? updateInfo?.latestVersion ?? "未知" }}</strong>
+          </div>
+          <pre class="update-notes">{{ updateNotesPreview(updateInfo?.notes) }}</pre>
+          <div class="force-update-actions">
+            <NButton type="primary" size="large" @click="openPreferredUpdateUrl">立即下载更新</NButton>
+            <NButton secondary size="large" @click="openReleasePage">打开 Release 页面</NButton>
+            <NButton quaternary size="large" @click="api.quitApp">退出软件</NButton>
+          </div>
+        </div>
+      </NModal>
+      <NModal v-model:show="updateReminderOpen" preset="card" class="update-reminder-modal" :mask-closable="false">
+        <div class="force-update-panel">
+          <NTag type="warning" :bordered="false">发现新版本</NTag>
+          <h2>{{ updateInfo?.title || `LanChat ${updateInfo?.latestVersion ?? ''}` }}</h2>
+          <p>有新版本可以安装，建议更新后继续使用。绿色版可以下载 ZIP 后解压覆盖当前目录。</p>
+          <div class="update-version-grid">
+            <span>当前版本</span><strong>{{ localVersionLabel }}</strong>
+            <span>最新版本</span><strong>{{ updateInfo?.latestVersion ?? "未知" }}</strong>
+            <span>检查时间</span><strong>{{ formatDateTime(updateInfo?.checkedAt) }}</strong>
+          </div>
+          <pre class="update-notes">{{ updateNotesPreview(updateInfo?.notes) }}</pre>
+          <div class="force-update-actions">
+            <NButton type="primary" size="large" @click="openPreferredUpdateUrl">下载更新</NButton>
+            <NButton secondary size="large" @click="openReleasePage">Release 页面</NButton>
+            <NButton quaternary size="large" @click="dismissUpdateReminder">稍后提醒</NButton>
+          </div>
+        </div>
+      </NModal>
       <div class="desktop-frame">
         <header class="app-titlebar" @mousedown="startWindowDrag">
           <div class="titlebar-brand">
@@ -3711,7 +4035,8 @@ async function closeWindow() {
           <NLayoutSider class="rail" :class="{ expanded: navExpanded }" :width="navExpanded ? 176 : 64" bordered>
             <div class="rail-inner">
               <button class="rail-action profile-entry" title="个人资料" @click="openSection('settings')">
-                <NAvatar class="self-avatar" :src="avatarImage(profile?.avatar)">{{ avatarLabel(profile?.avatar, profile?.nickname) }}</NAvatar>
+                <img v-if="avatarImage(profile?.avatar)" class="avatar-image self-avatar" :src="avatarImage(profile?.avatar)" alt="本机头像" />
+                <NAvatar v-else class="self-avatar">{{ avatarLabel(profile?.avatar, profile?.nickname) }}</NAvatar>
                 <span v-if="navExpanded" class="nav-label">{{ profile?.nickname ?? "个人资料" }}</span>
               </button>
               <button class="rail-collapse-toggle" :title="navExpanded ? '收起侧栏' : '展开侧栏'" @click="toggleNav">
@@ -3771,6 +4096,7 @@ async function closeWindow() {
                   >
                     <span class="nav-icon">⚙</span>
                     <span v-if="navExpanded" class="nav-label">设置</span>
+                    <span v-if="visibleUpdateAvailable" class="nav-upgrade-badge" :class="{ force: forceUpdateRequired }">{{ updateBadgeLabel }}</span>
                   </button>
                 </template>
                 设置
@@ -3811,7 +4137,8 @@ async function closeWindow() {
                       <NAvatar v-if="conversation.kind === 'group'" class="conversation-avatar">
                         {{ conversation.is_private ? "私" : "局" }}
                       </NAvatar>
-                      <NAvatar v-else class="conversation-avatar" :src="avatarImage(conversationAvatar(conversation))">{{ firstLetter(conversation.title) }}</NAvatar>
+                      <img v-else-if="avatarImage(conversationAvatar(conversation))" class="avatar-image conversation-avatar" :src="avatarImage(conversationAvatar(conversation))" alt="会话头像" />
+                      <NAvatar v-else class="conversation-avatar">{{ firstLetter(conversation.title) }}</NAvatar>
                     </template>
                     <template #description>
                       <div class="conversation-desc">
@@ -3933,7 +4260,8 @@ async function closeWindow() {
                 <NListItem v-for="peer in filteredPeers" :key="peer.device_id" class="device-item" :class="{ active: peer.device_id === selectedPeerId }" @click="openDevice(peer)">
                   <NThing :title="peer.nickname">
                     <template #avatar>
-                      <NAvatar class="peer-avatar" :src="avatarImage(peer.avatar)">{{ firstLetter(peer.nickname) }}</NAvatar>
+                      <img v-if="avatarImage(peer.avatar)" class="avatar-image peer-avatar" :src="avatarImage(peer.avatar)" alt="设备头像" />
+                      <NAvatar v-else class="peer-avatar">{{ firstLetter(peer.nickname) }}</NAvatar>
                     </template>
                     <template #description>
                       <div class="conversation-desc">
@@ -3977,7 +4305,8 @@ async function closeWindow() {
                       <span>{{ message.content }}</span>
                     </div>
                     <template v-else>
-                    <NAvatar class="message-avatar" :src="avatarImage(senderAvatar(message))">{{ firstLetter(senderName(message)) }}</NAvatar>
+                    <img v-if="avatarImage(senderAvatar(message))" class="avatar-image message-avatar" :src="avatarImage(senderAvatar(message))" alt="消息头像" />
+                    <NAvatar v-else class="message-avatar">{{ firstLetter(senderName(message)) }}</NAvatar>
                     <div class="message-stack">
                       <div class="message-meta">
                         <span class="message-meta-name">{{ messageSenderTitle(message) }}</span>
@@ -4107,21 +4436,21 @@ async function closeWindow() {
                     </div>
                   </div>
                   <div v-if="leftDdzSeat" class="table-player left">
-                    <NAvatar class="table-avatar">{{ firstLetter(leftDdzSeat.nickname) }}</NAvatar>
+                    <NAvatar class="table-avatar" :src="avatarImage(leftDdzSeat.avatar)">{{ firstLetter(leftDdzSeat.nickname) }}</NAvatar>
                     <div>
                       <div class="table-player-name">{{ leftDdzSeat.nickname }} <span v-if="seatTurnLabel(leftDdzSeat)" class="turn-countdown">{{ seatTurnLabel(leftDdzSeat) }}</span> <NTag v-if="leftDdzSeat.role === 'landlord'" size="small" :bordered="false" type="warning">地主</NTag></div>
                       <div class="table-player-meta">{{ leftDdzSeat.online ? "在线" : "离线" }} · 剩余 {{ leftDdzSeat.handCount }} 张</div>
                     </div>
                   </div>
                   <div v-if="rightDdzSeat" class="table-player right">
-                    <NAvatar class="table-avatar">{{ firstLetter(rightDdzSeat.nickname) }}</NAvatar>
+                    <NAvatar class="table-avatar" :src="avatarImage(rightDdzSeat.avatar)">{{ firstLetter(rightDdzSeat.nickname) }}</NAvatar>
                     <div>
                       <div class="table-player-name">{{ rightDdzSeat.nickname }} <span v-if="seatTurnLabel(rightDdzSeat)" class="turn-countdown">{{ seatTurnLabel(rightDdzSeat) }}</span> <NTag v-if="rightDdzSeat.role === 'landlord'" size="small" :bordered="false" type="warning">地主</NTag></div>
                       <div class="table-player-meta">{{ rightDdzSeat.online ? "在线" : "离线" }} · 剩余 {{ rightDdzSeat.handCount }} 张</div>
                     </div>
                   </div>
                   <div v-if="myDdzSeat" class="table-player me">
-                    <NAvatar class="table-avatar">{{ firstLetter(myDdzSeat.nickname) }}</NAvatar>
+                    <NAvatar class="table-avatar" :src="avatarImage(myDdzSeat.avatar)">{{ firstLetter(myDdzSeat.nickname) }}</NAvatar>
                     <div>
                       <div class="table-player-name">我 · {{ myDdzSeat.nickname }} <span v-if="seatTurnLabel(myDdzSeat)" class="turn-countdown">{{ seatTurnLabel(myDdzSeat) }}</span> <NTag v-if="myDdzSeat.role === 'landlord'" size="small" :bordered="false" type="warning">地主</NTag></div>
                       <div class="table-player-meta">{{ myDdzSeat.role === "landlord" ? "地主" : myDdzSeat.role === "farmer" ? "农民" : myDdzSeat.ready ? "已准备" : "未准备" }} · {{ isMyDdzTurn ? "轮到你" : "等待" }}</div>
@@ -4134,7 +4463,7 @@ async function closeWindow() {
                       <div class="settlement-list">
                         <div v-for="player in settlementRows" :key="player.deviceId" class="settlement-row" :class="{ winner: player.deviceId === activeDdzState?.winnerDeviceId }">
                           <div class="settlement-player">
-                            <NAvatar :size="28" class="table-avatar">{{ firstLetter(player.nickname) }}</NAvatar>
+                            <NAvatar :size="28" class="table-avatar" :src="avatarImage(player.avatar)">{{ firstLetter(player.nickname) }}</NAvatar>
                             <span>{{ player.deviceId === myDeviceId ? `我 · ${player.nickname}` : player.nickname }}</span>
                           </div>
                           <NTag v-if="player.role" size="small" :bordered="false" :type="player.role === 'landlord' ? 'warning' : 'info'">
@@ -4177,7 +4506,7 @@ async function closeWindow() {
                   <div class="minesweeper-race-area">
                     <aside class="minesweeper-player-list">
                       <div v-for="player in minesweeperSettlementRows" :key="player.deviceId" class="minesweeper-player" :class="{ me: player.deviceId === myDeviceId, winner: activeMinesweeperState?.winnerDeviceId === player.deviceId, lost: player.boardState?.status === 'lost' }">
-                        <NAvatar class="table-avatar">{{ firstLetter(player.nickname) }}</NAvatar>
+                        <NAvatar class="table-avatar" :src="avatarImage(player.avatar)">{{ firstLetter(player.nickname) }}</NAvatar>
                         <div class="minesweeper-player-main">
                           <strong>{{ player.deviceId === myDeviceId ? `我 · ${player.nickname}` : player.nickname }}</strong>
                           <span>{{ player.result }} · {{ minesweeperProgressPercent(player.boardState) }}% · {{ minesweeperElapsedLabel(player.boardState?.startedAt, player.boardState?.finishedAt) }}</span>
@@ -4230,7 +4559,7 @@ async function closeWindow() {
                       <div class="settlement-list">
                         <div v-for="player in minesweeperSettlementRows" :key="player.deviceId" class="settlement-row" :class="{ winner: activeMinesweeperState?.winnerDeviceId === player.deviceId }">
                           <div class="settlement-player">
-                            <NAvatar :size="28" class="table-avatar">{{ firstLetter(player.nickname) }}</NAvatar>
+                            <NAvatar :size="28" class="table-avatar" :src="avatarImage(player.avatar)">{{ firstLetter(player.nickname) }}</NAvatar>
                             <span>{{ player.deviceId === myDeviceId ? `我 · ${player.nickname}` : player.nickname }}</span>
                           </div>
                           <NTag size="small" :bordered="false" :type="player.boardState?.status === 'lost' ? 'error' : player.boardState?.status === 'won' ? 'success' : 'info'">{{ player.result }}</NTag>
@@ -4554,7 +4883,8 @@ async function closeWindow() {
               <div class="device-detail-shell">
                 <div v-if="selectedPeerDetail" class="device-profile-panel">
                   <div class="device-detail-head large">
-                    <NAvatar :size="56" class="peer-avatar">{{ firstLetter(selectedPeerDetail.nickname) }}</NAvatar>
+                    <img v-if="avatarImage(selectedPeerDetail.avatar)" class="avatar-image peer-avatar large-avatar" :src="avatarImage(selectedPeerDetail.avatar)" alt="设备头像" />
+                    <NAvatar v-else :size="56" class="peer-avatar">{{ firstLetter(selectedPeerDetail.nickname) }}</NAvatar>
                     <div>
                       <h3>{{ selectedPeerDetail.nickname }}</h3>
                       <p><span class="presence-dot" :class="{ online: selectedPeerDetail.online }"></span>{{ selectedPeerDetail.online ? "在线" : "离线" }}</p>
@@ -4565,7 +4895,10 @@ async function closeWindow() {
                     <span>端口</span><strong>{{ selectedPeerDetail.port }}</strong>
                     <span>MAC 地址</span><strong>{{ selectedPeerDetail.device_id }}</strong>
                     <span>昵称</span><strong>{{ selectedPeerDetail.nickname }}</strong>
+                    <span>昵称限制</span><strong>{{ selectedPeerDetail.nickname_locked ? "禁止本地修改" : "允许本地修改" }}</strong>
                     <span>客户端</span><strong>{{ peerClientKindLabel(selectedPeerDetail) }}</strong>
+                    <span>软件版本</span><strong>{{ peerBuildVersionLabel(selectedPeerDetail) }}</strong>
+                    <span>构建时间</span><strong>{{ peerBuildTimeLabel(selectedPeerDetail) }}</strong>
                     <span>支持能力</span><strong>{{ peerSupportsFullFeatures(selectedPeerDetail) ? "告警、聊天、频道、游戏、文件" : "桌宠告警" }}</strong>
                     <span>最近在线</span><strong>{{ peerLastSeenLabel(selectedPeerDetail) }}</strong>
                   </div>
@@ -4573,8 +4906,17 @@ async function closeWindow() {
                     <NFormItem label="超管修改设备昵称">
                       <NInput v-model:value="adminNicknameDraft" maxlength="24" clearable />
                     </NFormItem>
+                    <NCheckbox v-model:checked="adminNicknameLockAfterIssue">
+                      下发后禁止对方本地修改昵称
+                    </NCheckbox>
                     <NButton block type="warning" :disabled="!selectedPeerDetail.online || !adminNicknameDraft.trim()" @click="adminRenameSelectedPeer">
                       下发昵称修改
+                    </NButton>
+                    <NButton block secondary type="primary" :disabled="!selectedPeerDetail.online" @click="adminUseSystemUsernameForSelectedPeer">
+                      改为电脑登录用户名
+                    </NButton>
+                    <NButton block secondary type="warning" :disabled="!selectedPeerDetail.online || !adminNicknameDraft.trim()" @click="adminUnlockSelectedPeerNickname">
+                      解除昵称修改限制
                     </NButton>
                     <NText depth="3">目标设备在线时会立即更新本机昵称，并通过在线广播同步给局域网。</NText>
                   </div>
@@ -4610,7 +4952,8 @@ async function closeWindow() {
                       <NListItem v-for="member in selectedDeviceChannelMembers" :key="member.device_id" class="device-item" @click="openMemberDevice(member)">
                         <NThing :title="member.nickname" :description="memberSubtitle(member)">
                           <template #avatar>
-                            <NAvatar class="peer-avatar">{{ firstLetter(member.nickname) }}</NAvatar>
+                            <img v-if="avatarImage(member.avatar)" class="avatar-image peer-avatar" :src="avatarImage(member.avatar)" alt="成员头像" />
+                            <NAvatar v-else class="peer-avatar">{{ firstLetter(member.nickname) }}</NAvatar>
                           </template>
                           <template #header-extra>
                             <NTag v-if="'is_owner' in member && member.is_owner" size="small" :bordered="false" type="warning">群主</NTag>
@@ -4710,21 +5053,25 @@ async function closeWindow() {
                 <NCard v-if="settingsCategory === 'basic' && profile" title="本机资料" size="small">
                   <NSpace vertical>
                     <NFormItem label="昵称" :show-feedback="false">
-                      <NInput v-model:value="nicknameDraft" maxlength="24" clearable />
+                      <NInput v-model:value="nicknameDraft" maxlength="24" clearable :disabled="profile.nickname_locked" />
                     </NFormItem>
+                    <NAlert v-if="profile.nickname_locked" type="warning" :show-icon="false">
+                      管理员已禁止本机修改昵称，如需修改请联系管理员解除限制。
+                    </NAlert>
                     <NFormItem label="监听端口" :show-feedback="false">
                       <NInputNumber v-model:value="portDraft" :min="1" :max="65535" style="width: 100%" />
                     </NFormItem>
                     <NFormItem label="头像" :show-feedback="false">
                       <div class="profile-avatar-picker">
-                        <NAvatar :size="56" class="self-avatar" :src="avatarImage(avatarDraft)">{{ avatarLabel(avatarDraft, nicknameDraft) }}</NAvatar>
+                        <img v-if="avatarImage(avatarDraft)" class="avatar-image self-avatar large-avatar" :src="avatarImage(avatarDraft)" alt="头像预览" />
+                        <NAvatar v-else :size="56" class="self-avatar">{{ avatarLabel(avatarDraft, nicknameDraft) }}</NAvatar>
                         <div class="profile-avatar-actions">
                           <input ref="profileAvatarInput" class="hidden-file-input" type="file" accept="image/*" @change="handleProfileAvatarSelected" />
                           <NSpace :size="8">
                             <NButton size="small" secondary @click="triggerProfileAvatarSelect">选择图片</NButton>
                             <NButton size="small" quaternary @click="clearProfileAvatar">清除</NButton>
                           </NSpace>
-                          <NText depth="3">仅支持 500KB 以内图片，保存后会转成 base64 通知在线设备。</NText>
+                          <NText depth="3">仅支持 5M 以内图片，保存后会转成 base64 通知在线设备。</NText>
                         </div>
                       </div>
                     </NFormItem>
@@ -4740,6 +5087,36 @@ async function closeWindow() {
                     <NAlert v-if="networkRepairStatus" type="success" title="已打开修复窗口">
                       {{ networkRepairStatus }}
                     </NAlert>
+                  </NSpace>
+                </NCard>
+                <NCard v-if="settingsCategory === 'basic'" title="版本更新" size="small">
+                  <NSpace vertical>
+                    <div class="setting-switch-row">
+                      <div>
+                        <strong>自动检查更新</strong>
+                        <p>启动后每天最多检查一次；如果发现强制更新，会锁定主界面并提示下载安装。</p>
+                      </div>
+                      <NSwitch v-model:value="autoUpdateEnabled" />
+                    </div>
+                    <div class="update-info-grid">
+                      <span>当前版本</span><strong>{{ localVersionLabel }}</strong>
+                      <span>检查状态</span><NTag size="small" :type="updateStatusType" :bordered="false">{{ updateStatusLabel }}</NTag>
+                      <span>最新版本</span><strong>{{ updateInfo?.latestVersion ?? "未知" }}</strong>
+                      <span>上次检查</span><strong>{{ formatDateTime(updateInfo?.checkedAt) }}</strong>
+                    </div>
+                    <NAlert v-if="updateError" type="error" title="检查失败">{{ updateError }}</NAlert>
+                    <NAlert v-else-if="updateInfo?.forceRequired" type="error" title="必须更新">
+                      当前版本低于最低支持版本 {{ updateInfo.minSupportedVersion }}，请下载安装新版本后继续使用。
+                    </NAlert>
+                    <NAlert v-else-if="updateInfo?.updateAvailable" type="warning" title="发现新版本">
+                      {{ updateInfo.title }}
+                    </NAlert>
+                    <pre v-if="updateInfo" class="update-notes compact">{{ updateNotesPreview(updateInfo.notes) }}</pre>
+                    <NSpace>
+                      <NButton type="primary" :loading="updateChecking" @click="checkUpdates(true)">检查更新</NButton>
+                      <NButton secondary :disabled="!preferredUpdateUrl" @click="openPreferredUpdateUrl">下载更新</NButton>
+                      <NButton quaternary :disabled="!updateInfo" @click="openReleasePage">Release 页面</NButton>
+                    </NSpace>
                   </NSpace>
                 </NCard>
                 <NCard v-if="settingsCategory === 'pet'" title="桌宠与告警器" size="small" class="desktop-pet-settings-card">
@@ -4896,10 +5273,16 @@ async function closeWindow() {
                         </NSpace>
                       </NRadioGroup>
                     </NFormItem>
+                    <NFormItem label="发送快捷键" :show-feedback="false">
+                      <NSpace vertical :size="6" style="width: 100%">
+                        <NInput v-model:value="petSendHotkey" readonly clearable placeholder="点击后按下快捷键，例如 Ctrl+Alt+G" @keydown="captureDesktopPetSendHotkey" @clear="clearDesktopPetSendHotkey" />
+                        <NText depth="3">正常状态下按此快捷键会快速发起一次蹦迪报警。</NText>
+                      </NSpace>
+                    </NFormItem>
                     <NFormItem label="停止快捷键" :show-feedback="false">
                       <NSpace vertical :size="6" style="width: 100%">
-                        <NInput v-model:value="petStopHotkey" readonly clearable placeholder="点击后按下快捷键，例如 Ctrl+Alt+F" @keydown="captureDesktopPetStopHotkey" @clear="clearDesktopPetStopHotkey" />
-                        <NText depth="3">报警或蹦迪状态下按此快捷键会停止提醒；正常状态下按此快捷键会快速发起一次蹦迪报警。</NText>
+                        <NInput v-model:value="petStopHotkey" readonly clearable placeholder="点击后按下快捷键，例如 Ctrl+Alt+S" @keydown="captureDesktopPetStopHotkey" @clear="clearDesktopPetStopHotkey" />
+                        <NText depth="3">报警或蹦迪状态下按此快捷键会停止提醒，不再触发发送。</NText>
                       </NSpace>
                     </NFormItem>
                     <NButton v-if="petAlertEnabled" block type="error" @click="sendPetQuickAlert(petAlertMode)">发送一次测试告警</NButton>
@@ -5085,7 +5468,8 @@ async function closeWindow() {
                   <div v-else class="group-member-list">
                     <div v-for="member in normalizedChannelMembers" :key="member.device_id" class="group-member-row">
                       <button class="group-member-main" type="button" @click="openMemberDevice(member)">
-                        <NAvatar class="peer-avatar compact-avatar">{{ firstLetter(member.nickname) }}</NAvatar>
+                        <img v-if="avatarImage(member.avatar)" class="avatar-image peer-avatar compact-avatar" :src="avatarImage(member.avatar)" alt="成员头像" />
+                        <NAvatar v-else class="peer-avatar compact-avatar">{{ firstLetter(member.nickname) }}</NAvatar>
                         <span class="group-member-copy">
                           <strong>{{ member.device_id === profile?.device_id ? `我 · ${member.nickname}` : member.nickname }}</strong>
                           <small>
@@ -5181,7 +5565,7 @@ async function closeWindow() {
                     :class="{ active: selectedRecipientPeerIds.includes(peer.device_id) }"
                     type="button"
                     @click="toggleRecipientPeer(peer.device_id)"
-                  ><NAvatar class="peer-avatar">{{ firstLetter(peer.nickname) }}</NAvatar>
+                  ><img v-if="avatarImage(peer.avatar)" class="avatar-image peer-avatar" :src="avatarImage(peer.avatar)" alt="设备头像" /><NAvatar v-else class="peer-avatar">{{ firstLetter(peer.nickname) }}</NAvatar>
                     <span class="recipient-list-main">
                       <strong>{{ peer.nickname }}</strong>
                       <small>{{ peer.address }}:{{ peer.port }}</small>

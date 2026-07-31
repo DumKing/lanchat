@@ -789,6 +789,9 @@ pub struct DesktopPetSettings {
     pub position_y: Option<f32>,
     pub monitor_id: Option<String>,
     pub alert_mode: String,
+    #[serde(default = "default_send_hotkey")]
+    pub send_hotkey: String,
+    #[serde(default = "default_stop_hotkey")]
     pub stop_hotkey: String,
     pub random_move_enabled: bool,
     pub random_life_enabled: bool,
@@ -816,6 +819,14 @@ fn default_external_push_template() -> String {
     String::new()
 }
 
+fn default_send_hotkey() -> String {
+    "Ctrl+Alt+G".to_string()
+}
+
+fn default_stop_hotkey() -> String {
+    "Ctrl+Alt+S".to_string()
+}
+
 impl Default for DesktopPetSettings {
     fn default() -> Self {
         Self {
@@ -826,7 +837,8 @@ impl Default for DesktopPetSettings {
             position_y: None,
             monitor_id: None,
             alert_mode: "normal".to_string(),
-            stop_hotkey: "Ctrl+Alt+G".to_string(),
+            send_hotkey: default_send_hotkey(),
+            stop_hotkey: default_stop_hotkey(),
             random_move_enabled: true,
             random_life_enabled: true,
             disco_movement_mode: default_disco_movement_mode(),
@@ -842,10 +854,21 @@ impl Default for DesktopPetSettings {
 
 impl DesktopPetSettings {
     pub fn load(path: &Path) -> Self {
-        fs::read(path)
+        let mut settings: Self = fs::read(path)
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        settings.migrate_hotkeys();
+        settings
+    }
+
+    fn migrate_hotkeys(&mut self) {
+        if self.send_hotkey.trim().is_empty() {
+            self.send_hotkey = default_send_hotkey();
+        }
+        if self.stop_hotkey.trim().is_empty() || self.stop_hotkey == self.send_hotkey {
+            self.stop_hotkey = default_stop_hotkey();
+        }
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {

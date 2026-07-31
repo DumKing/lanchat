@@ -8,8 +8,8 @@ use crate::protocol::{
     QuickAlertFeedbackFrame, QuickAlertFrame, QuickAlertTrustResetFrame, WireFrame,
 };
 use crate::storage::{
-    ChannelMemberSeed, Message, MessageStatus, MessageType, Peer, Profile, Storage,
-    DEFAULT_GROUP_ID,
+    system_login_nickname, ChannelMemberSeed, Message, MessageStatus, MessageType, Peer, Profile,
+    Storage, DEFAULT_GROUP_ID,
 };
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use serde::{Deserialize, Serialize};
@@ -24,10 +24,19 @@ use uuid::Uuid;
 
 const SERVICE_TYPE: &str = "_lanchat._tcp.local.";
 const PROTOCOL_VERSION: u16 = 1;
+const BUILD_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    "+",
+    env!("LANCHAT_BUILD_TIMESTAMP")
+);
 const STATUS_BROADCAST_SECONDS: u64 = 30;
 const UDP_PRESENCE_PORT: u16 = 18146;
 const PEER_OFFLINE_TIMEOUT_MS: i64 = 75_000;
 const OFFLINE_SWEEP_SECONDS: u64 = 15;
+
+fn build_timestamp() -> i64 {
+    env!("LANCHAT_BUILD_TIMESTAMP").parse().unwrap_or(0)
+}
 
 #[derive(Clone)]
 struct PeerSender {
@@ -60,12 +69,11 @@ impl Network {
 
     pub fn new_with_client_kind(storage: Arc<Storage>, client_kind: &str) -> Self {
         let client_kind = normalize_client_kind(client_kind);
-        let supports_chat = client_kind != "lite";
         Self {
             storage,
             senders: Arc::new(Mutex::new(HashMap::new())),
             client_kind,
-            supports_chat,
+            supports_chat: true,
         }
     }
 
@@ -208,7 +216,7 @@ impl Network {
         frame: GameFrame,
     ) -> Result<(), String> {
         if !self.supports_chat {
-            return Err("Lite 版本不支持游戏".to_string());
+            return Err("当前客户端不支持游戏".to_string());
         }
         let wire_frame = WireFrame::Game(frame.clone());
         let delivered =
@@ -256,16 +264,20 @@ impl Network {
         app: AppHandle,
         target_device_id: String,
         nickname: String,
+        nickname_locked: Option<bool>,
+        use_system_username: bool,
     ) -> Result<(), String> {
         let target_device_id = normalize_device_id(&target_device_id);
         let nickname = nickname.trim().to_string();
-        if nickname.is_empty() {
+        if nickname.is_empty() && !use_system_username {
             return Err("昵称不能为空".to_string());
         }
         let profile = self.storage.get_or_create_profile()?;
         let frame = WireFrame::AdminNickname(AdminNicknameFrame {
             target_device_id: target_device_id.clone(),
             nickname: nickname.clone(),
+            nickname_locked,
+            use_system_username,
             issued_by_device_id: profile.device_id.clone(),
             issued_by_nickname: profile.nickname.clone(),
             created_at: chrono::Utc::now().timestamp_millis(),
@@ -288,7 +300,15 @@ impl Network {
             "info",
             "admin",
             "超管昵称修改已发送",
-            Some(format!("{} -> {}", target_device_id, nickname)),
+            Some(format!(
+                "{} -> {}",
+                target_device_id,
+                if use_system_username {
+                    "电脑登录用户名".to_string()
+                } else {
+                    nickname
+                }
+            )),
         );
         Ok(())
     }
@@ -663,7 +683,7 @@ impl Network {
 
     pub async fn send_message(&self, app: AppHandle, message: Message) -> Result<(), String> {
         if !self.supports_chat {
-            return Err("Lite 版本不支持聊天、频道和文件消息".to_string());
+            return Err("当前客户端不支持聊天、频道和文件消息".to_string());
         }
         let private_channel_key = self.storage.private_channel_key(&message.conversation_id)?;
         if let Some(_) = private_channel_key.as_ref() {
@@ -696,10 +716,10 @@ impl Network {
                     &app,
                     "warn",
                     "message",
-                    "阻止向 Lite 告警器发送私聊",
+                    "阻止向不支持聊天的设备发送私聊",
                     Some(peer.device_id.clone()),
                 );
-                return Err("该设备是 Lite 告警器，不支持聊天".to_string());
+                return Err("该设备不支持聊天".to_string());
             }
             if !peer.online {
                 emit_debug_log(
@@ -837,7 +857,7 @@ impl Network {
         if peer.supports_full_features() {
             Ok(())
         } else {
-            Err(format!("该设备是 Lite 告警器，不支持{capability}"))
+            Err(format!("该设备不支持{capability}"))
         }
     }
 
@@ -892,10 +912,13 @@ impl Network {
             device_id: profile.device_id.clone(),
             nickname: profile.nickname.clone(),
             avatar: profile.avatar.clone(),
+            nickname_locked: profile.nickname_locked,
             protocol_version: PROTOCOL_VERSION,
             listen_port: profile.listen_port,
             client_kind: self.client_kind.clone(),
             supports_chat: self.supports_chat,
+            build_version: BUILD_VERSION.to_string(),
+            build_timestamp: build_timestamp(),
             public_key: None,
         });
         writer
@@ -935,6 +958,9 @@ impl Network {
             last_seen_at: chrono::Utc::now().timestamp_millis(),
             client_kind: remote_hello.client_kind.clone(),
             supports_chat: remote_hello.supports_chat,
+            nickname_locked: remote_hello.nickname_locked,
+            build_version: remote_hello.build_version.clone(),
+            build_timestamp: remote_hello.build_timestamp,
         };
         self.storage.upsert_peer(&peer)?;
         emit_debug_log(
@@ -1014,8 +1040,8 @@ impl Network {
                             emit_debug_log(
                                 &read_app,
                                 "warn",
-                                "lite",
-                                "Lite 已忽略聊天消息",
+                                "client",
+                                "当前客户端已忽略聊天消息",
                                 Some(frame.message_id),
                             );
                             continue;
@@ -1138,8 +1164,8 @@ impl Network {
                             emit_debug_log(
                                 &read_app,
                                 "warn",
-                                "lite",
-                                "Lite 已忽略游戏消息",
+                                "client",
+                                "当前客户端已忽略游戏消息",
                                 Some(format!("{} {}", frame.game, frame.kind)),
                             );
                             continue;
@@ -1151,8 +1177,8 @@ impl Network {
                             emit_debug_log(
                                 &read_app,
                                 "warn",
-                                "lite",
-                                "Lite 已忽略私有频道邀请",
+                                "client",
+                                "当前客户端已忽略私有频道邀请",
                                 Some(frame.channel_id),
                             );
                             continue;
@@ -1208,8 +1234,8 @@ impl Network {
                             emit_debug_log(
                                 &read_app,
                                 "warn",
-                                "lite",
-                                "Lite 已忽略频道公告",
+                                "client",
+                                "当前客户端已忽略频道公告",
                                 Some(frame.conversation_id),
                             );
                             continue;
@@ -1231,8 +1257,8 @@ impl Network {
                             emit_debug_log(
                                 &read_app,
                                 "warn",
-                                "lite",
-                                "Lite 已忽略消息撤回",
+                                "client",
+                                "当前客户端已忽略消息撤回",
                                 Some(frame.message_id),
                             );
                             continue;
@@ -1298,32 +1324,43 @@ impl Network {
                     }
                     Ok(WireFrame::AdminNickname(frame)) => {
                         if normalize_device_id(&frame.target_device_id) == local_device_id {
-                            let requested = frame.nickname.trim().to_string();
+                            let requested = if frame.use_system_username {
+                                system_login_nickname()
+                            } else {
+                                frame.nickname.trim().to_string()
+                            };
                             if !requested.is_empty() {
-                                if let Ok(current) = read_storage.get_or_create_profile() {
-                                    if let Ok(updated) = read_storage.update_profile(
-                                        &requested,
-                                        current.listen_port,
-                                        current.avatar,
-                                    ) {
-                                        emit_debug_log(
-                                            &read_app,
-                                            "info",
-                                            "admin",
-                                            "收到超管昵称修改",
-                                            Some(format!(
-                                                "{} 设置为 {}",
-                                                frame.issued_by_nickname, updated.nickname
-                                            )),
-                                        );
-                                        read_app.emit("profile_updated", &updated).ok();
-                                        if let Some(sender) = &ack_sender {
-                                            sender
-                                                .send(WireFrame::PeerStatus(
-                                                    read_network.status_frame(&updated),
-                                                ))
-                                                .ok();
-                                        }
+                                if let Ok(updated) = read_storage
+                                    .apply_admin_nickname(&requested, frame.nickname_locked)
+                                {
+                                    emit_debug_log(
+                                        &read_app,
+                                        "info",
+                                        "admin",
+                                        "收到超管昵称修改",
+                                        Some(format!(
+                                            "{} 设置为 {}{}{}",
+                                            frame.issued_by_nickname,
+                                            updated.nickname,
+                                            if frame.use_system_username {
+                                                "（电脑登录用户名）"
+                                            } else {
+                                                ""
+                                            },
+                                            if updated.nickname_locked {
+                                                "，并禁止本机修改昵称"
+                                            } else {
+                                                ""
+                                            }
+                                        )),
+                                    );
+                                    read_app.emit("profile_updated", &updated).ok();
+                                    if let Some(sender) = &ack_sender {
+                                        sender
+                                            .send(WireFrame::PeerStatus(
+                                                read_network.status_frame(&updated),
+                                            ))
+                                            .ok();
                                     }
                                 }
                             }
@@ -1361,8 +1398,8 @@ impl Network {
                             emit_debug_log(
                                 &read_app,
                                 "warn",
-                                "lite",
-                                "Lite 已忽略频道管控",
+                                "client",
+                                "当前客户端已忽略频道管控",
                                 Some(frame.channel_id),
                             );
                             continue;
@@ -1666,8 +1703,11 @@ fn status_frame_with_capabilities(
         address: None,
         protocol_version: PROTOCOL_VERSION,
         listen_port: profile.listen_port,
+        nickname_locked: profile.nickname_locked,
         client_kind: normalize_client_kind(client_kind),
         supports_chat,
+        build_version: BUILD_VERSION.to_string(),
+        build_timestamp: build_timestamp(),
         updated_at: chrono::Utc::now().timestamp_millis(),
     }
 }
@@ -1689,18 +1729,20 @@ fn peer_from_status_at(frame: PeerStatusFrame, source_address: String, seen_at: 
         device_id: normalize_device_id(&frame.device_id),
         nickname: frame.nickname,
         avatar: frame.avatar,
+        nickname_locked: frame.nickname_locked,
         address: source_address,
         port: frame.listen_port,
         online: true,
         last_seen_at: seen_at,
         client_kind: frame.client_kind,
         supports_chat: frame.supports_chat,
+        build_version: frame.build_version,
+        build_timestamp: frame.build_timestamp,
     }
 }
 
 fn normalize_client_kind(value: &str) -> String {
     match value.trim().to_ascii_lowercase().as_str() {
-        "lite" => "lite".to_string(),
         _ => "full".to_string(),
     }
 }
@@ -1794,6 +1836,9 @@ fn start_mdns(app: AppHandle, network: Network) -> Result<(), String> {
                 last_seen_at: chrono::Utc::now().timestamp_millis(),
                 client_kind,
                 supports_chat,
+                nickname_locked: false,
+                build_version: String::new(),
+                build_timestamp: 0,
             };
             if network.storage.upsert_peer(&peer).is_ok() {
                 emit_debug_log(
@@ -1978,11 +2023,14 @@ mod tests {
                 device_id: "peer-b".to_string(),
                 nickname: "B".to_string(),
                 avatar: None,
+                nickname_locked: false,
                 address: Some("10.0.0.99".to_string()),
                 protocol_version: 1,
                 listen_port: 18145,
                 client_kind: "full".to_string(),
                 supports_chat: true,
+                build_version: "0.3.0+1".to_string(),
+                build_timestamp: 1,
                 updated_at: 1,
             },
             "192.168.1.22".to_string(),

@@ -42,7 +42,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
     () => messagesByConversation.value[activeConversationId.value] ?? [],
   );
 
-  const chatCapablePeers = computed(() => peers.value.filter((peer) => peer.supports_chat !== false && peer.client_kind !== "lite"));
+  const chatCapablePeers = computed(() => peers.value.filter((peer) => peer.supports_chat !== false));
   const onlinePeers = computed(() => chatCapablePeers.value.filter((peer) => peer.online));
   const totalUnread = computed(() => Object.values(unreadByConversation.value).reduce((sum, value) => sum + value, 0));
 
@@ -58,7 +58,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
     if (!conversation) return false;
     if (conversation.kind === "direct") {
       const peer = activePeer.value;
-      return peer?.online === true && peer.supports_chat !== false && peer.client_kind !== "lite";
+      return peer?.online === true && peer.supports_chat !== false;
     }
     if (channelMutedByConversation.value[conversation.id] === true) return false;
     const selfMember = channelMembersByConversation.value[conversation.id]?.find((member) => member.device_id === profile.value?.device_id);
@@ -383,10 +383,10 @@ export const useLanChatStore = defineStore("lanchat", () => {
     }
   }
 
-  async function adminRenamePeer(deviceId: string, nickname: string) {
+  async function adminRenamePeer(deviceId: string, nickname: string, nicknameLocked?: boolean | null, useSystemUsername = false) {
     error.value = "";
     try {
-      const peer = await api.adminRenamePeer(deviceId, nickname);
+      const peer = await api.adminRenamePeer(deviceId, nickname, nicknameLocked, useSystemUsername);
       upsertPeer(peer);
       await refreshConversations();
       return peer;
@@ -409,8 +409,8 @@ export const useLanChatStore = defineStore("lanchat", () => {
 
   async function openDirect(peer: Peer) {
     await refreshConversations();
-    if ((peer.supports_chat === false || peer.client_kind === "lite") && !conversations.value.some((item) => item.id === peer.device_id)) {
-      error.value = "该设备是 Lite 告警器，不支持聊天，暂无历史会话";
+    if (peer.supports_chat === false && !conversations.value.some((item) => item.id === peer.device_id)) {
+      error.value = "该设备不支持聊天，暂无历史会话";
       return;
     }
     await selectConversation(peer.device_id);
@@ -419,8 +419,8 @@ export const useLanChatStore = defineStore("lanchat", () => {
   async function sendActiveMessage() {
     if (!canSendActive.value) {
       const peer = activePeer.value;
-      error.value = peer?.supports_chat === false || peer?.client_kind === "lite"
-        ? "该设备是 Lite 告警器，不支持聊天"
+      error.value = peer?.supports_chat === false
+        ? "该设备不支持聊天"
         : "对方已离线，不能发送私聊消息";
       return;
     }
@@ -442,8 +442,8 @@ export const useLanChatStore = defineStore("lanchat", () => {
         error.value = "对方已离线，不能发送私聊消息";
         return null;
       }
-      if (peer.supports_chat === false || peer.client_kind === "lite") {
-        error.value = "该设备是 Lite 告警器，不支持聊天";
+      if (peer.supports_chat === false) {
+        error.value = "该设备不支持聊天";
         return null;
       }
     }
@@ -466,8 +466,8 @@ export const useLanChatStore = defineStore("lanchat", () => {
     if (!path) return;
     if (!canSendActive.value) {
       const peer = activePeer.value;
-      error.value = peer?.supports_chat === false || peer?.client_kind === "lite"
-        ? "该设备是 Lite 告警器，不支持文件消息"
+      error.value = peer?.supports_chat === false
+        ? "该设备不支持文件消息"
         : "对方已离线，不能发送私聊文件";
       return;
     }
@@ -484,8 +484,8 @@ export const useLanChatStore = defineStore("lanchat", () => {
   async function sendVoice(fileName: string, bytes: number[], durationMs: number) {
     if (!canSendActive.value) {
       const peer = activePeer.value;
-      error.value = peer?.supports_chat === false || peer?.client_kind === "lite"
-        ? "该设备是 Lite 告警器，不支持语音消息"
+      error.value = peer?.supports_chat === false
+        ? "该设备不支持语音消息"
         : "对方已离线，不能发送语音消息";
       return;
     }

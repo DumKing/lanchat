@@ -1,16 +1,19 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AdminAlertMode, AdminDiscoMode, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Peer, PetAlertMode, PlatformInfo, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem } from "../types/lanchat";
+import type { AdminAlertMode, AdminDiscoMode, AppVersionInfo, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Peer, PetAlertMode, PlatformInfo, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem, UpdateCheckResult } from "../types/lanchat";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, PetStatePlaybackConfig } from "../types/desktop-pet";
 
 export const api = {
   getPlatformInfo: () => invoke<PlatformInfo>("get_platform_info"),
+  getAppVersionInfo: () => invoke<AppVersionInfo>("get_app_version_info"),
+  checkForUpdate: () => invoke<UpdateCheckResult>("check_for_update"),
+  openUpdateUrl: (url: string) => invoke<void>("open_update_url", { url }),
   getProfile: () => invoke<Profile>("get_profile"),
   updateProfile: (nickname: string, listenPort: number, avatar?: string | null) =>
     invoke<Profile>("update_profile", { nickname, listenPort, avatar }),
   listPeers: () => invoke<Peer[]>("list_peers"),
   deletePeer: (deviceId: string) => invoke<void>("delete_peer", { deviceId }),
-  adminRenamePeer: (targetDeviceId: string, nickname: string) =>
-    invoke<Peer>("admin_rename_peer", { targetDeviceId, nickname }),
+  adminRenamePeer: (targetDeviceId: string, nickname: string, nicknameLocked?: boolean | null, useSystemUsername = false) =>
+    invoke<Peer>("admin_rename_peer", { targetDeviceId, nickname, nicknameLocked, useSystemUsername }),
   connectPeer: (address: string, port: number) =>
     invoke<Peer>("connect_peer", { address, port }),
   listConversations: () => invoke<Conversation[]>("list_conversations"),
@@ -76,6 +79,7 @@ export const api = {
   setDesktopPetEnabled: (enabled: boolean) => invoke<void>("set_desktop_pet_enabled", { enabled }),
   updateDesktopPetState: (petState: DesktopPetRuntimeState) =>
     invoke<void>("update_desktop_pet_state", { petState }),
+  registerDesktopPetSendHotkey: (hotkey: string) => invoke<void>("register_desktop_pet_send_hotkey", { hotkey }),
   registerDesktopPetStopHotkey: (hotkey: string) => invoke<void>("register_desktop_pet_stop_hotkey", { hotkey }),
   startMainWindowDrag: () => invoke<void>("start_main_window_drag"),
   minimizeMainWindow: () => invoke<void>("minimize_main_window"),

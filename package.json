@@ -1,11 +1,10 @@
 {
   "name": "lanchat",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:lite": "vite --config vite.lite.config.ts",
     "test:gomoku": "node scripts/test-gomoku-rules.mjs",
     "test:xiangqi": "node scripts/test-xiangqi-rules.mjs",
     "test:minesweeper": "node scripts/test-minesweeper-rules.mjs",
@@ -20,11 +19,8 @@
     "test:desktop-pet-runtime": "node scripts/test-desktop-pet-runtime.mjs",
     "test:avatar-profile": "node scripts/test-avatar-profile.mjs",
     "test:app-error-boundary": "node scripts/test-app-error-boundary.mjs",
-    "build": "vue-tsc --noEmit && vite build",
-    "build:lite": "vue-tsc --noEmit && vite build --config vite.lite.config.ts",
+    "build": "node scripts/write-build-timestamp.mjs && vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "tauri:build:lite": "tauri build --config src-tauri/tauri.lite.conf.json",
-    "tauri:build:all": "tauri build && tauri build --config src-tauri/tauri.lite.conf.json",
     "tauri": "tauri"
   },
   "dependencies": {

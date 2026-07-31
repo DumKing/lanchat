@@ -18,10 +18,25 @@ const DISCO_HOP_SECONDS: f32 = 0.72;
 const DISCO_HOPS_PER_LEG: i32 = 8;
 const DISCO_CROUCH_OUT_END: f32 = 0.25;
 const DISCO_LEAP_END: f32 = 0.78;
-const PET_CLICK_DRAG_THRESHOLD_SQ: f32 = 16.0;
+const PET_CLICK_DRAG_THRESHOLD_SQ: f32 = 196.0;
 const PET_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(420);
 const PET_SINGLE_CLICK_DELAY: Duration = Duration::from_millis(450);
 const PET_DOUBLE_CLICK_DISTANCE_SQ: f32 = 900.0;
+
+#[cfg(target_os = "windows")]
+fn system_ctrl_pressed() -> bool {
+    const VK_CONTROL: i32 = 0x11;
+    extern "system" {
+        fn GetAsyncKeyState(v_key: i32) -> i16;
+    }
+    unsafe { GetAsyncKeyState(VK_CONTROL) & 0x8000u16 as i16 != 0 }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn system_ctrl_pressed() -> bool {
+    false
+}
+
 fn native_pet_log(message: &str) {
     let path = std::env::temp_dir().join("lanchat-desktop-pet.log");
     if let Ok(mut file) = std::fs::OpenOptions::new()
@@ -970,8 +985,10 @@ impl DesktopPetApp {
 
     fn run_single_pet_click(&mut self, alert_active: bool) {
         if alert_active {
+            native_pet_log("single pet click resolved as stop_visuals");
             self.emit_action("stop_visuals", None);
         } else {
+            native_pet_log("single pet click resolved as open_main_window");
             self.transition_runtime(PetEvent::PointerInteract);
             self.emit_action("open_main_window", None);
         }
@@ -987,6 +1004,20 @@ impl DesktopPetApp {
         let alert_active = self.pending_single_click_alert_active;
         self.pending_single_click_at = None;
         self.run_single_pet_click(alert_active);
+    }
+
+    fn ctrl_pressed(ctx: &egui::Context) -> bool {
+        ctx.input(|input| input.modifiers.ctrl) || system_ctrl_pressed()
+    }
+
+    fn emit_pet_double_click_action(&mut self, ctx: &egui::Context) {
+        if Self::ctrl_pressed(ctx) {
+            native_pet_log("double pet click resolved as broadcast_disco_alert");
+            self.emit_action("broadcast_disco_alert", None);
+        } else {
+            native_pet_log("double pet click resolved as quick_alert");
+            self.emit_action("quick_alert", None);
+        }
     }
 
     fn handle_primary_pet_click(&mut self, ctx: &egui::Context, pos: Pos2, alert_active: bool) {
@@ -1005,12 +1036,9 @@ impl DesktopPetApp {
 
         if is_double_click {
             self.pending_single_click_at = None;
-            if ctx.input(|input| input.modifiers.ctrl) {
-                self.emit_action("broadcast_disco_alert", None);
-            } else {
-                self.emit_action("quick_alert", None);
-            }
+            self.emit_pet_double_click_action(ctx);
         } else {
+            native_pet_log("primary pet click scheduled");
             self.pending_single_click_at = Some(now);
             self.pending_single_click_alert_active = alert_active;
         }
@@ -1274,8 +1302,9 @@ impl eframe::App for DesktopPetApp {
                     center + Vec2::new(0.0, 5.0 * scale),
                     Vec2::new(138.0 * scale, 138.0 * scale),
                 );
+                let pet_hit_rect = pet_rect.expand(22.0 * scale);
                 let pet_response = ui.interact(
-                    pet_rect,
+                    pet_hit_rect,
                     ui.id().with("pet-body"),
                     egui::Sense::click_and_drag(),
                 );
@@ -1283,10 +1312,9 @@ impl eframe::App for DesktopPetApp {
                     self.pet_press_pos = pet_response.interact_pointer_pos();
                     self.pet_press_dragged = false;
                 }
-                let manually_dragging = pet_response.dragged();
-                if manually_dragging
-                    && pet_response.drag_delta().length_sq() > PET_CLICK_DRAG_THRESHOLD_SQ
-                {
+                let manually_dragging = pet_response.dragged()
+                    && pet_response.drag_delta().length_sq() > PET_CLICK_DRAG_THRESHOLD_SQ;
+                if manually_dragging {
                     self.pet_press_dragged = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
@@ -1297,10 +1325,22 @@ impl eframe::App for DesktopPetApp {
                     }
                 }
                 let alert_active = Self::alert_visual_active(runtime_state, &state);
+                let primary_released_in_pet = ctx.input(|input| {
+                    input.pointer.button_released(egui::PointerButton::Primary)
+                        && input
+                            .pointer
+                            .interact_pos()
+                            .is_some_and(|pos| pet_hit_rect.contains(pos))
+                });
                 if pet_response.secondary_clicked() {
                     self.pending_single_click_at = None;
+                    self.pet_press_dragged = false;
                     self.emit_action("configure_pet", None);
-                } else if pet_response.clicked() {
+                } else if pet_response.double_clicked_by(egui::PointerButton::Primary) {
+                    self.pending_single_click_at = None;
+                    self.pet_press_dragged = false;
+                    self.emit_pet_double_click_action(ctx);
+                } else if pet_response.clicked() || primary_released_in_pet {
                     let click_pos = pet_response
                         .interact_pointer_pos()
                         .or(self.pet_press_pos)
