@@ -346,23 +346,20 @@ const preferredUpdateUrl = computed(() => {
   }
   return info.downloads.releasePage || info.releaseUrl;
 });
-const forceUpdateRequired = computed(() => updateInfo.value?.forceRequired === true);
 const updateStatusLabel = computed(() => {
   const info = updateInfo.value;
   if (updateChecking.value) return "正在检查更新";
   if (!info) return "尚未检查";
-  if (info.forceRequired) return `必须更新到 ${info.latestVersion}`;
   if (info.updateAvailable) return `发现新版本 ${info.latestVersion}`;
   return "已是最新版本";
 });
 const updateStatusType = computed(() => {
-  if (forceUpdateRequired.value) return "error";
   if (updateInfo.value?.updateAvailable) return "warning";
   return "success";
 });
 const localVersionLabel = computed(() => appVersionInfo.value?.buildVersion ?? updateInfo.value?.current.buildVersion ?? "未知");
 const visibleUpdateAvailable = computed(() => updateInfo.value?.updateAvailable === true);
-const updateBadgeLabel = computed(() => (forceUpdateRequired.value ? "必升" : visibleUpdateAvailable.value ? "升级" : ""));
+const updateBadgeLabel = computed(() => (visibleUpdateAvailable.value ? "升级" : ""));
 const isRecording = ref(false);
 const recordingStartedAt = ref(0);
 let mediaRecorder: MediaRecorder | null = null;
@@ -1413,8 +1410,15 @@ function dismissUpdateReminder() {
     window.localStorage.setItem("lanchat-dismissed-update-reminder", updateReminderKey(info));
   }
 }
+function handleUpdateReminderShowChange(show: boolean) {
+  if (show) {
+    updateReminderOpen.value = true;
+  } else {
+    dismissUpdateReminder();
+  }
+}
 function maybeOpenUpdateReminder(info: UpdateCheckResult, manual = false) {
-  if (!info.updateAvailable || info.forceRequired) return;
+  if (!info.updateAvailable) return;
   if (!manual && readDismissedUpdateReminderKey() === updateReminderKey(info)) return;
   updateReminderOpen.value = true;
 }
@@ -3982,25 +3986,14 @@ async function closeWindow() {
 <template>
   <NConfigProvider :theme-overrides="themeOverrides" :class="['provider-root', selectedTheme]">
     <NMessageProvider>
-      <NModal :show="forceUpdateRequired" preset="card" class="force-update-modal" :mask-closable="false" :closable="false">
-        <div class="force-update-panel">
-          <NTag type="error" :bordered="false">强制更新</NTag>
-          <h2>{{ updateInfo?.title || `LanChat ${updateInfo?.latestVersion ?? ''}` }}</h2>
-          <p>检测到当前版本低于最低支持版本，必须安装新版本后才能继续使用 LanChat。</p>
-          <div class="update-version-grid">
-            <span>当前版本</span><strong>{{ localVersionLabel }}</strong>
-            <span>最新版本</span><strong>{{ updateInfo?.latestVersion ?? "未知" }}</strong>
-            <span>最低支持</span><strong>{{ updateInfo?.minSupportedVersion ?? updateInfo?.latestVersion ?? "未知" }}</strong>
-          </div>
-          <pre class="update-notes">{{ updateNotesPreview(updateInfo?.notes) }}</pre>
-          <div class="force-update-actions">
-            <NButton type="primary" size="large" @click="openPreferredUpdateUrl">立即下载更新</NButton>
-            <NButton secondary size="large" @click="openReleasePage">打开 Release 页面</NButton>
-            <NButton quaternary size="large" @click="api.quitApp">退出软件</NButton>
-          </div>
-        </div>
-      </NModal>
-      <NModal v-model:show="updateReminderOpen" preset="card" class="update-reminder-modal" :mask-closable="false">
+      <NModal
+        :show="updateReminderOpen"
+        preset="card"
+        class="update-reminder-modal"
+        :mask-closable="true"
+        closable
+        @update:show="handleUpdateReminderShowChange"
+      >
         <div class="force-update-panel">
           <NTag type="warning" :bordered="false">发现新版本</NTag>
           <h2>{{ updateInfo?.title || `LanChat ${updateInfo?.latestVersion ?? ''}` }}</h2>
@@ -4096,7 +4089,7 @@ async function closeWindow() {
                   >
                     <span class="nav-icon">⚙</span>
                     <span v-if="navExpanded" class="nav-label">设置</span>
-                    <span v-if="visibleUpdateAvailable" class="nav-upgrade-badge" :class="{ force: forceUpdateRequired }">{{ updateBadgeLabel }}</span>
+                    <span v-if="visibleUpdateAvailable" class="nav-upgrade-badge">{{ updateBadgeLabel }}</span>
                   </button>
                 </template>
                 设置
@@ -5094,7 +5087,7 @@ async function closeWindow() {
                     <div class="setting-switch-row">
                       <div>
                         <strong>自动检查更新</strong>
-                        <p>启动后每天最多检查一次；如果发现强制更新，会锁定主界面并提示下载安装。</p>
+                        <p>启动后每天最多检查一次；如果发现新版本，会弹出可关闭的更新提醒。</p>
                       </div>
                       <NSwitch v-model:value="autoUpdateEnabled" />
                     </div>
@@ -5105,9 +5098,6 @@ async function closeWindow() {
                       <span>上次检查</span><strong>{{ formatDateTime(updateInfo?.checkedAt) }}</strong>
                     </div>
                     <NAlert v-if="updateError" type="error" title="检查失败">{{ updateError }}</NAlert>
-                    <NAlert v-else-if="updateInfo?.forceRequired" type="error" title="必须更新">
-                      当前版本低于最低支持版本 {{ updateInfo.minSupportedVersion }}，请下载安装新版本后继续使用。
-                    </NAlert>
                     <NAlert v-else-if="updateInfo?.updateAvailable" type="warning" title="发现新版本">
                       {{ updateInfo.title }}
                     </NAlert>

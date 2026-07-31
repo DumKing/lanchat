@@ -130,10 +130,10 @@ jobs:
           cat > release-downloads/lanchat-update.json <<EOF
           {
             "version": "${VERSION}",
-            "force": true,
-            "min_supported_version": "${VERSION}",
+            "force": false,
+            "min_supported_version": "0.0.0",
             "title": "LanChat ${TAG}",
-            "notes": "这是强制升级版本。旧版本检测到该版本后必须更新才能继续使用。",
+            "notes": "发现新版本后会弹出更新提醒，用户可以关闭提醒后继续使用。",
             "downloads": {
               "windows_portable": "https://github.com/${{ github.repository }}/releases/download/${TAG}/lanchat-windows-portable.zip",
               "release_page": "https://github.com/${{ github.repository }}/releases/tag/${TAG}"
