@@ -49,6 +49,8 @@ export const api = {
     invoke<Message>("recall_message", { messageId }),
   sendFileMessage: (conversationId: string, path: string) =>
     invoke<Message>("send_file_message", { conversationId, path }),
+  sendPastedImageMessage: (conversationId: string, fileName: string, bytes: number[], mimeType: string) =>
+    invoke<Message>("send_pasted_image_message", { conversationId, fileName, bytes, mimeType }),
   sendVoiceMessage: (conversationId: string, fileName: string, bytes: number[], durationMs: number) =>
     invoke<Message>("send_voice_message", { conversationId, fileName, bytes, durationMs }),
   sendGameFrame: (targetDeviceId: string | null, frame: GameFrame) =>

@@ -28,6 +28,16 @@ function notifyAppError(error: unknown, source: string) {
   }));
 }
 
+function isIgnorableResizeObserverError(error: unknown) {
+  const message = error instanceof Error
+    ? error.message
+    : typeof error === "string"
+      ? error
+      : "";
+  return message === "ResizeObserver loop limit exceeded"
+    || message === "ResizeObserver loop completed with undelivered notifications.";
+}
+
 const app = createApp({
   render: () => h(AppErrorBoundary, null, { default: () => h(App) }),
 });
@@ -38,7 +48,12 @@ app.config.errorHandler = (error, _instance, info) => {
 
 window.addEventListener("error", (event) => {
   if (!(event instanceof ErrorEvent) || (!event.error && !event.message)) return;
-  notifyAppError(event.error ?? event.message, "浏览器运行时异常");
+  const error = event.error ?? event.message;
+  if (isIgnorableResizeObserverError(error)) {
+    event.preventDefault();
+    return;
+  }
+  notifyAppError(error, "浏览器运行时异常");
 });
 
 window.addEventListener("unhandledrejection", (event) => {

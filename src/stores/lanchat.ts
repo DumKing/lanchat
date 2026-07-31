@@ -481,6 +481,24 @@ export const useLanChatStore = defineStore("lanchat", () => {
     }
   }
 
+  async function sendPastedImage(fileName: string, bytes: number[], mimeType: string) {
+    if (!canSendActive.value) {
+      const peer = activePeer.value;
+      error.value = peer?.supports_chat === false
+        ? "该设备不支持图片消息"
+        : "对方已离线，不能发送图片";
+      return;
+    }
+    error.value = "";
+    try {
+      const message = await api.sendPastedImageMessage(activeConversationId.value, fileName, bytes, mimeType);
+      appendOrUpdateMessage(message);
+      await refreshConversations();
+    } catch (err) {
+      error.value = stringifyError(err);
+    }
+  }
+
   async function sendVoice(fileName: string, bytes: number[], durationMs: number) {
     if (!canSendActive.value) {
       const peer = activePeer.value;
@@ -717,6 +735,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
     sendActiveMessage,
     sendMessageToConversation,
     sendFile,
+    sendPastedImage,
     sendVoice,
     sendGameFrame,
     sendQuickAlert,
