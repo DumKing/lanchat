@@ -959,6 +959,7 @@ impl Network {
         let peer = Peer {
             device_id: normalize_device_id(&remote_hello.device_id),
             nickname: remote_hello.nickname.clone(),
+            note: None,
             avatar: remote_hello.avatar.clone(),
             address,
             port: if remote_hello.listen_port > 0 {
@@ -1751,6 +1752,7 @@ fn peer_from_status_at(frame: PeerStatusFrame, source_address: String, seen_at: 
     Peer {
         device_id: normalize_device_id(&frame.device_id),
         nickname: frame.nickname,
+        note: None,
         avatar: frame.avatar,
         nickname_locked: frame.nickname_locked,
         address: source_address,
@@ -1852,6 +1854,7 @@ fn start_mdns(app: AppHandle, network: Network) -> Result<(), String> {
             let peer = Peer {
                 device_id: normalize_device_id(device_id),
                 nickname,
+                note: None,
                 avatar: None,
                 address: address.clone(),
                 port: info.get_port(),

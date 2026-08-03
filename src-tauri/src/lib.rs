@@ -54,6 +54,33 @@ const LOCAL_BUILD_VERSION: &str = concat!(
     env!("LANCHAT_BUILD_TIMESTAMP")
 );
 
+const PREVIEW_MEDIA_CACHE_MAX_BYTES: usize = 30 * 1024 * 1024;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviewMediaCacheInfo {
+    directory: String,
+    file_count: u64,
+    total_bytes: u64,
+}
+
+#[cfg(test)]
+mod preview_media_cache_tests {
+    use super::*;
+
+    #[test]
+    fn preview_cache_filename_uses_only_a_safe_image_extension() {
+        assert_eq!(
+            preview_cache_file_name("message-1", "photo.JPG"),
+            "message-1.jpg"
+        );
+        assert_eq!(
+            preview_cache_file_name("message:2", "unknown.exe"),
+            "message_2.bin"
+        );
+    }
+}
+
 static LANCHAT_INSTANCE_LOCK: OnceLock<File> = OnceLock::new();
 
 pub fn run_desktop_pet_process() {
@@ -639,6 +666,18 @@ fn list_peers(state: State<'_, AppState>) -> Result<Vec<Peer>, String> {
     state.storage.list_peers()
 }
 #[tauri::command]
+fn update_peer_note(
+    state: State<'_, AppState>,
+    device_id: String,
+    note: String,
+) -> Result<Peer, String> {
+    state.storage.update_peer_note(&device_id, &note)?;
+    state
+        .storage
+        .get_peer(&device_id)?
+        .ok_or_else(|| "保存备注后未找到设备".to_string())
+}
+#[tauri::command]
 fn delete_peer(state: State<'_, AppState>, device_id: String) -> Result<(), String> {
     if device_id.trim().is_empty() {
         return Err("请选择要删除的设备".to_string());
@@ -1190,6 +1229,132 @@ async fn send_pasted_image_message(
         Some(file_meta),
     )
     .await
+}
+
+fn preview_media_cache_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let root = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|err| format!("读取图片缓存目录失败：{err}"))?;
+    Ok(root.join("cache").join("preview-media"))
+}
+
+fn preview_cache_file_name(message_id: &str, file_name: &str) -> String {
+    let safe_id: String = message_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let extension = Path::new(file_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .filter(|value| {
+            matches!(
+                value.as_str(),
+                "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp"
+            )
+        })
+        .unwrap_or_else(|| "bin".to_string());
+    format!(
+        "{}.{extension}",
+        if safe_id.is_empty() {
+            "preview"
+        } else {
+            &safe_id
+        }
+    )
+}
+
+fn preview_media_cache_info(app: &tauri::AppHandle) -> Result<PreviewMediaCacheInfo, String> {
+    let directory = preview_media_cache_dir(app)?;
+    let mut file_count = 0_u64;
+    let mut total_bytes = 0_u64;
+    if directory.exists() {
+        for entry in
+            std::fs::read_dir(&directory).map_err(|err| format!("读取图片缓存失败：{err}"))?
+        {
+            let entry = entry.map_err(|err| format!("读取图片缓存项失败：{err}"))?;
+            let metadata = entry
+                .metadata()
+                .map_err(|err| format!("读取图片缓存信息失败：{err}"))?;
+            if metadata.is_file() {
+                file_count += 1;
+                total_bytes += metadata.len();
+            }
+        }
+    }
+    Ok(PreviewMediaCacheInfo {
+        directory: directory.to_string_lossy().to_string(),
+        file_count,
+        total_bytes,
+    })
+}
+
+#[tauri::command]
+async fn cache_preview_media(
+    app: tauri::AppHandle,
+    message_id: String,
+    url: String,
+    file_name: String,
+) -> Result<String, String> {
+    let url = url.trim();
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("图片预览地址无效".to_string());
+    }
+    let directory = preview_media_cache_dir(&app)?;
+    std::fs::create_dir_all(&directory).map_err(|err| format!("创建图片缓存目录失败：{err}"))?;
+    let target = directory.join(preview_cache_file_name(&message_id, &file_name));
+    if target.is_file() {
+        return Ok(target.to_string_lossy().to_string());
+    }
+    let response = reqwest::get(url)
+        .await
+        .map_err(|err| format!("下载图片预览失败：{err}"))?;
+    if !response.status().is_success() {
+        return Err(format!("下载图片预览失败：HTTP {}", response.status()));
+    }
+    if response.content_length().unwrap_or(0) > PREVIEW_MEDIA_CACHE_MAX_BYTES as u64 {
+        return Err("图片预览超过 30MB，未缓存到本机".to_string());
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|err| format!("读取图片预览失败：{err}"))?;
+    if bytes.len() > PREVIEW_MEDIA_CACHE_MAX_BYTES {
+        return Err("图片预览超过 30MB，未缓存到本机".to_string());
+    }
+    let temporary = target.with_extension("downloading");
+    std::fs::write(&temporary, &bytes).map_err(|err| format!("写入图片缓存失败：{err}"))?;
+    std::fs::rename(&temporary, &target).map_err(|err| format!("完成图片缓存失败：{err}"))?;
+    Ok(target.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn get_preview_media_cache_info(app: tauri::AppHandle) -> Result<PreviewMediaCacheInfo, String> {
+    preview_media_cache_info(&app)
+}
+
+#[tauri::command]
+fn clear_preview_media_cache(app: tauri::AppHandle) -> Result<PreviewMediaCacheInfo, String> {
+    let directory = preview_media_cache_dir(&app)?;
+    if directory.exists() {
+        for entry in
+            std::fs::read_dir(&directory).map_err(|err| format!("读取图片缓存失败：{err}"))?
+        {
+            let entry = entry.map_err(|err| format!("读取图片缓存项失败：{err}"))?;
+            if entry.path().is_file() {
+                std::fs::remove_file(entry.path())
+                    .map_err(|err| format!("清理图片缓存失败：{err}"))?;
+            }
+        }
+    }
+    preview_media_cache_info(&app)
 }
 
 #[tauri::command]
@@ -2230,6 +2395,7 @@ pub fn run() {
             get_profile,
             update_profile,
             list_peers,
+            update_peer_note,
             delete_peer,
             admin_rename_peer,
             connect_peer,
@@ -2251,6 +2417,9 @@ pub fn run() {
             recall_message,
             send_file_message,
             send_pasted_image_message,
+            cache_preview_media,
+            get_preview_media_cache_info,
+            clear_preview_media_cache,
             send_voice_message,
             send_game_frame,
             send_quick_alert,

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AdminAlertMode, AdminDiscoMode, AppVersionInfo, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Peer, PetAlertMode, PlatformInfo, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem, UpdateCheckResult } from "../types/lanchat";
+import type { AdminAlertMode, AdminDiscoMode, AppVersionInfo, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem, UpdateCheckResult } from "../types/lanchat";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, PetStatePlaybackConfig } from "../types/desktop-pet";
 
 export const api = {
@@ -11,6 +11,7 @@ export const api = {
   updateProfile: (nickname: string, listenPort: number, avatar?: string | null) =>
     invoke<Profile>("update_profile", { nickname, listenPort, avatar }),
   listPeers: () => invoke<Peer[]>("list_peers"),
+  updatePeerNote: (deviceId: string, note: string) => invoke<Peer>("update_peer_note", { deviceId, note }),
   deletePeer: (deviceId: string) => invoke<void>("delete_peer", { deviceId }),
   adminRenamePeer: (targetDeviceId: string, nickname: string, nicknameLocked?: boolean | null, useSystemUsername = false) =>
     invoke<Peer>("admin_rename_peer", { targetDeviceId, nickname, nicknameLocked, useSystemUsername }),
@@ -51,6 +52,10 @@ export const api = {
     invoke<Message>("send_file_message", { conversationId, path }),
   sendPastedImageMessage: (conversationId: string, fileName: string, bytes: number[], mimeType: string) =>
     invoke<Message>("send_pasted_image_message", { conversationId, fileName, bytes, mimeType }),
+  cachePreviewMedia: (messageId: string, url: string, fileName: string) =>
+    invoke<string>("cache_preview_media", { messageId, url, fileName }),
+  getPreviewMediaCacheInfo: () => invoke<PreviewMediaCacheInfo>("get_preview_media_cache_info"),
+  clearPreviewMediaCache: () => invoke<PreviewMediaCacheInfo>("clear_preview_media_cache"),
   sendVoiceMessage: (conversationId: string, fileName: string, bytes: number[], durationMs: number) =>
     invoke<Message>("send_voice_message", { conversationId, fileName, bytes, durationMs }),
   sendGameFrame: (targetDeviceId: string | null, frame: GameFrame) =>

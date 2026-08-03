@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import { api } from "../services/tauri-api";
 import { registerLanChatEvents } from "../services/event-bus";
 import type { AdminAlertMode, AdminDiscoMode, ChannelMember, ChannelNoticePayload, Conversation, DebugLog, GameFrame, Message, Peer, PetAlertMode, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset } from "../types/lanchat";
+import { sameDeviceId, sortPeersForDisplay } from "../utils/peerPresentation";
 
 export const DEFAULT_GROUP_ID = "lan-room";
 
@@ -50,7 +51,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
     const conversation = activeConversation.value;
     if (!conversation || conversation.kind !== "direct") return null;
     const peerId = conversation.peer_device_id ?? conversation.id;
-    return peers.value.find((peer) => peer.device_id === peerId) ?? null;
+    return peers.value.find((peer) => sameDeviceId(peer.device_id, peerId)) ?? null;
   });
 
   const canSendActive = computed(() => {
@@ -61,8 +62,8 @@ export const useLanChatStore = defineStore("lanchat", () => {
       return peer?.online === true && peer.supports_chat !== false;
     }
     if (channelMutedByConversation.value[conversation.id] === true) return false;
-    const selfMember = channelMembersByConversation.value[conversation.id]?.find((member) => member.device_id === profile.value?.device_id);
-    return selfMember?.muted !== true;
+    const selfMember = channelMembersByConversation.value[conversation.id]?.find((member) => sameDeviceId(member.device_id, profile.value?.device_id));
+    return !!selfMember && selfMember.muted !== true;
   });
 
   async function initialize() {
@@ -76,7 +77,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
       await registerLanChatEvents({
         onPeerOnline(peer) {
           pushDebugLog({ ts: Date.now(), level: "info", scope: "frontend", message: "收到 peer_online 事件", detail: `${peer.nickname} ${peer.address}:${peer.port}` });
-          const previous = peers.value.find((item) => item.device_id === peer.device_id);
+          const previous = peers.value.find((item) => sameDeviceId(item.device_id, peer.device_id));
           upsertPeer(peer);
           if (!previous || !previous.online) {
             void addSystemNotice(DEFAULT_GROUP_ID, `${peer.nickname} 上线了`);
@@ -89,10 +90,10 @@ export const useLanChatStore = defineStore("lanchat", () => {
         },
         onPeerOffline(deviceId) {
           pushDebugLog({ ts: Date.now(), level: "warn", scope: "frontend", message: "收到 peer_offline 事件", detail: deviceId });
-          const previous = peers.value.find((peer) => peer.device_id === deviceId);
-          peers.value = peers.value.map((peer) =>
-            peer.device_id === deviceId ? { ...peer, online: false } : peer,
-          );
+          const previous = peers.value.find((peer) => sameDeviceId(peer.device_id, deviceId));
+          peers.value = sortPeersForDisplay(peers.value.map((peer) =>
+            sameDeviceId(peer.device_id, deviceId) ? { ...peer, online: false } : peer,
+          ));
           if (previous?.online) {
             void addSystemNotice(DEFAULT_GROUP_ID, `${previous.nickname} 下线了`);
           }
@@ -179,7 +180,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
   }
   async function refreshPeers() {
     const next = await api.listPeers();
-    peers.value = dedupePeers(next);
+    peers.value = sortPeersForDisplay(dedupePeers(next));
     pushDebugLog({ ts: Date.now(), level: "info", scope: "frontend", message: "刷新设备列表", detail: `${peers.value.filter((peer) => peer.online).length}/${peers.value.length} 在线` });
   }
 
@@ -419,9 +420,11 @@ export const useLanChatStore = defineStore("lanchat", () => {
   async function sendActiveMessage() {
     if (!canSendActive.value) {
       const peer = activePeer.value;
-      error.value = peer?.supports_chat === false
-        ? "该设备不支持聊天"
-        : "对方已离线，不能发送私聊消息";
+      error.value = activeConversation.value?.kind === "group"
+        ? "你不是该频道成员，或当前已被禁言"
+        : peer?.supports_chat === false
+          ? "该设备不支持聊天"
+          : "对方已离线，不能发送私聊消息";
       return;
     }
     const content = draft.value.trim();
@@ -437,7 +440,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
     const targetConversation = conversations.value.find((item) => item.id === conversationId);
     if (targetConversation?.kind === "direct") {
       const peerId = targetConversation.peer_device_id ?? targetConversation.id;
-      const peer = peers.value.find((item) => item.device_id === peerId);
+      const peer = peers.value.find((item) => sameDeviceId(item.device_id, peerId));
       if (peer?.online !== true) {
         error.value = "对方已离线，不能发送私聊消息";
         return null;
@@ -626,18 +629,23 @@ export const useLanChatStore = defineStore("lanchat", () => {
   }
   function upsertPeer(peer: Peer) {
     const endpoint = `${peer.address}:${peer.port}`;
-    const next = peers.value.filter((item) => item.device_id !== peer.device_id && `${item.address}:${item.port}` !== endpoint);
-    next.push(peer);
-    peers.value = dedupePeers(next).sort((a, b) => Number(b.online) - Number(a.online) || b.last_seen_at - a.last_seen_at || a.nickname.localeCompare(b.nickname));
+    const currentIndex = peers.value.findIndex((item) => sameDeviceId(item.device_id, peer.device_id));
+    const existing = currentIndex >= 0 ? peers.value[currentIndex] : undefined;
+    const next = peers.value.filter((item) => sameDeviceId(item.device_id, peer.device_id) || `${item.address}:${item.port}` !== endpoint);
+    const normalized = { ...peer, note: peer.note ?? existing?.note ?? null };
+    if (currentIndex >= 0) {
+      next[currentIndex] = normalized;
+      peers.value = sortPeersForDisplay(dedupePeers(next));
+      return;
+    }
+    peers.value = sortPeersForDisplay(dedupePeers([...next, normalized]));
   }
 
   function dedupePeers(items: Peer[]) {
     const seenIds = new Set<string>();
     const seenEndpoints = new Set<string>();
-    return [...items]
-      .sort((a, b) => Number(b.online) - Number(a.online) || b.last_seen_at - a.last_seen_at)
-      .filter((peer) => {
-        const idKey = peer.device_id.trim().toLowerCase();
+    return [...items].filter((peer) => {
+        const idKey = peer.device_id.trim().toLowerCase().replace(/[:-]/g, "");
         const endpointKey = `${peer.address}:${peer.port}`;
         if (seenIds.has(idKey) || seenEndpoints.has(endpointKey)) return false;
         seenIds.add(idKey);
@@ -689,6 +697,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
     activeConversation,
     activeMessages,
     onlinePeers,
+    chatCapablePeers,
     activePeer,
     canSendActive,
     loading,
@@ -728,6 +737,16 @@ export const useLanChatStore = defineStore("lanchat", () => {
     addSystemNotice,
     recallMessage,
     saveProfile,
+    async updatePeerNote(deviceId: string, note: string) {
+      const updated = await api.updatePeerNote(deviceId, note);
+      const index = peers.value.findIndex((peer) => sameDeviceId(peer.device_id, updated.device_id));
+      if (index >= 0) {
+        const next = [...peers.value];
+        next[index] = { ...next[index], ...updated };
+        peers.value = sortPeersForDisplay(dedupePeers(next));
+      }
+      return updated;
+    },
     deletePeer,
     adminRenamePeer,
     connectManualPeer,
