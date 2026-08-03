@@ -40,6 +40,7 @@ import {
 } from "naive-ui";
 import { storeToRefs } from "pinia";
 import { api } from "./services/tauri-api";
+import ChatComposerInput from "./components/ChatComposerInput.vue";
 import { DEFAULT_GROUP_ID, useLanChatStore } from "./stores/lanchat";
 import { useDesktopPetStore } from "./stores/desktopPet";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, ExternalPushConfig, ExternalPushKind, PetPackageSource, PetStateKind, PetStatePlaybackConfig } from "./types/desktop-pet";
@@ -52,6 +53,7 @@ import { MINESWEEPER_DIFFICULTIES, createMinesweeperLeaderboardRecord, difficult
 import { formatWinRate, incrementGameStats, recordsForGame, upsertGameStatsRecords, type GameStatsRecord, type RankedGameType } from "./games/gameLeaderboard";
 import { createGameRoomShell, gameDefinitionOf, gameRegistry, type GameRoomShell, type GameType } from "./games/registry";
 import { alertTemperature, alertTruthScore, senderCredibility } from "./utils/alertCredibility";
+import { detectMentionKind, trayConversationTitle, type MentionKind } from "./utils/messageMentions";
 type UiThemeKey = "theme-dingtalk" | "theme-work" | "theme-lan" | "theme-light";
 type MainSection = "chat" | "devices" | "games" | "alerts" | "settings";
 type RecipientPickerMode = "gameInvite" | "privateChannelCreate" | "privateChannelInvite";
@@ -321,6 +323,10 @@ const messagePane = ref<HTMLElement | null>(null);
 const roomChatPane = ref<HTMLElement | null>(null);
 const mentionPickerOpen = ref(false);
 const mentionSearch = ref("");
+type MentionNotice = { messageId: string; kind: MentionKind; createdAt: number };
+const mentionNoticesByConversation = ref<Record<string, MentionNotice[]>>({});
+const highlightedMentionMessageId = ref("");
+let mentionHighlightTimer: number | null = null;
 const platformInfo = ref<PlatformInfo | null>(null);
 const nicknameDraft = ref("");
 const portDraft = ref(18145);
@@ -513,6 +519,8 @@ const pickerPeerOptions = computed(() => {
     return true;
   });
 });
+const activeMentionNotices = computed(() => mentionNoticesByConversation.value[activeConversationId.value] ?? []);
+const activeMentionLabel = computed(() => activeMentionNotices.value[0]?.kind === "all" ? "@所有人" : "有人@我");
 const pickerConversationOptions = computed(() => sortedConversations.value.filter((conversation) => {
   if (recipientPickerMode.value !== "gameInvite") return false;
   return conversation.kind === "group";
@@ -920,7 +928,7 @@ function buildTrayAttentionItems(): TrayAttentionItem[] {
     .map((conversation) => ({
       id: conversation.id,
       kind: "chat",
-      title: conversation.title,
+      title: trayConversationTitle(conversation.title, conversation.kind),
       count: unreadByConversation.value[conversation.id] ?? 0,
     }))
     .filter((item) => item.count > 0);
@@ -1108,6 +1116,41 @@ async function removeExternalPushConfig(id: string) {
     externalPushConfigs: (settings.externalPushConfigs ?? []).filter((config) => config.id !== id),
   });
 }
+function registerIncomingMention(message: Message) {
+  const conversation = conversations.value.find((item) => item.id === message.conversation_id);
+  if (conversation?.kind !== "group" || message.message_type !== "text") return;
+  const kind = detectMentionKind(message.content, profile.value?.nickname ?? "");
+  if (!kind) return;
+  const current = mentionNoticesByConversation.value[message.conversation_id] ?? [];
+  if (current.some((item) => item.messageId === message.id)) return;
+  mentionNoticesByConversation.value = {
+    ...mentionNoticesByConversation.value,
+    [message.conversation_id]: [...current, { messageId: message.id, kind, createdAt: message.created_at }],
+  };
+}
+function conversationMentionLabel(conversation: Conversation) {
+  const notices = mentionNoticesByConversation.value[conversation.id] ?? [];
+  const latest = notices[notices.length - 1];
+  if (!latest) return "";
+  return latest.kind === "all" ? "@所有人" : "有人@我";
+}
+async function jumpToActiveMention() {
+  const target = activeMentionNotices.value[0];
+  if (!target) return;
+  await nextTick();
+  const element = document.getElementById(`message-${target.messageId}`);
+  element?.scrollIntoView({ behavior: "smooth", block: "center" });
+  highlightedMentionMessageId.value = target.messageId;
+  if (mentionHighlightTimer !== null) window.clearTimeout(mentionHighlightTimer);
+  mentionHighlightTimer = window.setTimeout(() => {
+    highlightedMentionMessageId.value = "";
+    mentionHighlightTimer = null;
+  }, 1800);
+  mentionNoticesByConversation.value = {
+    ...mentionNoticesByConversation.value,
+    [activeConversationId.value]: activeMentionNotices.value.filter((item) => item.messageId !== target.messageId),
+  };
+}
 async function checkUpdates(manual = false) {
   updateChecking.value = true;
   updateError.value = "";
@@ -1234,6 +1277,10 @@ onUnmounted(() => {
     window.removeEventListener("keydown", handleDesktopPetSendHotkey);
     window.removeEventListener("keydown", handleDesktopPetStopHotkey);
   }
+  if (mentionHighlightTimer !== null && typeof window !== "undefined") {
+    window.clearTimeout(mentionHighlightTimer);
+    mentionHighlightTimer = null;
+  }
 });
 watch(profile, (next) => {
   nicknameDraft.value = next?.nickname ?? "";
@@ -1273,6 +1320,8 @@ watch(autoUpdateEnabled, (next) => {
 });
 watch(latestIncomingMessage, async (message) => {
   if (!message || message.sender_device_id === profile.value?.device_id) return;
+  const isUnreadContext = activeSection.value !== "chat" || message.conversation_id !== activeConversationId.value;
+  if (isUnreadContext) registerIncomingMention(message);
   if (activeSection.value !== "chat" && message.conversation_id === activeConversationId.value) {
     unreadByConversation.value = {
       ...unreadByConversation.value,
@@ -3989,11 +4038,6 @@ async function toggleVoiceRecording() {
     store.error = err instanceof Error ? err.message : String(err);
   }
 }
-async function handleEnter(event: KeyboardEvent) {
-  if (event.shiftKey) return;
-  event.preventDefault();
-  await store.sendActiveMessage();
-}
 function handleRoomChatEnter(event: KeyboardEvent) {
   if (event.shiftKey) return;
   event.preventDefault();
@@ -4200,11 +4244,14 @@ async function closeWindow() {
                     </template>
                     <template #description>
                       <div class="conversation-desc">
-                        <NTag v-if="conversation.kind === 'group'" size="small" :bordered="false" :type="conversationTagType(conversation)">
-                          {{ conversationBadge(conversation) }}
-                        </NTag>
-                        <span v-else class="conversation-status-dot" :class="{ online: conversationPeer(conversation)?.online }"></span>
-                        <span>{{ conversationSubtitle(conversation) }}</span>
+                        <span v-if="conversationMentionLabel(conversation)" class="conversation-mention-alert">[{{ conversationMentionLabel(conversation) }}]</span>
+                        <template v-else>
+                          <NTag v-if="conversation.kind === 'group'" size="small" :bordered="false" :type="conversationTagType(conversation)">
+                            {{ conversationBadge(conversation) }}
+                          </NTag>
+                          <span v-else class="conversation-status-dot" :class="{ online: conversationPeer(conversation)?.online }"></span>
+                          <span>{{ conversationSubtitle(conversation) }}</span>
+                        </template>
                       </div>
                     </template>
                     <template #header-extra>
@@ -4355,8 +4402,9 @@ async function closeWindow() {
                   <article
                     v-for="message in activeMessages"
                     :key="message.id"
+                    :id="`message-${message.id}`"
                     class="message-row"
-                    :class="messageClass(message)"
+                    :class="[messageClass(message), { 'mention-target-highlight': highlightedMentionMessageId === message.id }]"
                     @contextmenu="openMessageContextMenu(message, $event)"
                   >
                     <div v-if="message.message_type === 'system'" class="system-message">
@@ -4442,6 +4490,17 @@ async function closeWindow() {
                   @select="selectMessageContextAction"
                 />
               </div>
+              <button
+                v-if="activeConversation?.kind === 'group' && activeMentionNotices.length > 0"
+                class="mention-jump-button"
+                type="button"
+                title="定位到提及我的消息"
+                @click="jumpToActiveMention"
+              >
+                <span>@</span>
+                <strong>{{ activeMentionLabel }}</strong>
+                <small>{{ activeMentionNotices.length }}</small>
+              </button>
               <footer class="composer work-composer">
                 <div class="composer-tools">
                   <button class="composer-tool" title="发送文件" :disabled="!canSendActive" @click="chooseAndSendFile">📎</button>
@@ -4484,14 +4543,11 @@ async function closeWindow() {
                   <button class="composer-tool" title="清空输入" @click="draft = ''">⌫</button>
                 </div>
                 <div class="composer-input-frame" @paste="handleComposerPaste">
-                  <NInput
-                    v-model:value="draft"
-                    class="composer-textarea"
-                    type="textarea"
-                    :autosize="{ minRows: 3, maxRows: 3 }"
+                  <ChatComposerInput
+                    v-model="draft"
                     :disabled="!canSendActive"
                     :placeholder="composerPlaceholder"
-                    @keydown.enter="handleEnter"
+                    @submit="store.sendActiveMessage"
                   />
                   <div class="composer-footer">
                     <span>Enter 发送 · Shift+Enter 换行</span>
