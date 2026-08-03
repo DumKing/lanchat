@@ -56,6 +56,7 @@ assert.match(api, /buildPrivateChannelInviteCard/, "前端 API 应暴露构建�
 assert.match(api, /acceptPrivateChannelInvite/, "前端 API 应暴露接受邀请接口");
 assert.match(store, /buildPrivateChannelInvite/, "Store 应封装构建邀请卡片");
 assert.match(store, /acceptPrivateChannelInvite/, "Store 应封装接受邀请并切换频道");
+assert.match(store, /if \(!conversation\.is_private\) return true;/, "公开局域网频道不应依赖私有频道成员表才能发送消息");
 assert.match(eventBus, /private_channel_invited/, "前端应保留私有频道邀请事件兼容旧协议");
 assert.match(types, /is_private: boolean/, "会话类型应包含私有频道标识");
 assert.match(types, /export type ChannelMember/, "应定义频道成员类型");

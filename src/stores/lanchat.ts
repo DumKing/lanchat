@@ -62,6 +62,9 @@ export const useLanChatStore = defineStore("lanchat", () => {
       return peer?.online === true && peer.supports_chat !== false;
     }
     if (channelMutedByConversation.value[conversation.id] === true) return false;
+    // The public LAN channel has no persisted member list. Only private channels
+    // require an accepted membership record before allowing messages to be sent.
+    if (!conversation.is_private) return true;
     const selfMember = channelMembersByConversation.value[conversation.id]?.find((member) => sameDeviceId(member.device_id, profile.value?.device_id));
     return !!selfMember && selfMember.muted !== true;
   });
