@@ -1,7 +1,7 @@
 {
   "name": "lanchat",
   "private": true,
-  "version": "0.3.2",
+  "version": "0.3.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -18,6 +18,10 @@
     "test:desktop-pet-ui": "node scripts/test-desktop-pet-ui.mjs",
     "test:desktop-pet-runtime": "node scripts/test-desktop-pet-runtime.mjs",
     "test:avatar-profile": "node scripts/test-avatar-profile.mjs",
+    "test:message-mentions": "node scripts/test-message-mentions.mjs",
+    "test:composer-ime": "node scripts/test-composer-ime.mjs",
+    "test:release-notification": "node scripts/test-release-notification.mjs",
+    "test:tray-attention": "node scripts/test-tray-attention.mjs",
     "test:app-error-boundary": "node scripts/test-app-error-boundary.mjs",
     "build": "node scripts/write-build-timestamp.mjs && vue-tsc --noEmit && vite build",
     "preview": "vite preview",

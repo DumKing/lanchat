@@ -358,7 +358,6 @@ fn ensure_full_client(state: &AppState, capability: &str) -> Result<(), String> 
 }
 
 const TRAY_NORMAL_ICON: &[u8] = include_bytes!("../icons/32x32.png");
-const TRAY_ALERT_ICON: &[u8] = include_bytes!("../icons/tray-alert.png");
 
 fn platform_info_value() -> PlatformInfo {
     PlatformInfo {
@@ -1835,7 +1834,7 @@ fn update_tray_visuals(app: &tauri::AppHandle, state: &TrayState) -> Result<(), 
                 if item.kind == "game" {
                     format!("{}：待操作", item.title)
                 } else {
-                    format!("{}：{} 条未读", item.title, item.count)
+                    format!("{}：{}条未读消息", item.title, item.count)
                 }
             })
             .collect::<Vec<_>>()
@@ -1849,26 +1848,27 @@ fn update_tray_visuals(app: &tauri::AppHandle, state: &TrayState) -> Result<(), 
         tray.set_menu(Some(menu))
             .map_err(|err| format!("更新托盘菜单失败：{err}"))?;
         if state.items.is_empty() {
-            set_tray_icon(&tray, false)?;
+            set_tray_icon_blank(&tray, false)?;
         }
     }
     Ok(())
 }
 
-fn set_tray_icon(tray: &tauri::tray::TrayIcon, alert: bool) -> Result<(), String> {
-    let bytes = if alert {
-        TRAY_ALERT_ICON
-    } else {
-        TRAY_NORMAL_ICON
-    };
-    let image = Image::from_bytes(bytes).map_err(|err| format!("读取托盘图标失败：{err}"))?;
+fn set_tray_icon_blank(tray: &tauri::tray::TrayIcon, blank: bool) -> Result<(), String> {
+    if blank {
+        return tray
+            .set_icon(None)
+            .map_err(|err| format!("清空托盘图标失败：{err}"));
+    }
+    let image =
+        Image::from_bytes(TRAY_NORMAL_ICON).map_err(|err| format!("读取托盘图标失败：{err}"))?;
     tray.set_icon(Some(image))
-        .map_err(|err| format!("更新托盘图标失败：{err}"))
+        .map_err(|err| format!("恢复托盘图标失败：{err}"))
 }
 
 fn start_tray_blinker(app: tauri::AppHandle, tray_state: Arc<Mutex<TrayState>>) {
     std::thread::spawn(move || {
-        let mut alert = false;
+        let mut hidden = false;
         loop {
             std::thread::sleep(Duration::from_millis(700));
             let has_attention = tray_state
@@ -1879,11 +1879,11 @@ fn start_tray_blinker(app: tauri::AppHandle, tray_state: Arc<Mutex<TrayState>>) 
                 continue;
             };
             if has_attention {
-                alert = !alert;
-                let _ = set_tray_icon(&tray, alert);
-            } else if alert {
-                alert = false;
-                let _ = set_tray_icon(&tray, false);
+                hidden = !hidden;
+                let _ = set_tray_icon_blank(&tray, hidden);
+            } else if hidden {
+                hidden = false;
+                let _ = set_tray_icon_blank(&tray, false);
             }
         }
     });
@@ -2043,7 +2043,10 @@ Read-Host "按 Enter 退出"
 }
 fn setup_tray(app: &tauri::App, tray_state: Arc<Mutex<TrayState>>) -> Result<(), String> {
     let menu = rebuild_tray_menu(app.handle(), &[])?;
-    let mut builder = TrayIconBuilder::with_id("main-tray")
+    let icon =
+        Image::from_bytes(TRAY_NORMAL_ICON).map_err(|err| format!("读取托盘图标失败：{err}"))?;
+    let builder = TrayIconBuilder::with_id("main-tray")
+        .icon(icon)
         .tooltip("LanChat")
         .menu(&menu)
         .show_menu_on_left_click(false)
@@ -2096,9 +2099,6 @@ fn setup_tray(app: &tauri::App, tray_state: Arc<Mutex<TrayState>>) -> Result<(),
                 _ => {}
             }
         });
-    if let Some(icon) = app.default_window_icon() {
-        builder = builder.icon(icon.clone());
-    }
     builder
         .build(app)
         .map_err(|err| format!("创建系统托盘失败：{err}"))?;
