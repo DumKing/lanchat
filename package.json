@@ -1,7 +1,7 @@
 {
   "name": "lanchat",
   "private": true,
-  "version": "0.3.3",
+  "version": "0.3.4",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -20,6 +20,7 @@
     "test:avatar-profile": "node scripts/test-avatar-profile.mjs",
     "test:message-mentions": "node scripts/test-message-mentions.mjs",
     "test:composer-ime": "node scripts/test-composer-ime.mjs",
+    "test:peer-presentation": "node scripts/test-peer-presentation.mjs",
     "test:release-notification": "node scripts/test-release-notification.mjs",
     "test:tray-attention": "node scripts/test-tray-attention.mjs",
     "test:app-error-boundary": "node scripts/test-app-error-boundary.mjs",

@@ -45,6 +45,7 @@ export type UpdateCheckResult = {
 export type Peer = {
   device_id: string;
   nickname: string;
+  note?: string | null;
   avatar?: string | null;
   address: string;
   port: number;
@@ -113,6 +114,12 @@ export type FileMeta = {
   url: string;
   mime_type?: string | null;
   duration_ms?: number | null;
+};
+
+export type PreviewMediaCacheInfo = {
+  directory: string;
+  fileCount: number;
+  totalBytes: number;
 };
 
 export type Message = {

@@ -1,5 +1,6 @@
 use crate::file_server::FileMeta;
 use crate::identity::{normalize_device_id, resolve_device_id, resolve_profile_device_id};
+use crate::network::local_ip_address;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -21,6 +22,7 @@ pub struct Profile {
 pub struct Peer {
     pub device_id: String,
     pub nickname: String,
+    pub note: Option<String>,
     pub avatar: Option<String>,
     pub address: String,
     pub port: u16,
@@ -192,6 +194,11 @@ impl Storage {
                 online INTEGER NOT NULL,
                 last_seen_at INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS device_notes (
+                device_id TEXT PRIMARY KEY,
+                note TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS conversations (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
@@ -296,14 +303,10 @@ impl Storage {
             let resolved_id = resolve_device_id();
             let desired_id = resolve_profile_device_id(&profile.device_id, &resolved_id);
             if desired_id != profile.device_id {
-                let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
-                conn.execute(
-                    "UPDATE profile SET device_id = ?1 WHERE id = 1",
-                    params![&desired_id],
-                )
-                .map_err(|err| format!("迁移本机设备标识失败：{err}"))?;
+                self.migrate_profile_device_identity(&profile.device_id, &desired_id)?;
                 profile.device_id = desired_id;
             }
+            self.repair_legacy_private_channel_memberships(&profile, &local_ip_address())?;
             return Ok(profile);
         }
 
@@ -322,7 +325,121 @@ impl Storage {
         .map_err(|err| format!("保存本机身份失败：{err}"))?;
         drop(conn);
         self.ensure_default_group(0)?;
+        self.repair_legacy_private_channel_memberships(&profile, &local_ip_address())?;
         Ok(profile)
+    }
+
+    fn repair_legacy_private_channel_memberships(
+        &self,
+        profile: &Profile,
+        local_address: &str,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT cm.channel_id, cm.device_id, p.address
+                 FROM channel_members cm
+                 LEFT JOIN peers p ON replace(replace(lower(p.device_id), ':', ''), '-', '') = replace(replace(lower(cm.device_id), ':', ''), '-', '')
+                 WHERE replace(replace(lower(cm.device_id), ':', ''), '-', '') <> replace(replace(lower(?1), ':', ''), '-', '')
+                   AND NOT EXISTS (
+                     SELECT 1 FROM channel_members current
+                     WHERE current.channel_id = cm.channel_id
+                       AND replace(replace(lower(current.device_id), ':', ''), '-', '') = replace(replace(lower(?1), ':', ''), '-', '')
+                   )",
+            )
+            .map_err(|err| format!("读取历史频道成员失败：{err}"))?;
+        let candidates = stmt
+            .query_map(params![profile.device_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(|err| format!("读取历史频道成员失败：{err}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("解析历史频道成员失败：{err}"))?;
+        drop(stmt);
+        drop(conn);
+
+        let mut mac_matches: HashMap<String, Vec<String>> = HashMap::new();
+        let mut ip_matches: HashMap<String, Vec<String>> = HashMap::new();
+        for (channel_id, device_id, address) in candidates {
+            if normalize_device_id(&device_id) == normalize_device_id(&profile.device_id) {
+                mac_matches.entry(channel_id).or_default().push(device_id);
+            } else if !local_address.trim().is_empty()
+                && local_address != "127.0.0.1"
+                && address.as_deref() == Some(local_address)
+            {
+                ip_matches.entry(channel_id).or_default().push(device_id);
+            }
+        }
+        let mut legacy_ids = HashSet::new();
+        for (channel_id, ids) in mac_matches {
+            if ids.len() == 1 {
+                legacy_ids.insert(ids[0].clone());
+                ip_matches.remove(&channel_id);
+            }
+        }
+        for ids in ip_matches.values().filter(|ids| ids.len() == 1) {
+            legacy_ids.insert(ids[0].clone());
+        }
+        for legacy_id in legacy_ids {
+            self.migrate_profile_device_identity(&legacy_id, &profile.device_id)?;
+        }
+        Ok(())
+    }
+
+    pub fn migrate_profile_device_identity(
+        &self,
+        old_device_id: &str,
+        new_device_id: &str,
+    ) -> Result<(), String> {
+        let old_device_id = old_device_id.trim().to_ascii_lowercase();
+        let new_device_id = normalize_device_id(new_device_id);
+        if old_device_id.is_empty() || new_device_id.is_empty() || old_device_id == new_device_id {
+            return Ok(());
+        }
+        let mut conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let tx = conn
+            .transaction()
+            .map_err(|err| format!("创建身份迁移事务失败：{err}"))?;
+        tx.execute(
+            "DELETE FROM channel_members
+             WHERE replace(replace(lower(device_id), ':', ''), '-', '') = replace(replace(lower(?1), ':', ''), '-', '')
+               AND EXISTS (
+                 SELECT 1 FROM channel_members current
+                 WHERE current.channel_id = channel_members.channel_id
+                   AND replace(replace(lower(current.device_id), ':', ''), '-', '') = replace(replace(lower(?2), ':', ''), '-', '')
+               )",
+            params![&old_device_id, &new_device_id],
+        )
+        .map_err(|err| format!("合并频道成员身份失败：{err}"))?;
+        tx.execute(
+            "DELETE FROM channel_mutes
+             WHERE replace(replace(lower(device_id), ':', ''), '-', '') = replace(replace(lower(?1), ':', ''), '-', '')
+               AND EXISTS (
+                 SELECT 1 FROM channel_mutes current
+                 WHERE current.channel_id = channel_mutes.channel_id
+                   AND replace(replace(lower(current.device_id), ':', ''), '-', '') = replace(replace(lower(?2), ':', ''), '-', '')
+               )",
+            params![&old_device_id, &new_device_id],
+        )
+        .map_err(|err| format!("合并频道禁言身份失败：{err}"))?;
+        for statement in [
+            "UPDATE channel_members SET device_id = ?2 WHERE replace(replace(lower(device_id), ':', ''), '-', '') = replace(replace(lower(?1), ':', ''), '-', '')",
+            "UPDATE private_channels SET owner_device_id = ?2 WHERE replace(replace(lower(owner_device_id), ':', ''), '-', '') = replace(replace(lower(?1), ':', ''), '-', '')",
+            "UPDATE channel_mutes SET device_id = ?2 WHERE replace(replace(lower(device_id), ':', ''), '-', '') = replace(replace(lower(?1), ':', ''), '-', '')",
+            "UPDATE messages SET sender_device_id = ?2 WHERE replace(replace(lower(sender_device_id), ':', ''), '-', '') = replace(replace(lower(?1), ':', ''), '-', '')",
+            "UPDATE conversations SET peer_device_id = ?2 WHERE replace(replace(lower(peer_device_id), ':', ''), '-', '') = replace(replace(lower(?1), ':', ''), '-', '')",
+            "UPDATE profile SET device_id = ?2 WHERE id = 1 AND replace(replace(lower(device_id), ':', ''), '-', '') = replace(replace(lower(?1), ':', ''), '-', '')",
+        ] {
+            tx.execute(statement, params![&old_device_id, &new_device_id])
+                .map_err(|err| format!("迁移本机设备标识失败：{err}"))?;
+        }
+        tx.commit()
+            .map_err(|err| format!("提交本机设备标识迁移失败：{err}"))?;
+        Ok(())
     }
 
     pub fn get_profile(&self) -> Result<Option<Profile>, String> {
@@ -400,6 +517,7 @@ impl Storage {
         let normalized = Peer {
             device_id: normalize_device_id(&peer.device_id),
             nickname: peer.nickname.trim().to_string(),
+            note: peer.note.clone(),
             avatar: peer.avatar.clone(),
             address: peer.address.trim().to_string(),
             port: peer.port,
@@ -483,22 +601,25 @@ impl Storage {
     pub fn get_peer(&self, device_id: &str) -> Result<Option<Peer>, String> {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         conn.query_row(
-            "SELECT device_id, nickname, avatar, address, port, online, last_seen_at, client_kind, supports_chat, nickname_locked, build_version, build_timestamp FROM peers WHERE device_id = ?1",
+            "SELECT p.device_id, p.nickname, dn.note, p.avatar, p.address, p.port, p.online, p.last_seen_at, p.client_kind, p.supports_chat, p.nickname_locked, p.build_version, p.build_timestamp
+             FROM peers p LEFT JOIN device_notes dn ON lower(dn.device_id) = lower(p.device_id)
+             WHERE p.device_id = ?1",
             params![normalize_device_id(device_id)],
             |row| {
                 Ok(Peer {
                     device_id: row.get(0)?,
                     nickname: row.get(1)?,
-                    avatar: row.get(2)?,
-                    address: row.get(3)?,
-                    port: row.get::<_, i64>(4)? as u16,
-                    online: row.get::<_, i64>(5)? == 1,
-                    last_seen_at: row.get(6)?,
-                    client_kind: row.get(7)?,
-                    supports_chat: row.get::<_, i64>(8)? == 1,
-                    nickname_locked: row.get::<_, i64>(9)? == 1,
-                    build_version: row.get(10)?,
-                    build_timestamp: row.get(11)?,
+                    note: row.get(2)?,
+                    avatar: row.get(3)?,
+                    address: row.get(4)?,
+                    port: row.get::<_, i64>(5)? as u16,
+                    online: row.get::<_, i64>(6)? == 1,
+                    last_seen_at: row.get(7)?,
+                    client_kind: row.get(8)?,
+                    supports_chat: row.get::<_, i64>(9)? == 1,
+                    nickname_locked: row.get::<_, i64>(10)? == 1,
+                    build_version: row.get(11)?,
+                    build_timestamp: row.get(12)?,
                 })
             },
         )
@@ -510,8 +631,11 @@ impl Storage {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT device_id, nickname, avatar, address, port, online, last_seen_at, client_kind, supports_chat, nickname_locked, build_version, build_timestamp
-                 FROM peers ORDER BY online DESC, last_seen_at DESC, nickname ASC",
+                "SELECT p.device_id, p.nickname, dn.note, p.avatar, p.address, p.port, p.online, p.last_seen_at, p.client_kind, p.supports_chat, p.nickname_locked, p.build_version, p.build_timestamp
+                 FROM peers p LEFT JOIN device_notes dn ON lower(dn.device_id) = lower(p.device_id)
+                 ORDER BY p.online DESC,
+                          CASE WHEN trim(COALESCE(dn.note, '')) <> '' THEN 0 ELSE 1 END,
+                          lower(COALESCE(NULLIF(trim(dn.note), ''), p.nickname)), lower(p.device_id)",
             )
             .map_err(|err| format!("读取局域网设备失败：{err}"))?;
         let rows = stmt
@@ -519,16 +643,17 @@ impl Storage {
                 Ok(Peer {
                     device_id: row.get(0)?,
                     nickname: row.get(1)?,
-                    avatar: row.get(2)?,
-                    address: row.get(3)?,
-                    port: row.get::<_, i64>(4)? as u16,
-                    online: row.get::<_, i64>(5)? == 1,
-                    last_seen_at: row.get(6)?,
-                    client_kind: row.get(7)?,
-                    supports_chat: row.get::<_, i64>(8)? == 1,
-                    nickname_locked: row.get::<_, i64>(9)? == 1,
-                    build_version: row.get(10)?,
-                    build_timestamp: row.get(11)?,
+                    note: row.get(2)?,
+                    avatar: row.get(3)?,
+                    address: row.get(4)?,
+                    port: row.get::<_, i64>(5)? as u16,
+                    online: row.get::<_, i64>(6)? == 1,
+                    last_seen_at: row.get(7)?,
+                    client_kind: row.get(8)?,
+                    supports_chat: row.get::<_, i64>(9)? == 1,
+                    nickname_locked: row.get::<_, i64>(10)? == 1,
+                    build_version: row.get(11)?,
+                    build_timestamp: row.get(12)?,
                 })
             })
             .map_err(|err| format!("读取局域网设备失败：{err}"))?;
@@ -551,6 +676,43 @@ impl Storage {
             params![normalized_id],
         )
         .map_err(|err| format!("删除设备会话失败：{err}"))?;
+        conn.execute(
+            "DELETE FROM device_notes WHERE lower(device_id) = lower(?1)",
+            params![normalized_id],
+        )
+        .map_err(|err| format!("删除设备备注失败：{err}"))?;
+        Ok(())
+    }
+
+    pub fn update_peer_note(&self, device_id: &str, note: &str) -> Result<(), String> {
+        let device_id = normalize_device_id(device_id);
+        let note = note.trim();
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let exists = conn
+            .query_row(
+                "SELECT COUNT(1) FROM peers WHERE lower(device_id) = lower(?1)",
+                params![device_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|err| format!("检查设备备注失败：{err}"))?
+            > 0;
+        if !exists {
+            return Err("未找到该设备，无法保存备注".to_string());
+        }
+        if note.is_empty() {
+            conn.execute(
+                "DELETE FROM device_notes WHERE lower(device_id) = lower(?1)",
+                params![device_id],
+            )
+            .map_err(|err| format!("清除设备备注失败：{err}"))?;
+        } else {
+            conn.execute(
+                "INSERT INTO device_notes (device_id, note, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(device_id) DO UPDATE SET note = excluded.note, updated_at = excluded.updated_at",
+                params![device_id, note, chrono::Utc::now().timestamp_millis()],
+            )
+            .map_err(|err| format!("保存设备备注失败：{err}"))?;
+        }
         Ok(())
     }
 
@@ -895,12 +1057,12 @@ impl Storage {
         let mut stmt = conn
             .prepare(
                 "SELECT cm.channel_id, cm.device_id, cm.nickname, cm.avatar, cm.muted,
-                        CASE WHEN lower(cm.device_id) = lower(?3) THEN 1 ELSE COALESCE(p.online, 0) END,
-                        CASE WHEN lower(cm.device_id) = lower(?3) THEN ?4 ELSE COALESCE(p.last_seen_at, cm.invited_at) END
+                        CASE WHEN replace(replace(lower(cm.device_id), ':', ''), '-', '') = replace(replace(lower(?3), ':', ''), '-', '') THEN 1 ELSE COALESCE(p.online, 0) END,
+                        CASE WHEN replace(replace(lower(cm.device_id), ':', ''), '-', '') = replace(replace(lower(?3), ':', ''), '-', '') THEN ?4 ELSE COALESCE(p.last_seen_at, cm.invited_at) END
                  FROM channel_members cm
-                 LEFT JOIN peers p ON lower(p.device_id) = lower(cm.device_id)
+                 LEFT JOIN peers p ON replace(replace(lower(p.device_id), ':', ''), '-', '') = replace(replace(lower(cm.device_id), ':', ''), '-', '')
                  WHERE cm.channel_id = ?1
-                 ORDER BY CASE WHEN lower(cm.device_id) = lower(?2) THEN 0 ELSE 1 END, cm.nickname ASC",
+                 ORDER BY CASE WHEN replace(replace(lower(cm.device_id), ':', ''), '-', '') = replace(replace(lower(?2), ':', ''), '-', '') THEN 0 ELSE 1 END, cm.nickname ASC",
             )
             .map_err(|err| format!("读取频道成员失败：{err}"))?;
         let rows = stmt
@@ -932,7 +1094,7 @@ impl Storage {
     ) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         conn.execute(
-            "DELETE FROM channel_members WHERE channel_id = ?1 AND lower(device_id) = lower(?2)",
+            "DELETE FROM channel_members WHERE channel_id = ?1 AND replace(replace(lower(device_id), ':', ''), '-', '') = replace(replace(lower(?2), ':', ''), '-', '')",
             params![channel_id, normalize_device_id(member_device_id)],
         )
         .map_err(|err| format!("移除频道成员失败：{err}"))?;
@@ -1007,7 +1169,7 @@ impl Storage {
     ) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         conn.execute(
-            "UPDATE channel_members SET muted = ?1 WHERE channel_id = ?2 AND lower(device_id) = lower(?3)",
+            "UPDATE channel_members SET muted = ?1 WHERE channel_id = ?2 AND replace(replace(lower(device_id), ':', ''), '-', '') = replace(replace(lower(?3), ':', ''), '-', '')",
             params![if muted { 1 } else { 0 }, channel_id, normalize_device_id(member_device_id)],
         )
         .map_err(|err| format!("更新频道成员禁言失败：{err}"))?;
@@ -1022,7 +1184,7 @@ impl Storage {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         let muted = conn
             .query_row(
-                "SELECT muted FROM channel_members WHERE channel_id = ?1 AND lower(device_id) = lower(?2)",
+                "SELECT muted FROM channel_members WHERE channel_id = ?1 AND replace(replace(lower(device_id), ':', ''), '-', '') = replace(replace(lower(?2), ':', ''), '-', '')",
                 params![channel_id, normalize_device_id(member_device_id)],
                 |row| row.get::<_, i64>(0),
             )
@@ -1097,7 +1259,7 @@ impl Storage {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         let count: i64 = conn
             .query_row(
-                "SELECT COUNT(1) FROM channel_members WHERE channel_id = ?1 AND lower(device_id) = lower(?2)",
+                "SELECT COUNT(1) FROM channel_members WHERE channel_id = ?1 AND replace(replace(lower(device_id), ':', ''), '-', '') = replace(replace(lower(?2), ':', ''), '-', '')",
                 params![channel_id, normalized],
                 |row| row.get(0),
             )
@@ -1235,6 +1397,7 @@ mod tests {
             .upsert_peer(&Peer {
                 device_id: "peer-1".to_string(),
                 nickname: "第一台".to_string(),
+                note: None,
                 avatar: None,
                 address: "192.168.1.11".to_string(),
                 port: 18145,
@@ -1251,6 +1414,7 @@ mod tests {
             .upsert_peer(&Peer {
                 device_id: "peer-1".to_string(),
                 nickname: "改名后".to_string(),
+                note: None,
                 avatar: Some("A".to_string()),
                 address: "192.168.1.12".to_string(),
                 port: 18146,
@@ -1315,6 +1479,7 @@ mod tests {
             .upsert_peer(&Peer {
                 device_id: "peer-1".to_string(),
                 nickname: "同事".to_string(),
+                note: None,
                 avatar: None,
                 address: "192.168.1.11".to_string(),
                 port: 18145,
@@ -1414,6 +1579,217 @@ mod tests {
             .is_private_channel_member("private-1", "peer-1")
             .expect("member"));
     }
+
+    #[test]
+    fn migrates_private_channel_membership_when_profile_id_changes_to_mac() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db_path = temp.path().join("lanchat.sqlite3");
+        let storage = Storage::open(&db_path).expect("storage opens");
+        storage
+            .upsert_private_channel(
+                "private-migration",
+                "旧频道",
+                "legacy-device-id",
+                "我",
+                "test-key",
+                1,
+                &[ChannelMemberSeed {
+                    device_id: "legacy-device-id".to_string(),
+                    nickname: "我".to_string(),
+                    avatar: None,
+                }],
+                100,
+            )
+            .expect("private channel saved");
+
+        storage
+            .migrate_profile_device_identity("legacy-device-id", "aa-bb-cc-dd-ee-ff")
+            .expect("profile identity migrated");
+
+        assert!(storage
+            .is_private_channel_member("private-migration", "AA:BB:CC:DD:EE:FF")
+            .expect("current mac remains a channel member"));
+        let members = storage
+            .list_channel_members("private-migration")
+            .expect("members listed");
+        assert_eq!("aa:bb:cc:dd:ee:ff", members[0].device_id);
+    }
+
+    #[test]
+    fn recognizes_legacy_mac_separator_variants_as_the_local_channel_member() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db_path = temp.path().join("lanchat.sqlite3");
+        let storage = Storage::open(&db_path).expect("storage opens");
+        let profile = storage.get_or_create_profile().expect("profile");
+        let current_id = "aa:bb:cc:dd:ee:ff";
+        {
+            let conn = storage.conn.lock().expect("connection");
+            conn.execute(
+                "UPDATE profile SET device_id = ?1 WHERE id = 1",
+                params![current_id],
+            )
+            .expect("profile device id updated");
+        }
+        storage
+            .upsert_private_channel(
+                "private-mac-separator",
+                "格式兼容频道",
+                current_id,
+                &profile.nickname,
+                "test-key",
+                1,
+                &[ChannelMemberSeed {
+                    device_id: current_id.to_string(),
+                    nickname: profile.nickname.clone(),
+                    avatar: None,
+                }],
+                100,
+            )
+            .expect("private channel saved");
+        {
+            let conn = storage.conn.lock().expect("connection");
+            conn.execute(
+                "UPDATE channel_members SET device_id = 'aa-bb-cc-dd-ee-ff' WHERE channel_id = 'private-mac-separator'",
+                [],
+            )
+            .expect("legacy member id updated");
+        }
+
+        assert!(storage
+            .is_private_channel_member("private-mac-separator", current_id)
+            .expect("separator variant is treated as the current member"));
+        let member = storage
+            .list_channel_members("private-mac-separator")
+            .expect("members")
+            .into_iter()
+            .next()
+            .expect("self member");
+        assert!(member.online, "self must be rendered online");
+    }
+
+    #[test]
+    fn repairs_legacy_private_channel_membership_by_matching_local_ip() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db_path = temp.path().join("lanchat.sqlite3");
+        let storage = Storage::open(&db_path).expect("storage opens");
+        storage
+            .upsert_peer(&Peer {
+                device_id: "uuid_legacy_local".to_string(),
+                nickname: "旧本机".to_string(),
+                note: None,
+                avatar: None,
+                address: "192.168.50.8".to_string(),
+                port: 18145,
+                online: false,
+                last_seen_at: 1,
+                client_kind: "full".to_string(),
+                supports_chat: true,
+                nickname_locked: false,
+                build_version: "0.1.0".to_string(),
+                build_timestamp: 0,
+            })
+            .expect("legacy peer saved");
+        storage
+            .upsert_private_channel(
+                "private-ip-migration",
+                "历史频道",
+                "uuid_legacy_local",
+                "旧本机",
+                "test-key",
+                1,
+                &[ChannelMemberSeed {
+                    device_id: "uuid_legacy_local".to_string(),
+                    nickname: "旧本机".to_string(),
+                    avatar: None,
+                }],
+                100,
+            )
+            .expect("private channel saved");
+        let profile = Profile {
+            device_id: "aa:bb:cc:dd:ee:ff".to_string(),
+            nickname: "新本机".to_string(),
+            listen_port: 18145,
+            avatar: None,
+            nickname_locked: false,
+        };
+
+        storage
+            .repair_legacy_private_channel_memberships(&profile, "192.168.50.8")
+            .expect("legacy membership repaired");
+
+        assert!(storage
+            .is_private_channel_member("private-ip-migration", &profile.device_id)
+            .expect("current profile is a channel member"));
+    }
+
+    #[test]
+    fn stores_device_note_and_keeps_peer_order_stable_across_heartbeats() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db_path = temp.path().join("lanchat.sqlite3");
+        let storage = Storage::open(&db_path).expect("storage opens");
+        for (index, (id, nickname, online, last_seen_at)) in [
+            ("aa:bb:cc:dd:ee:03", "Gamma", true, 300),
+            ("aa:bb:cc:dd:ee:01", "Zeta", false, 100),
+            ("aa:bb:cc:dd:ee:02", "Beta", false, 900),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            storage
+                .upsert_peer(&Peer {
+                    device_id: id.to_string(),
+                    nickname: nickname.to_string(),
+                    note: None,
+                    avatar: None,
+                    address: format!("192.168.1.{}", index + 2),
+                    port: 18145 + index as u16,
+                    online,
+                    last_seen_at,
+                    client_kind: "full".to_string(),
+                    supports_chat: true,
+                    nickname_locked: false,
+                    build_version: "0.3.3".to_string(),
+                    build_timestamp: 0,
+                })
+                .expect("peer saved");
+        }
+        storage
+            .update_peer_note("aa:bb:cc:dd:ee:01", "阿尔法")
+            .expect("note saved");
+
+        let first = storage.list_peers().expect("peers listed");
+        assert_eq!(
+            vec![
+                "aa:bb:cc:dd:ee:01",
+                "aa:bb:cc:dd:ee:02",
+                "aa:bb:cc:dd:ee:03"
+            ],
+            first
+                .iter()
+                .map(|peer| peer.device_id.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(Some("阿尔法".to_string()), first[0].note);
+
+        let mut refreshed = first[2].clone();
+        refreshed.online = false;
+        refreshed.last_seen_at = 9_999;
+        storage
+            .upsert_peer(&refreshed)
+            .expect("heartbeat refresh saved");
+        let second = storage.list_peers().expect("peers listed again");
+        assert_eq!(
+            vec![
+                "aa:bb:cc:dd:ee:01",
+                "aa:bb:cc:dd:ee:02",
+                "aa:bb:cc:dd:ee:03"
+            ],
+            second
+                .iter()
+                .map(|peer| peer.device_id.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
     #[test]
     fn marks_stale_peers_offline() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1423,6 +1799,7 @@ mod tests {
             .upsert_peer(&Peer {
                 device_id: "peer-1".to_string(),
                 nickname: "同事".to_string(),
+                note: None,
                 avatar: None,
                 address: "192.168.1.11".to_string(),
                 port: 18145,
@@ -1453,6 +1830,7 @@ mod tests {
             .upsert_peer(&Peer {
                 device_id: "limited-1".to_string(),
                 nickname: "受限设备".to_string(),
+                note: None,
                 avatar: None,
                 address: "192.168.1.50".to_string(),
                 port: 18145,

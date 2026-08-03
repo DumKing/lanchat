@@ -44,7 +44,7 @@ import ChatComposerInput from "./components/ChatComposerInput.vue";
 import { DEFAULT_GROUP_ID, useLanChatStore } from "./stores/lanchat";
 import { useDesktopPetStore } from "./stores/desktopPet";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, ExternalPushConfig, ExternalPushKind, PetPackageSource, PetStateKind, PetStatePlaybackConfig } from "./types/desktop-pet";
-import type { AdminAlertMode, AdminDiscoMode, AppVersionInfo, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Peer, PetAlertMode, PlatformInfo, PrivateChannelInvitePayload, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem, UpdateCheckResult } from "./types/lanchat";
+import type { AdminAlertMode, AdminDiscoMode, AppVersionInfo, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem, UpdateCheckResult } from "./types/lanchat";
 import { DDZ_TURN_TIMEOUT_MS, canBeat, dealHands, evaluatePlay, isTurnTimedOut, playLabel, sortCards, turnRemainingSeconds, type DdzCard, type DdzPhase, type DdzPlay } from "./games/doudizhu";
 import { GOMOKU_TURN_TIMEOUT_MS, chooseAutoGomokuPoint, cloneGomokuBoard, createGomokuBoard, gomokuStoneLabel, gomokuTurnRemainingSeconds, isGomokuTurnTimedOut, placeGomokuStone, type GomokuBoard, type GomokuPhase, type GomokuPoint, type GomokuStone } from "./games/gomoku";
 import { cloneXiangqiBoard, createXiangqiBoard, createXiangqiDisplayGrid, isLegalXiangqiMove, moveXiangqiPiece, otherXiangqiSide, resignXiangqiSide, undoXiangqiMove, xiangqiPieceLabel, xiangqiSideLabel, type XiangqiBoard, type XiangqiPhase, type XiangqiPiece, type XiangqiPoint, type XiangqiSide } from "./games/xiangqi";
@@ -54,6 +54,7 @@ import { formatWinRate, incrementGameStats, recordsForGame, upsertGameStatsRecor
 import { createGameRoomShell, gameDefinitionOf, gameRegistry, type GameRoomShell, type GameType } from "./games/registry";
 import { alertTemperature, alertTruthScore, senderCredibility } from "./utils/alertCredibility";
 import { detectMentionKind, trayConversationTitle, type MentionKind } from "./utils/messageMentions";
+import { peerDisplayName, peerOriginalName, sameDeviceId, sortPeersForDisplay } from "./utils/peerPresentation";
 type UiThemeKey = "theme-dingtalk" | "theme-work" | "theme-lan" | "theme-light";
 type MainSection = "chat" | "devices" | "games" | "alerts" | "settings";
 type RecipientPickerMode = "gameInvite" | "privateChannelCreate" | "privateChannelInvite";
@@ -296,6 +297,7 @@ const {
   messagesByConversation,
   channelMembersByConversation,
   channelMutedByConversation,
+  chatCapablePeers,
   onlinePeers,
   activePeer,
   canSendActive,
@@ -383,6 +385,11 @@ let unlistenDesktopPetRegistry: (() => void) | null = null;
 const conversationSearch = ref("");
 const deviceSearch = ref("");
 const selectedPeerId = ref("");
+const peerNoteDraft = ref("");
+const previewMediaPaths = ref<Record<string, string>>({});
+const previewMediaCacheInfo = ref<PreviewMediaCacheInfo | null>(null);
+const previewMediaCacheClearing = ref(false);
+const imagePreviewMessage = ref<Message | null>(null);
 const selectedDeviceChannelId = ref("");
 const adminNicknameDraft = ref("");
 const adminNicknameLockAfterIssue = ref(false);
@@ -512,7 +519,7 @@ const pickerPeerOptions = computed(() => {
   const existingPrivateMembers = activeConversation.value?.is_private
     ? new Set((channelMembersByConversation.value[activeConversation.value.id] ?? []).map((member) => member.device_id))
     : new Set<string>();
-  return peers.value.filter((peer) => {
+  return sortPeersForDisplay(peers.value).filter((peer) => {
     if (!peer.online) return false;
     if (!peerSupportsFullFeatures(peer)) return false;
     if (recipientPickerMode.value === "privateChannelInvite" && existingPrivateMembers.has(peer.device_id)) return false;
@@ -540,39 +547,49 @@ const deviceChannelConversations = computed(() => conversations.value
   .sort((a, b) => Number(a.is_private) - Number(b.is_private) || b.updated_at - a.updated_at));
 const filteredPeers = computed(() => {
   const keyword = deviceSearch.value.trim().toLowerCase();
-  return peers.value.filter((peer) => {
-    const text = `${peer.nickname} ${peer.address} ${peer.port}`.toLowerCase();
+  return sortPeersForDisplay(peers.value).filter((peer) => {
+    const text = `${peerDisplayName(peer)} ${peer.nickname} ${peer.address} ${peer.port}`.toLowerCase();
     return !keyword || text.includes(keyword);
   });
 });
-const selectedPeerDetail = computed(() => peers.value.find((peer) => peer.device_id === selectedPeerId.value) ?? null);
+const selectedPeerDetail = computed(() => peers.value.find((peer) => sameDeviceId(peer.device_id, selectedPeerId.value)) ?? null);
 const selectedDeviceChannelDetail = computed(() => deviceChannelConversations.value.find((conversation) => conversation.id === selectedDeviceChannelId.value) ?? null);
 const selectedDeviceChannelMembers = computed<Array<ChannelMember | Peer>>(() => {
   const channel = selectedDeviceChannelDetail.value;
   if (!channel) return [];
-  return channel.is_private ? channelMembersByConversation.value[channel.id] ?? [] : onlinePeers.value;
+  return sortChannelMembers(channel.is_private ? channelMembersByConversation.value[channel.id] ?? [] : chatCapablePeers.value);
 });
 const selectedDeviceChannelOwnerName = computed(() => {
   const channel = selectedDeviceChannelDetail.value;
   const ownerId = channel?.owner_device_id;
   if (!channel) return "";
   if (!ownerId) return channel.is_private ? "未知" : "局域网公开频道";
-  if (ownerId === profile.value?.device_id) return profile.value?.nickname ?? "我";
-  return peers.value.find((peer) => peer.device_id === ownerId)?.nickname ?? ownerId;
+  if (sameDeviceId(ownerId, profile.value?.device_id)) return profile.value?.nickname ?? "我";
+  const owner = peers.value.find((peer) => sameDeviceId(peer.device_id, ownerId));
+  return owner ? peerDisplayName(owner) : ownerId;
 });
-const canManageSelectedDeviceChannel = computed(() => !!selectedDeviceChannelDetail.value?.is_private && (selectedDeviceChannelDetail.value.owner_device_id === profile.value?.device_id || superAdminEnabled.value));
+const canManageSelectedDeviceChannel = computed(() => !!selectedDeviceChannelDetail.value?.is_private && (sameDeviceId(selectedDeviceChannelDetail.value.owner_device_id, profile.value?.device_id) || superAdminEnabled.value));
 const activePrivateChannelMembers = computed(() => activeConversation.value?.is_private ? channelMembersByConversation.value[activeConversation.value.id] ?? [] : []);
-const channelMembers = computed<Array<ChannelMember | Peer>>(() => activeConversation.value?.is_private ? activePrivateChannelMembers.value : onlinePeers.value);
-const normalizedChannelMembers = computed<Array<ChannelMember | Peer>>(() => channelMembers.value.map((member) => {
-  if (member.device_id !== profile.value?.device_id) return member;
-  return {
+const channelMembers = computed<Array<ChannelMember | Peer>>(() => activeConversation.value?.is_private ? activePrivateChannelMembers.value : chatCapablePeers.value);
+const normalizedChannelMembers = computed<Array<ChannelMember | Peer>>(() => {
+  const normalized = channelMembers.value.map((member) => {
+    if (!sameDeviceId(member.device_id, profile.value?.device_id)) return member;
+    return {
     ...member,
     nickname: profile.value?.nickname ?? member.nickname,
     avatar: profile.value?.avatar ?? member.avatar,
     online: true,
     last_seen_at: Date.now(),
-  };
-}));
+    };
+  });
+  return [...normalized].sort((left, right) => {
+    const leftSelf = sameDeviceId(left.device_id, profile.value?.device_id);
+    const rightSelf = sameDeviceId(right.device_id, profile.value?.device_id);
+    if (leftSelf !== rightSelf) return leftSelf ? -1 : 1;
+    if (left.online !== right.online) return left.online ? -1 : 1;
+    return memberDisplayName(left).localeCompare(memberDisplayName(right), "zh-CN");
+  });
+});
 const canMentionInActiveConversation = computed(() => activeConversation.value?.kind === "group" && canSendActive.value);
 const mentionPickerMembers = computed<Array<ChannelMember | Peer>>(() => {
   if (!canMentionInActiveConversation.value) return [];
@@ -587,15 +604,15 @@ const mentionPickerMembers = computed<Array<ChannelMember | Peer>>(() => {
     })
     .slice(0, 80);
 });
-const channelMembersOnlineCount = computed(() => normalizedChannelMembers.value.filter((member) => member.device_id === profile.value?.device_id || member.online).length);
-const canManageActivePrivateChannel = computed(() => !!activeConversation.value?.is_private && (activeConversation.value.owner_device_id === profile.value?.device_id || superAdminEnabled.value));
+const channelMembersOnlineCount = computed(() => normalizedChannelMembers.value.filter((member) => sameDeviceId(member.device_id, profile.value?.device_id) || member.online).length);
+const canManageActivePrivateChannel = computed(() => !!activeConversation.value?.is_private && (sameDeviceId(activeConversation.value.owner_device_id, profile.value?.device_id) || superAdminEnabled.value));
 const groupInspectorAvailable = computed(() => activeSection.value === "chat" && activeConversation.value?.kind === "group");
 const canManageActivePublicChannel = computed(() => !!superAdminEnabled.value && activeConversation.value?.id === DEFAULT_GROUP_ID);
 const canEditActiveChannelNotice = computed(() => {
   const conversation = activeConversation.value;
   if (!conversation || conversation.kind !== "group") return false;
   if (!conversation.is_private) return superAdminEnabled.value;
-  return conversation.owner_device_id === profile.value?.device_id || superAdminEnabled.value;
+  return sameDeviceId(conversation.owner_device_id, profile.value?.device_id) || superAdminEnabled.value;
 });
 const activeChannelNotice = computed(() => {
   const conversation = activeConversation.value;
@@ -1202,6 +1219,7 @@ onMounted(async () => {
   platformInfo.value = await api.getPlatformInfo().catch(() => null);
   appVersionInfo.value = await api.getAppVersionInfo().catch(() => null);
   await store.initialize();
+  previewMediaCacheInfo.value = await api.getPreviewMediaCacheInfo().catch(() => null);
   await desktopPetStore.initialize();
   if (desktopPetSettings.value) {
     petAlertEnabled.value = desktopPetSettings.value.enabled;
@@ -1287,8 +1305,29 @@ watch(profile, (next) => {
   portDraft.value = next?.listen_port ?? 18145;
   avatarDraft.value = next?.avatar ?? "";
 });
-watch(activeMessages, () => {
+watch([peers, profile], () => {
+  let changed = false;
+  const next = alertRecords.value.map((record) => {
+    const sender = resolveAlertSender({
+      sender_device_id: record.senderDeviceId,
+      sender_nickname: record.senderNickname,
+      sender_address: record.senderAddress,
+    });
+    const nickname = record.senderNickname?.trim() && record.senderNickname !== "未知设备"
+      ? record.senderNickname
+      : sender.nickname;
+    const address = record.senderAddress?.trim() || sender.address;
+    if (nickname === record.senderNickname && address === record.senderAddress) return record;
+    changed = true;
+    return { ...record, senderNickname: nickname, senderAddress: address };
+  });
+  if (changed) alertRecords.value = next;
+}, { deep: true });
+watch(activeMessages, (messages) => {
   void scrollActiveChatToBottom();
+  for (const message of messages) {
+    void cacheImagePreview(message);
+  }
 });
 watch(() => activeConversationId.value, () => {
   void scrollActiveChatToBottom();
@@ -3323,11 +3362,12 @@ async function notifyIncomingActivity() {
   }
 }
 function alertRecordFromFrame(alert: QuickAlert): AlertRecord {
+  const sender = resolveAlertSender(alert);
   return {
     alertId: alert.alert_id,
     senderDeviceId: alert.sender_device_id,
-    senderNickname: alert.sender_nickname,
-    senderAddress: alert.sender_address ?? null,
+    senderNickname: sender.nickname,
+    senderAddress: sender.address,
     content: alert.content || "呱呱~呱~~",
     mode: normalizePetAlertMode(alert.mode),
     createdAt: alert.created_at,
@@ -3336,18 +3376,27 @@ function alertRecordFromFrame(alert: QuickAlert): AlertRecord {
     feedbacks: [],
   };
 }
+function resolveAlertSender(alert: Pick<QuickAlert, "sender_device_id" | "sender_nickname" | "sender_address">) {
+  const peer = peers.value.find((item) => sameDeviceId(item.device_id, alert.sender_device_id));
+  const isSelf = sameDeviceId(alert.sender_device_id, profile.value?.device_id);
+  return {
+    nickname: alert.sender_nickname?.trim() || peer?.nickname || (isSelf ? profile.value?.nickname : "") || "未知设备",
+    address: alert.sender_address?.trim() || peer?.address || null,
+  };
+}
 function applyQuickAlert(alert: QuickAlert) {
   const nextStopped = new Set(visuallyStoppedAlertIds.value);
   nextStopped.delete(alert.alert_id);
   visuallyStoppedAlertIds.value = nextStopped;
   const current = alertRecords.value.find((item) => item.alertId === alert.alert_id);
   if (current) {
+    const sender = resolveAlertSender(alert);
     alertRecords.value = alertRecords.value.map((item) =>
       item.alertId === alert.alert_id
         ? {
             ...item,
-            senderNickname: alert.sender_nickname,
-            senderAddress: alert.sender_address ?? item.senderAddress ?? null,
+            senderNickname: sender.nickname || item.senderNickname,
+            senderAddress: sender.address ?? item.senderAddress ?? null,
             content: alert.content || item.content,
             mode: normalizePetAlertMode(alert.mode || item.mode),
             createdAt: alert.created_at || item.createdAt,
@@ -3516,6 +3565,7 @@ function openDevice(peer: Peer) {
   selectedPeerId.value = peer.device_id;
   selectedDeviceChannelId.value = "";
   adminNicknameDraft.value = peer.nickname;
+  peerNoteDraft.value = peer.note ?? "";
   adminNicknameLockAfterIssue.value = !!peer.nickname_locked;
 }
 async function openDeviceChannel(conversation: Conversation) {
@@ -3650,6 +3700,13 @@ async function deleteSelectedPeer() {
   if (!peer) return;
   await store.deletePeer(peer.device_id);
   selectedPeerId.value = "";
+}
+async function saveSelectedPeerNote() {
+  const peer = selectedPeerDetail.value;
+  if (!peer) return;
+  const updated = await store.updatePeerNote(peer.device_id, peerNoteDraft.value);
+  selectedPeerId.value = updated.device_id;
+  peerNoteDraft.value = updated.note ?? "";
 }
 async function adminRenameSelectedPeer() {
   const peer = selectedPeerDetail.value;
@@ -3862,14 +3919,28 @@ async function selectMessageContextAction(key: string | number) {
 }
 function peerSubtitle(peer: Peer) {
   const kind = peerSupportsFullFeatures(peer) ? "完整版" : "受限设备";
-  return `${kind} · ${peer.address}:${peer.port}`;
+  const originalName = peerOriginalName(peer);
+  return [originalName ? `原昵称：${originalName}` : "", kind, `${peer.address}:${peer.port}`].filter(Boolean).join(" · ");
+}
+function memberDisplayName(member: ChannelMember | Peer) {
+  const peer = peers.value.find((item) => sameDeviceId(item.device_id, member.device_id));
+  return peer ? peerDisplayName(peer) : member.nickname;
+}
+function sortChannelMembers(members: readonly (ChannelMember | Peer)[]) {
+  return [...members].sort((left, right) => {
+    const leftSelf = sameDeviceId(left.device_id, profile.value?.device_id);
+    const rightSelf = sameDeviceId(right.device_id, profile.value?.device_id);
+    if (leftSelf !== rightSelf) return leftSelf ? -1 : 1;
+    if (left.online !== right.online) return left.online ? -1 : 1;
+    return memberDisplayName(left).localeCompare(memberDisplayName(right), "zh-CN");
+  });
 }
 function memberSubtitle(member: ChannelMember | Peer) {
   if ("address" in member) return peerSubtitle(member);
   return [channelMemberPresenceLabel(member), isChannelOwnerMember(member) ? "群主" : "成员", channelMemberMuted(member) ? "已禁言" : ""].filter(Boolean).join(" · ");
 }
 function openMemberDevice(member: ChannelMember | Peer) {
-  const peer = peers.value.find((item) => item.device_id === member.device_id);
+  const peer = peers.value.find((item) => sameDeviceId(item.device_id, member.device_id));
   if (!peer) return;
   openDevice(peer);
   activeSection.value = "devices";
@@ -3974,6 +4045,37 @@ function isImageFile(message: Message) {
   const meta = message.file_meta;
   const ext = fileExtension(meta?.name);
   return Boolean(meta?.mime_type?.startsWith("image/")) || ["png", "jpg", "jpeg", "gif", "webp", "bmp"].includes(ext);
+}
+function imagePreviewSource(message: Message) {
+  const cachedPath = previewMediaPaths.value[message.id];
+  return cachedPath ? convertFileSrc(cachedPath) : message.file_meta?.url ?? "";
+}
+async function openImagePreview(message: Message) {
+  imagePreviewMessage.value = message;
+  await cacheImagePreview(message);
+}
+function closeImagePreview() {
+  imagePreviewMessage.value = null;
+}
+async function cacheImagePreview(message: Message) {
+  if (!isImageFile(message) || !message.file_meta?.url || previewMediaPaths.value[message.id]) return;
+  try {
+    const path = await api.cachePreviewMedia(message.id, message.file_meta.url, message.file_meta.name);
+    previewMediaPaths.value = { ...previewMediaPaths.value, [message.id]: path };
+  } catch {
+    // 预览缓存失败时继续使用发送方的临时文件服务地址。
+  }
+}
+async function clearImagePreviewCache() {
+  previewMediaCacheClearing.value = true;
+  try {
+    previewMediaCacheInfo.value = await api.clearPreviewMediaCache();
+    previewMediaPaths.value = {};
+  } catch (err) {
+    store.error = stringifyError(err);
+  } finally {
+    previewMediaCacheClearing.value = false;
+  }
 }
 function isAudioFile(message: Message) {
   const meta = message.file_meta;
@@ -4118,6 +4220,17 @@ async function closeWindow() {
             <NButton secondary size="large" @click="openReleasePage">Release 页面</NButton>
             <NButton quaternary size="large" @click="dismissUpdateReminder">稍后提醒</NButton>
           </div>
+        </div>
+      </NModal>
+      <NModal
+        :show="imagePreviewMessage !== null"
+        class="image-preview-modal"
+        :mask-closable="true"
+        @update:show="(visible) => { if (!visible) closeImagePreview(); }"
+      >
+        <div v-if="imagePreviewMessage" class="image-preview-dialog" @click.stop>
+          <button class="image-preview-close" type="button" title="关闭预览" @click="closeImagePreview">×</button>
+          <img :src="imagePreviewSource(imagePreviewMessage)" :alt="imagePreviewMessage.file_meta?.name ?? '图片预览'" />
         </div>
       </NModal>
       <div class="desktop-frame">
@@ -4356,6 +4469,23 @@ async function closeWindow() {
                 </NListItem>
               </NList>
               <div class="section-label">已发现设备</div>
+              <NList hoverable clickable class="device-list local-device-list">
+                <NListItem class="device-item local-device-item" @click="openSection('settings')">
+                  <NThing :title="profile?.nickname ?? '本机设备'">
+                    <template #avatar>
+                      <img v-if="avatarImage(profile?.avatar)" class="avatar-image peer-avatar" :src="avatarImage(profile?.avatar)" alt="本机头像" />
+                      <NAvatar v-else class="peer-avatar">{{ firstLetter(profile?.nickname ?? '本机') }}</NAvatar>
+                    </template>
+                    <template #description>
+                      <div class="conversation-desc">
+                        <span class="conversation-status-dot online"></span>
+                        <span>本机 · {{ profile?.device_id ?? '读取中' }}</span>
+                      </div>
+                    </template>
+                    <template #header-extra><NTag size="small" :bordered="false" type="success">本机</NTag></template>
+                  </NThing>
+                </NListItem>
+              </NList>
               <NEmpty v-if="filteredPeers.length === 0" description="暂未发现设备" class="list-empty">
                 <template #extra>
                   <NText depth="3">可点击上方添加设备。</NText>
@@ -4363,10 +4493,10 @@ async function closeWindow() {
               </NEmpty>
               <NList v-else hoverable clickable class="device-list">
                 <NListItem v-for="peer in filteredPeers" :key="peer.device_id" class="device-item" :class="{ active: peer.device_id === selectedPeerId }" @click="openDevice(peer)">
-                  <NThing :title="peer.nickname">
+                  <NThing :title="peerDisplayName(peer)">
                     <template #avatar>
                       <img v-if="avatarImage(peer.avatar)" class="avatar-image peer-avatar" :src="avatarImage(peer.avatar)" alt="设备头像" />
-                      <NAvatar v-else class="peer-avatar">{{ firstLetter(peer.nickname) }}</NAvatar>
+                      <NAvatar v-else class="peer-avatar">{{ firstLetter(peerDisplayName(peer)) }}</NAvatar>
                     </template>
                     <template #description>
                       <div class="conversation-desc">
@@ -4458,7 +4588,7 @@ async function closeWindow() {
                             </p>
                           </template>
                           <div v-else-if="message.file_meta" class="file-message">
-                            <img v-if="isImageFile(message)" class="file-preview-image" :src="message.file_meta.url" :alt="message.file_meta.name" />
+                            <img v-if="isImageFile(message)" class="file-preview-image" :src="imagePreviewSource(message)" :alt="message.file_meta.name" title="点击放大查看" @click="openImagePreview(message)" @load="cacheImagePreview(message)" />
                             <audio v-else-if="isAudioFile(message)" class="voice-player" controls :src="message.file_meta.url"></audio>
                             <a v-else class="file-info file-link" :href="message.file_meta.url">
                               <strong>{{ message.file_meta.name }}</strong>
@@ -5033,9 +5163,9 @@ async function closeWindow() {
                 <div v-if="selectedPeerDetail" class="device-profile-panel">
                   <div class="device-detail-head large">
                     <img v-if="avatarImage(selectedPeerDetail.avatar)" class="avatar-image peer-avatar large-avatar" :src="avatarImage(selectedPeerDetail.avatar)" alt="设备头像" />
-                    <NAvatar v-else :size="56" class="peer-avatar">{{ firstLetter(selectedPeerDetail.nickname) }}</NAvatar>
+                    <NAvatar v-else :size="56" class="peer-avatar">{{ firstLetter(peerDisplayName(selectedPeerDetail)) }}</NAvatar>
                     <div>
-                      <h3>{{ selectedPeerDetail.nickname }}</h3>
+                      <h3>{{ peerDisplayName(selectedPeerDetail) }}</h3>
                       <p><span class="presence-dot" :class="{ online: selectedPeerDetail.online }"></span>{{ selectedPeerDetail.online ? "在线" : "离线" }}</p>
                     </div>
                   </div>
@@ -5050,6 +5180,12 @@ async function closeWindow() {
                     <span>构建时间</span><strong>{{ peerBuildTimeLabel(selectedPeerDetail) }}</strong>
                     <span>支持能力</span><strong>{{ peerSupportsFullFeatures(selectedPeerDetail) ? "告警、聊天、频道、游戏、文件" : "桌宠告警" }}</strong>
                     <span>最近在线</span><strong>{{ peerLastSeenLabel(selectedPeerDetail) }}</strong>
+                  </div>
+                  <div class="device-note-editor">
+                    <NFormItem label="设备备注" :show-feedback="false">
+                      <NInput v-model:value="peerNoteDraft" maxlength="32" clearable placeholder="仅保存在本机，用于识别设备" @keyup.enter="saveSelectedPeerNote" />
+                    </NFormItem>
+                    <NButton secondary type="primary" @click="saveSelectedPeerNote">保存备注</NButton>
                   </div>
                   <div v-if="superAdminEnabled" class="admin-rename-box">
                     <NFormItem label="超管修改设备昵称">
@@ -5098,11 +5234,11 @@ async function closeWindow() {
                     </div>
                     <NEmpty v-if="selectedDeviceChannelMembers.length === 0" description="暂无成员" class="list-empty compact" />
                     <NList v-else hoverable clickable class="channel-member-list embedded">
-                      <NListItem v-for="member in selectedDeviceChannelMembers" :key="member.device_id" class="device-item" @click="openMemberDevice(member)">
-                        <NThing :title="member.nickname" :description="memberSubtitle(member)">
+                      <NListItem v-for="member in selectedDeviceChannelMembers" :key="member.device_id" class="device-item" :class="{ 'is-offline': !sameDeviceId(member.device_id, profile?.device_id) && !member.online }" @click="openMemberDevice(member)">
+                        <NThing :title="memberDisplayName(member)" :description="memberSubtitle(member)">
                           <template #avatar>
                             <img v-if="avatarImage(member.avatar)" class="avatar-image peer-avatar" :src="avatarImage(member.avatar)" alt="成员头像" />
-                            <NAvatar v-else class="peer-avatar">{{ firstLetter(member.nickname) }}</NAvatar>
+                            <NAvatar v-else class="peer-avatar">{{ firstLetter(memberDisplayName(member)) }}</NAvatar>
                           </template>
                           <template #header-extra>
                             <NTag v-if="'is_owner' in member && member.is_owner" size="small" :bordered="false" type="warning">群主</NTag>
@@ -5236,6 +5372,16 @@ async function closeWindow() {
                     <NAlert v-if="networkRepairStatus" type="success" title="已打开修复窗口">
                       {{ networkRepairStatus }}
                     </NAlert>
+                  </NSpace>
+                </NCard>
+                <NCard v-if="settingsCategory === 'basic'" title="图片缓存" size="small">
+                  <NSpace vertical>
+                    <NText depth="3">带预览能力的图片会自动下载到本机缓存，聊天历史仍可在发送方离线后查看。</NText>
+                    <div class="update-info-grid">
+                      <span>缓存文件</span><strong>{{ previewMediaCacheInfo?.fileCount ?? 0 }} 个</strong>
+                      <span>占用空间</span><strong>{{ formatFileSize(previewMediaCacheInfo?.totalBytes) }}</strong>
+                    </div>
+                    <NButton secondary type="warning" :loading="previewMediaCacheClearing" @click="clearImagePreviewCache">清理图片缓存</NButton>
                   </NSpace>
                 </NCard>
                 <NCard v-if="settingsCategory === 'basic'" title="版本更新" size="small">
@@ -5612,14 +5758,14 @@ async function closeWindow() {
                   </div>
                   <NEmpty v-if="normalizedChannelMembers.length === 0" description="暂无成员" class="list-empty compact" />
                   <div v-else class="group-member-list">
-                    <div v-for="member in normalizedChannelMembers" :key="member.device_id" class="group-member-row">
+                    <div v-for="member in normalizedChannelMembers" :key="member.device_id" class="group-member-row" :class="{ 'is-offline': !sameDeviceId(member.device_id, profile?.device_id) && !member.online }">
                       <button class="group-member-main" type="button" @click="openMemberDevice(member)">
                         <img v-if="avatarImage(member.avatar)" class="avatar-image peer-avatar compact-avatar" :src="avatarImage(member.avatar)" alt="成员头像" />
-                        <NAvatar v-else class="peer-avatar compact-avatar">{{ firstLetter(member.nickname) }}</NAvatar>
+                        <NAvatar v-else class="peer-avatar compact-avatar">{{ firstLetter(memberDisplayName(member)) }}</NAvatar>
                         <span class="group-member-copy">
-                          <strong>{{ member.device_id === profile?.device_id ? `我 · ${member.nickname}` : member.nickname }}</strong>
+                          <strong>{{ sameDeviceId(member.device_id, profile?.device_id) ? `我 · ${memberDisplayName(member)}` : memberDisplayName(member) }}</strong>
                           <small>
-                            <i class="presence-dot" :class="{ online: member.device_id === profile?.device_id || member.online }"></i>
+                            <i class="presence-dot" :class="{ online: sameDeviceId(member.device_id, profile?.device_id) || member.online }"></i>
                             {{ channelMemberPresenceLabel(member) }}
                             <template v-if="isChannelOwnerMember(member)"> · 群主</template>
                             <template v-if="channelMemberMuted(member)"> · 已禁言</template>

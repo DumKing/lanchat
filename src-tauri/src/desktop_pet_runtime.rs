@@ -156,6 +156,21 @@ struct DesktopPetProcessHandle {
     stdin: ChildStdin,
 }
 
+fn should_rehydrate_pet_process(enabled: bool) -> bool {
+    enabled
+}
+
+#[cfg(test)]
+mod desktop_pet_enable_tests {
+    use super::should_rehydrate_pet_process;
+
+    #[test]
+    fn enabling_pet_requires_state_and_package_rehydration() {
+        assert!(should_rehydrate_pet_process(true));
+        assert!(!should_rehydrate_pet_process(false));
+    }
+}
+
 impl DesktopPetController {
     pub fn start(app: AppHandle) -> Self {
         let state = Arc::new(Mutex::new(DesktopPetRuntimeState {
@@ -194,6 +209,10 @@ impl DesktopPetController {
             state.enabled = enabled;
         }
         self.send_command(DesktopPetProcessCommand::State(self.state()));
+        if should_rehydrate_pet_process(enabled) {
+            let package = self.package.lock().ok().and_then(|current| current.clone());
+            self.send_command(DesktopPetProcessCommand::Package(package));
+        }
         if let Ok(context) = self.repaint.lock() {
             if let Some(context) = context.as_ref() {
                 context.send_viewport_cmd(egui::ViewportCommand::Visible(enabled));
@@ -449,6 +468,25 @@ struct DesktopPetApp {
     last_pet_click_pos: Option<Pos2>,
     pending_single_click_at: Option<Instant>,
     pending_single_click_alert_active: bool,
+    disco_origin: Option<Pos2>,
+    was_disco: bool,
+}
+
+fn should_restore_disco_origin(was_disco: bool, disco_active: bool) -> bool {
+    was_disco && !disco_active
+}
+
+#[cfg(test)]
+mod disco_position_tests {
+    use super::should_restore_disco_origin;
+
+    #[test]
+    fn restores_origin_only_when_disco_stops() {
+        assert!(!should_restore_disco_origin(false, false));
+        assert!(!should_restore_disco_origin(false, true));
+        assert!(!should_restore_disco_origin(true, true));
+        assert!(should_restore_disco_origin(true, false));
+    }
 }
 
 impl DesktopPetApp {
@@ -496,6 +534,8 @@ impl DesktopPetApp {
             last_pet_click_pos: None,
             pending_single_click_at: None,
             pending_single_click_alert_active: false,
+            disco_origin: None,
+            was_disco: false,
         }
     }
 
@@ -1137,6 +1177,14 @@ impl eframe::App for DesktopPetApp {
             .map(|value| value.clone())
             .unwrap_or_default();
         let package = self.package.lock().ok().and_then(|value| value.clone());
+        if state.disco && !self.was_disco {
+            self.disco_origin = ctx.input(|input| input.viewport().outer_rect.map(|rect| rect.min));
+        } else if should_restore_disco_origin(self.was_disco, state.disco) {
+            if let Some(origin) = self.disco_origin.take() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(origin));
+            }
+        }
+        self.was_disco = state.disco;
         if !state.enabled {
             self.transition_runtime(PetEvent::Disable);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
