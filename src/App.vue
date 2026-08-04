@@ -376,6 +376,7 @@ let mediaRecorder: MediaRecorder | null = null;
 let recordingChunks: BlobPart[] = [];
 let recordingTimer: number | null = null;
 let turnTicker: number | null = null;
+let updateCheckTimer: number | null = null;
 let autoTurnRunning = false;
 let unlistenTrayOpenTarget: (() => void) | null = null;
 let unlistenDesktopPetAction: (() => void) | null = null;
@@ -406,8 +407,9 @@ const appVersionInfo = ref<AppVersionInfo | null>(null);
 const updateInfo = ref<UpdateCheckResult | null>(readSavedUpdateInfo());
 const updateChecking = ref(false);
 const updateError = ref("");
-const autoUpdateEnabled = ref(readSavedAutoUpdateEnabled());
 const updateReminderOpen = ref(false);
+const forceUpdateRequired = computed(() => updateInfo.value?.forceRequired === true);
+const UPDATE_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
 const activeSection = ref<MainSection>("chat");
 const settingsCategory = ref<"basic" | "pet">("basic");
 const listPaneCollapsed = ref(false);
@@ -1188,18 +1190,19 @@ async function checkUpdates(manual = false) {
     updateChecking.value = false;
   }
 }
-async function autoCheckUpdatesIfNeeded() {
-  if (!shouldAutoCheckUpdate()) return;
+function scheduleAutomaticUpdateChecks() {
   if (typeof window === "undefined") return;
-  window.setTimeout(() => {
+  void checkUpdates(false);
+  if (updateCheckTimer !== null) window.clearInterval(updateCheckTimer);
+  updateCheckTimer = window.setInterval(() => {
     void checkUpdates(false);
-  }, 3500);
+  }, UPDATE_CHECK_INTERVAL_MS);
 }
 async function openPreferredUpdateUrl() {
   const url = preferredUpdateUrl.value;
   if (!url) return;
   try {
-    updateReminderOpen.value = false;
+    if (!forceUpdateRequired.value) updateReminderOpen.value = false;
     await api.openUpdateUrl(url);
   } catch (err) {
     store.error = stringifyError(err);
@@ -1209,7 +1212,7 @@ async function openReleasePage() {
   const url = updateInfo.value?.downloads.releasePage || updateInfo.value?.releaseUrl;
   if (!url) return;
   try {
-    updateReminderOpen.value = false;
+    if (!forceUpdateRequired.value) updateReminderOpen.value = false;
     await api.openUpdateUrl(url);
   } catch (err) {
     store.error = stringifyError(err);
@@ -1229,7 +1232,7 @@ onMounted(async () => {
   nicknameDraft.value = profile.value?.nickname ?? "";
   portDraft.value = profile.value?.listen_port ?? 18145;
   avatarDraft.value = profile.value?.avatar ?? "";
-  void autoCheckUpdatesIfNeeded();
+  scheduleAutomaticUpdateChecks();
   await api.setDesktopPetEnabled(petAlertEnabled.value).catch(() => undefined);
   await registerDesktopPetSendHotkey();
   await registerDesktopPetStopHotkey();
@@ -1290,6 +1293,10 @@ onUnmounted(() => {
   if (turnTicker !== null && typeof window !== "undefined") {
     window.clearInterval(turnTicker);
     turnTicker = null;
+  }
+  if (updateCheckTimer !== null && typeof window !== "undefined") {
+    window.clearInterval(updateCheckTimer);
+    updateCheckTimer = null;
   }
   if (typeof window !== "undefined") {
     window.removeEventListener("keydown", handleDesktopPetSendHotkey);
@@ -1353,9 +1360,6 @@ watch(selectedLanguage, (next) => {
   if (typeof window !== "undefined") {
     window.localStorage.setItem("lanchat-language", next);
   }
-});
-watch(autoUpdateEnabled, (next) => {
-  saveAutoUpdateEnabled(next);
 });
 watch(latestIncomingMessage, async (message) => {
   if (!message || message.sender_device_id === profile.value?.device_id) return;
@@ -1480,15 +1484,6 @@ function readSavedLanguage() {
   const saved = window.localStorage.getItem("lanchat-language");
   return languageOptions.some((item) => item.key === saved) ? saved! : "zh-CN";
 }
-function readSavedAutoUpdateEnabled() {
-  if (typeof window === "undefined") return true;
-  return window.localStorage.getItem("lanchat-auto-update-enabled") !== "false";
-}
-function saveAutoUpdateEnabled(value: boolean) {
-  if (typeof window !== "undefined") {
-    window.localStorage.setItem("lanchat-auto-update-enabled", String(value));
-  }
-}
 function readSavedUpdateInfo(): UpdateCheckResult | null {
   if (typeof window === "undefined") return null;
   const raw = window.localStorage.getItem("lanchat-last-update-info");
@@ -1513,6 +1508,10 @@ function readDismissedUpdateReminderKey() {
   return window.localStorage.getItem("lanchat-dismissed-update-reminder") ?? "";
 }
 function dismissUpdateReminder() {
+  if (forceUpdateRequired.value) {
+    updateReminderOpen.value = true;
+    return;
+  }
   const info = updateInfo.value;
   updateReminderOpen.value = false;
   if (info && typeof window !== "undefined") {
@@ -1522,19 +1521,20 @@ function dismissUpdateReminder() {
 function handleUpdateReminderShowChange(show: boolean) {
   if (show) {
     updateReminderOpen.value = true;
+  } else if (forceUpdateRequired.value) {
+    updateReminderOpen.value = true;
   } else {
     dismissUpdateReminder();
   }
 }
 function maybeOpenUpdateReminder(info: UpdateCheckResult, manual = false) {
   if (!info.updateAvailable) return;
+  if (info.forceRequired) {
+    updateReminderOpen.value = true;
+    return;
+  }
   if (!manual && readDismissedUpdateReminderKey() === updateReminderKey(info)) return;
   updateReminderOpen.value = true;
-}
-function shouldAutoCheckUpdate() {
-  if (!autoUpdateEnabled.value || typeof window === "undefined") return false;
-  const last = Number(window.localStorage.getItem("lanchat-last-update-check-at") ?? "0");
-  return !Number.isFinite(last) || Date.now() - last > 24 * 60 * 60 * 1000;
 }
 function readSavedNavExpanded() {
   if (typeof window === "undefined") return false;
@@ -4201,14 +4201,15 @@ async function closeWindow() {
         :show="updateReminderOpen"
         preset="card"
         class="update-reminder-modal"
-        :mask-closable="true"
-        closable
+        :mask-closable="!forceUpdateRequired"
+        :close-on-esc="!forceUpdateRequired"
+        :closable="!forceUpdateRequired"
         @update:show="handleUpdateReminderShowChange"
       >
         <div class="force-update-panel">
-          <NTag type="warning" :bordered="false">发现新版本</NTag>
+          <NTag :type="forceUpdateRequired ? 'error' : 'warning'" :bordered="false">{{ forceUpdateRequired ? '必须更新' : '发现新版本' }}</NTag>
           <h2>{{ updateInfo?.title || `LanChat ${updateInfo?.latestVersion ?? ''}` }}</h2>
-          <p>有新版本可以安装，建议更新后继续使用。绿色版可以下载 ZIP 后解压覆盖当前目录。</p>
+          <p>{{ forceUpdateRequired ? '当前版本已停止支持，请下载并安装新版本后继续使用。' : '有新版本可以安装，建议更新后继续使用。绿色版可以下载 ZIP 后解压覆盖当前目录。' }}</p>
           <div class="update-version-grid">
             <span>当前版本</span><strong>{{ localVersionLabel }}</strong>
             <span>最新版本</span><strong>{{ updateInfo?.latestVersion ?? "未知" }}</strong>
@@ -4218,7 +4219,8 @@ async function closeWindow() {
           <div class="force-update-actions">
             <NButton type="primary" size="large" @click="openPreferredUpdateUrl">下载更新</NButton>
             <NButton secondary size="large" @click="openReleasePage">Release 页面</NButton>
-            <NButton quaternary size="large" @click="dismissUpdateReminder">稍后提醒</NButton>
+            <NButton v-if="!forceUpdateRequired" quaternary size="large" @click="dismissUpdateReminder">稍后提醒</NButton>
+            <NButton v-else quaternary size="large" @click="api.quitApp">退出软件</NButton>
           </div>
         </div>
       </NModal>
@@ -5389,9 +5391,9 @@ async function closeWindow() {
                     <div class="setting-switch-row">
                       <div>
                         <strong>自动检查更新</strong>
-                        <p>启动后每天最多检查一次；如果发现新版本，会弹出可关闭的更新提醒。</p>
+                        <p>每次启动都会检查，运行期间每 12 小时复检一次。强制更新版本必须安装后才能继续使用。</p>
                       </div>
-                      <NSwitch v-model:value="autoUpdateEnabled" />
+                      <NTag type="success" :bordered="false">已启用</NTag>
                     </div>
                     <div class="update-info-grid">
                       <span>当前版本</span><strong>{{ localVersionLabel }}</strong>
