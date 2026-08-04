@@ -30,6 +30,7 @@
         "enable": true,
         "scope": [
           "$APPDATA/**",
+          "$APPLOCALDATA/**",
           "$RESOURCE/**",
           "$EXE/**"
         ]
