@@ -7,6 +7,15 @@ on:
         description: "Release tag, for example v0.1.0"
         required: true
         default: "v0.1.0"
+      force_update:
+        description: "Mark this release as mandatory for older clients"
+        required: false
+        default: false
+        type: boolean
+      min_supported_version:
+        description: "Minimum supported version shown in update metadata"
+        required: false
+        default: "0.0.0"
   push:
     tags:
       - "v*"
@@ -127,13 +136,15 @@ jobs:
         run: |
           TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
           VERSION="${TAG#v}"
+          FORCE_UPDATE="${{ github.event_name == 'workflow_dispatch' && inputs.force_update || 'false' }}"
+          MIN_SUPPORTED_VERSION="${{ github.event_name == 'workflow_dispatch' && inputs.min_supported_version || '0.0.0' }}"
           cat > release-downloads/lanchat-update.json <<EOF
           {
             "version": "${VERSION}",
-            "force": false,
-            "min_supported_version": "0.0.0",
+            "force": ${FORCE_UPDATE},
+            "min_supported_version": "${MIN_SUPPORTED_VERSION}",
             "title": "LanChat ${TAG}",
-            "notes": "发现新版本后会弹出更新提醒，用户可以关闭提醒后继续使用。",
+            "notes": "发现新版本后会弹出更新提醒；标记为强制更新的版本必须安装后才能继续使用。",
             "downloads": {
               "windows_portable": "https://github.com/${{ github.repository }}/releases/download/${TAG}/lanchat-windows-portable.zip",
               "release_page": "https://github.com/${{ github.repository }}/releases/tag/${TAG}"

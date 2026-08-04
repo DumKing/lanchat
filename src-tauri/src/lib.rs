@@ -526,10 +526,7 @@ async fn build_update_result(release: GithubRelease) -> UpdateCheckResult {
         compare_versions(&latest_version, &current.version) == std::cmp::Ordering::Greater;
     let min_supported_version = metadata.min_supported_version.clone();
     let force = metadata.force.unwrap_or(false);
-    let force_required = force
-        && min_supported_version.as_ref().is_some_and(|minimum| {
-            compare_versions(&current.version, minimum) == std::cmp::Ordering::Less
-        });
+    let force_required = force && update_available;
 
     UpdateCheckResult {
         repository: UPDATE_REPOSITORY.to_string(),
