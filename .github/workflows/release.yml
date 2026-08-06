@@ -72,6 +72,8 @@ jobs:
       - name: Build Tauri bundle
         env:
           APPLE_SIGNING_IDENTITY: "-"
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run tauri build -- --bundles ${{ matrix.bundle }}
 
       - name: Preserve Full bundle assets
@@ -80,9 +82,14 @@ jobs:
           New-Item -ItemType Directory -Force release-assets/bundles/full | Out-Null
           if (Test-Path -LiteralPath "src-tauri/target/release/bundle/nsis") {
             Copy-Item -Path "src-tauri/target/release/bundle/nsis/*.exe" -Destination "release-assets/bundles/full" -Force
+            Copy-Item -Path "src-tauri/target/release/bundle/nsis/*.sig" -Destination "release-assets/bundles/full" -Force -ErrorAction SilentlyContinue
           }
           if (Test-Path -LiteralPath "src-tauri/target/release/bundle/dmg") {
             Copy-Item -Path "src-tauri/target/release/bundle/dmg/*.dmg" -Destination "release-assets/bundles/full" -Force
+          }
+          if (Test-Path -LiteralPath "src-tauri/target/release/bundle/macos") {
+            Copy-Item -Path "src-tauri/target/release/bundle/macos/*.tar.gz" -Destination "release-assets/bundles/full" -Force -ErrorAction SilentlyContinue
+            Copy-Item -Path "src-tauri/target/release/bundle/macos/*.sig" -Destination "release-assets/bundles/full" -Force -ErrorAction SilentlyContinue
           }
 
       - name: Build Windows portable package
@@ -138,6 +145,14 @@ jobs:
           VERSION="${TAG#v}"
           FORCE_UPDATE="${{ github.event_name == 'workflow_dispatch' && inputs.force_update || 'false' }}"
           MIN_SUPPORTED_VERSION="${{ github.event_name == 'workflow_dispatch' && inputs.min_supported_version || '0.0.0' }}"
+          PORTABLE=$(find release-downloads -iname 'lanchat-windows-portable.zip' | head -n 1)
+          INSTALLER=$(find release-downloads -iname '*.exe' | head -n 1)
+          SIGNATURE=$(find release-downloads -iname '*.exe.sig' | head -n 1)
+          if [ -z "${PORTABLE}" ] || [ -z "${INSTALLER}" ] || [ -z "${SIGNATURE}" ]; then
+            echo "缺少绿色包或签名后的 Windows 更新包，请确认 TAURI_SIGNING_PRIVATE_KEY Secret 已配置。"
+            exit 1
+          fi
+          PORTABLE_SHA256=$(sha256sum "${PORTABLE}" | awk '{print $1}')
           cat > release-downloads/lanchat-update.json <<EOF
           {
             "version": "${VERSION}",
@@ -147,10 +162,31 @@ jobs:
             "notes": "发现新版本后会弹出更新提醒；标记为强制更新的版本必须安装后才能继续使用。",
             "downloads": {
               "windows_portable": "https://github.com/${{ github.repository }}/releases/download/${TAG}/lanchat-windows-portable.zip",
+              "windows_portable_sha256": "${PORTABLE_SHA256}",
+              "windows_installer": "https://github.com/${{ github.repository }}/releases/download/${TAG}/$(basename "${INSTALLER}")",
               "release_page": "https://github.com/${{ github.repository }}/releases/tag/${TAG}"
             }
           }
           EOF
+
+          cat > release-downloads/latest.json <<EOF
+          {
+            "version": "${VERSION}",
+            "notes": "LanChat ${TAG}",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "windows-x86_64": {
+                "signature": "$(cat "${SIGNATURE}")",
+                "url": "https://github.com/${{ github.repository }}/releases/download/${TAG}/$(basename "${INSTALLER}")"
+              }
+            }
+          }
+          EOF
+
+      - name: Generate release checksums
+        shell: bash
+        run: |
+          find release-downloads -type f \( -name '*.exe' -o -name '*.zip' -o -name '*.dmg' \) -print0 | sort -z | xargs -0 sha256sum > release-downloads/SHA256SUMS.txt
 
       - name: Create release
         uses: softprops/action-gh-release@v2

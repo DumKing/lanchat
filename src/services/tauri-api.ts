@@ -1,11 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AdminAlertMode, AdminDiscoMode, AppVersionInfo, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem, UpdateCheckResult } from "../types/lanchat";
+import type { AdminAlertMode, AdminDiscoMode, AdminNotification, AppVersionInfo, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem, UpdateCheckResult } from "../types/lanchat";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, PetStatePlaybackConfig } from "../types/desktop-pet";
 
 export const api = {
   getPlatformInfo: () => invoke<PlatformInfo>("get_platform_info"),
   getAppVersionInfo: () => invoke<AppVersionInfo>("get_app_version_info"),
   checkForUpdate: () => invoke<UpdateCheckResult>("check_for_update"),
+  isPortableRuntime: () => invoke<boolean>("is_portable_runtime"),
+  installPortableUpdate: (downloadUrl: string, sha256: string) => invoke<void>("install_portable_update", { downloadUrl, sha256 }),
+  authenticateSuperAdmin: (password: string) => invoke<boolean>("authenticate_super_admin", { password }),
+  clearSuperAdminSession: () => invoke<void>("clear_super_admin_session"),
   openUpdateUrl: (url: string) => invoke<void>("open_update_url", { url }),
   getProfile: () => invoke<Profile>("get_profile"),
   updateProfile: (nickname: string, listenPort: number, avatar?: string | null) =>
@@ -44,6 +48,8 @@ export const api = {
     invoke<Message[]>("list_messages", { conversationId }),
   sendMessage: (conversationId: string, content: string) =>
     invoke<Message>("send_message", { conversationId, content }),
+  simulateMessage: (simulatedDeviceId: string, conversationId: string, content: string, displaySimulationLabel: boolean) =>
+    invoke<Message>("simulate_message", { simulatedDeviceId, conversationId, content, displaySimulationLabel }),
   saveSystemNotice: (conversationId: string, content: string) =>
     invoke<Message>("save_system_notice", { conversationId, content }),
   recallMessage: (messageId: string) =>
@@ -62,6 +68,8 @@ export const api = {
     invoke<void>("send_game_frame", { targetDeviceId, frame }),
   sendQuickAlert: (content: string, mode: PetAlertMode = "normal") =>
     invoke<QuickAlert>("send_quick_alert", { content, mode }),
+  simulateQuickAlert: (simulatedDeviceId: string, content: string, mode: PetAlertMode, displaySimulationLabel: boolean) =>
+    invoke<QuickAlert>("simulate_quick_alert", { simulatedDeviceId, content, mode, displaySimulationLabel }),
   sendQuickAlertFeedback: (alertId: string, alertSenderDeviceId: string, result: "real" | "false") =>
     invoke<QuickAlertFeedback>("send_quick_alert_feedback", { alertId, alertSenderDeviceId, result }),
   resetQuickAlertCredibility: (targetDeviceId: string) =>
@@ -70,6 +78,13 @@ export const api = {
     invoke<AdminDiscoMode>("send_admin_disco_mode", { targetDeviceId, durationMs }),
   sendAdminAlertMode: (targetDeviceId: string, mode: PetAlertMode) =>
     invoke<AdminAlertMode>("send_admin_alert_mode", { targetDeviceId, mode }),
+  listAdminNotifications: () => invoke<AdminNotification[]>("list_admin_notifications"),
+  sendAdminNotification: (targetDeviceId: string | null, targetScope: "device" | "all_online", title: string, content: string, template: string, supportUrl: string | null, displayMode: string, deadlineAt: number | null, timeoutPolicy: string) =>
+    invoke<AdminNotification[]>("send_admin_notification", { targetDeviceId, targetScope, title, content, template, supportUrl, displayMode, deadlineAt, timeoutPolicy }),
+  submitAdminNotification: (notificationId: string) =>
+    invoke<AdminNotification>("submit_admin_notification", { notificationId }),
+  decideAdminNotification: (notificationId: string, decision: "approved" | "rejected" | "revoked") =>
+    invoke<AdminNotification>("decide_admin_notification", { notificationId, decision }),
   listDesktopPets: () => invoke<DesktopPetRegistrySnapshot>("list_desktop_pets"),
   refreshDesktopPets: () => invoke<DesktopPetRegistrySnapshot>("refresh_desktop_pets"),
   importDesktopPet: (sourcePath: string) =>

@@ -13,6 +13,7 @@ mod desktop_pet_tests;
 
 use channel_crypto::{generate_channel_key, CHANNEL_KEY_VERSION};
 use chrono::TimeZone;
+use debug_log::emit_debug_log;
 use desktop_pet::{
     DesktopPetManager, DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings,
     ExternalPushConfig, PetPackageSource, PetResourceRoot, PetStatePlaybackConfig,
@@ -24,10 +25,12 @@ use network::{local_ip_address, Network};
 use protocol::GameFrame;
 use protocol::MessageRecallFrame;
 use protocol::{
-    AdminAlertModeFrame, AdminDiscoModeFrame, QuickAlertFeedbackFrame, QuickAlertFrame,
-    QuickAlertTrustResetFrame,
+    AdminAlertModeFrame, AdminDiscoModeFrame, AdminNotificationDecisionFrame,
+    AdminNotificationFrame, AdminNotificationSubmissionFrame, QuickAlertFeedbackFrame,
+    QuickAlertFrame, QuickAlertTrustResetFrame, SimulationMeta,
 };
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -35,8 +38,8 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use storage::{
-    ChannelMember, ChannelMemberSeed, Conversation, Message, MessageType, Peer, Profile, Storage,
-    DEFAULT_GROUP_ID,
+    AdminNotificationRecord, ChannelMember, ChannelMemberSeed, Conversation, Message, MessageType,
+    Peer, Profile, SimulationAudit, Storage, DEFAULT_GROUP_ID,
 };
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItemBuilder, PredefinedMenuItem};
@@ -55,6 +58,7 @@ const LOCAL_BUILD_VERSION: &str = concat!(
 );
 
 const PREVIEW_MEDIA_CACHE_MAX_BYTES: usize = 30 * 1024 * 1024;
+const SUPER_ADMIN_PASSWORD_MD5: &str = "D7B9AF919901FA1598BDC21465E3EB3F";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -308,6 +312,7 @@ struct AppVersionInfo {
 #[serde(rename_all = "camelCase")]
 struct UpdateDownloadLinks {
     windows_portable: Option<String>,
+    windows_portable_sha256: Option<String>,
     windows_installer: Option<String>,
     macos_dmg: Option<String>,
     release_page: String,
@@ -360,6 +365,7 @@ struct ReleaseUpdateMetadata {
 #[derive(Debug, Default, Deserialize)]
 struct ReleaseDownloadMetadata {
     windows_portable: Option<String>,
+    windows_portable_sha256: Option<String>,
     windows_installer: Option<String>,
     macos_dmg: Option<String>,
     release_page: Option<String>,
@@ -374,6 +380,7 @@ struct AppState {
     desktop_pet: DesktopPetManager,
     desktop_pet_send_hotkey: Arc<Mutex<Option<Shortcut>>>,
     desktop_pet_stop_hotkey: Arc<Mutex<Option<Shortcut>>>,
+    super_admin_session: Arc<Mutex<bool>>,
 }
 
 fn ensure_full_client(state: &AppState, capability: &str) -> Result<(), String> {
@@ -507,6 +514,10 @@ async fn build_update_result(release: GithubRelease) -> UpdateCheckResult {
                     && name.ends_with(".zip")
             })
         });
+    let windows_portable_sha256 = metadata
+        .downloads
+        .as_ref()
+        .and_then(|downloads| downloads.windows_portable_sha256.clone());
     let windows_installer = metadata
         .downloads
         .as_ref()
@@ -546,6 +557,7 @@ async fn build_update_result(release: GithubRelease) -> UpdateCheckResult {
         release_url: release.html_url.clone(),
         downloads: UpdateDownloadLinks {
             windows_portable,
+            windows_portable_sha256,
             windows_installer,
             macos_dmg,
             release_page,
@@ -590,6 +602,101 @@ fn open_update_url(url: String) -> Result<(), String> {
     }
     tauri_plugin_opener::open_url(url, None::<&str>)
         .map_err(|error| format!("打开更新页面失败：{error}"))
+}
+
+fn running_portable_root() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    let root = executable.parent()?.to_path_buf();
+    if root.join("README.txt").is_file() && root.join("lanchat.exe").is_file() {
+        Some(root)
+    } else {
+        None
+    }
+}
+
+#[tauri::command]
+fn is_portable_runtime() -> bool {
+    cfg!(target_os = "windows") && running_portable_root().is_some()
+}
+
+#[tauri::command]
+async fn install_portable_update(
+    app: tauri::AppHandle,
+    download_url: String,
+    sha256: String,
+) -> Result<(), String> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, download_url, sha256);
+        return Err("绿色版自动更新暂仅支持 Windows".to_string());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let root = running_portable_root().ok_or_else(|| "当前不是绿色版运行环境".to_string())?;
+        let download_url = download_url.trim().to_string();
+        if !(download_url.starts_with("https://github.com/")
+            || download_url.starts_with("https://objects.githubusercontent.com/"))
+        {
+            return Err("绿色版更新链接不合法".to_string());
+        }
+        let sha256 = sha256.trim().to_ascii_lowercase();
+        if sha256.len() != 64 || !sha256.chars().all(|value| value.is_ascii_hexdigit()) {
+            return Err("绿色版更新缺少有效的 SHA-256 校验值".to_string());
+        }
+        let bytes = reqwest::Client::new()
+            .get(&download_url)
+            .header("User-Agent", "LanChat")
+            .send()
+            .await
+            .map_err(|error| format!("下载绿色版更新失败：{error}"))?
+            .error_for_status()
+            .map_err(|error| format!("下载绿色版更新失败：{error}"))?
+            .bytes()
+            .await
+            .map_err(|error| format!("读取绿色版更新失败：{error}"))?;
+        let actual = hex::encode(sha2::Sha256::digest(&bytes));
+        if actual != sha256 {
+            return Err("绿色版更新校验失败，已取消替换".to_string());
+        }
+        let update_root = std::env::temp_dir().join(format!("lanchat-update-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&update_root)
+            .map_err(|error| format!("创建更新临时目录失败：{error}"))?;
+        let archive = update_root.join("lanchat-update.zip");
+        let script = update_root.join("apply-update.ps1");
+        std::fs::write(&archive, bytes).map_err(|error| format!("保存绿色版更新失败：{error}"))?;
+        let script_text = format!(
+            r#"
+Start-Sleep -Seconds 2
+$ErrorActionPreference = 'Stop'
+$root = '{root}'
+$archive = '{archive}'
+$staging = Join-Path (Split-Path $archive -Parent) 'staging'
+$backup = Join-Path (Split-Path $archive -Parent) 'backup'
+try {{
+  Expand-Archive -LiteralPath $archive -DestinationPath $staging -Force
+  $payload = Get-ChildItem -LiteralPath $staging -Directory | Select-Object -First 1
+  if ($null -eq $payload) {{ throw '更新包结构无效' }}
+  New-Item -ItemType Directory -Force $backup | Out-Null
+  Copy-Item -Path (Join-Path $root '*') -Destination $backup -Recurse -Force
+  Copy-Item -Path (Join-Path $payload.FullName '*') -Destination $root -Recurse -Force
+  Start-Process -FilePath (Join-Path $root 'lanchat.exe')
+}} catch {{
+  if (Test-Path -LiteralPath $backup) {{ Copy-Item -Path (Join-Path $backup '*') -Destination $root -Recurse -Force }}
+}}
+"#,
+            root = root.to_string_lossy().replace('\'', "''"),
+            archive = archive.to_string_lossy().replace('\'', "''")
+        );
+        std::fs::write(&script, script_text)
+            .map_err(|error| format!("生成绿色版更新脚本失败：{error}"))?;
+        std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg(&script)
+            .spawn()
+            .map_err(|error| format!("启动绿色版更新器失败：{error}"))?;
+        app.exit(0);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1098,9 +1205,102 @@ async fn send_message(
         message_type: MessageType::Text,
         file_meta: None,
         status: storage::MessageStatus::Sending,
+        simulation: None,
         created_at: now,
     };
     state.network.send_message(app, message.clone()).await?;
+    Ok(message)
+}
+
+#[tauri::command]
+fn authenticate_super_admin(state: State<'_, AppState>, password: String) -> Result<bool, String> {
+    let actual = format!("{:x}", md5::compute(password.as_bytes()));
+    if !actual.eq_ignore_ascii_case(SUPER_ADMIN_PASSWORD_MD5) {
+        return Err("验证失败".to_string());
+    }
+    *state
+        .super_admin_session
+        .lock()
+        .map_err(|_| "超级管理员会话状态异常".to_string())? = true;
+    Ok(true)
+}
+
+#[tauri::command]
+fn clear_super_admin_session(state: State<'_, AppState>) -> Result<(), String> {
+    *state
+        .super_admin_session
+        .lock()
+        .map_err(|_| "超级管理员会话状态异常".to_string())? = false;
+    Ok(())
+}
+
+fn ensure_super_admin_session(state: &AppState) -> Result<(), String> {
+    if *state
+        .super_admin_session
+        .lock()
+        .map_err(|_| "超级管理员会话状态异常".to_string())?
+    {
+        Ok(())
+    } else {
+        Err("需要超级管理员权限".to_string())
+    }
+}
+
+#[tauri::command]
+async fn simulate_message(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    simulated_device_id: String,
+    conversation_id: String,
+    content: String,
+    display_simulation_label: bool,
+) -> Result<Message, String> {
+    ensure_full_client(&state, "超管模拟发送")?;
+    ensure_super_admin_session(&state)?;
+    let content = content.trim().to_string();
+    if content.is_empty() {
+        return Err("消息内容不能为空".to_string());
+    }
+    let simulated = state
+        .storage
+        .get_peer(&simulated_device_id)?
+        .ok_or_else(|| "只能选择已发现的设备作为模拟身份".to_string())?;
+    let profile = state.storage.get_or_create_profile()?;
+    let now = chrono::Utc::now().timestamp_millis();
+    let conversation_id = if conversation_id.trim().is_empty() {
+        DEFAULT_GROUP_ID.to_string()
+    } else {
+        conversation_id
+    };
+    let simulation = SimulationMeta {
+        operator_device_id: profile.device_id.clone(),
+        operator_nickname: profile.nickname.clone(),
+        display_label: display_simulation_label,
+        created_at: now,
+    };
+    let message = Message {
+        id: Uuid::new_v4().to_string(),
+        conversation_id: conversation_id.clone(),
+        sender_device_id: simulated.device_id.clone(),
+        content: content.clone(),
+        message_type: MessageType::Text,
+        file_meta: None,
+        status: storage::MessageStatus::Sending,
+        simulation: Some(simulation),
+        created_at: now,
+    };
+    state.network.send_message(app, message.clone()).await?;
+    state.storage.save_simulation_audit(&SimulationAudit {
+        id: Uuid::new_v4().to_string(),
+        operator_device_id: profile.device_id,
+        operator_nickname: profile.nickname,
+        simulated_device_id: simulated.device_id,
+        action_kind: "message".to_string(),
+        target_id: Some(conversation_id),
+        display_label: display_simulation_label,
+        content,
+        created_at: now,
+    })?;
     Ok(message)
 }
 
@@ -1128,6 +1328,7 @@ fn save_system_notice(
         message_type: MessageType::System,
         file_meta: None,
         status: storage::MessageStatus::Delivered,
+        simulation: None,
         created_at: now,
     };
     state.storage.save_message(&message)?;
@@ -1423,6 +1624,7 @@ async fn send_rich_message(
         message_type,
         file_meta,
         status: storage::MessageStatus::Sending,
+        simulation: None,
         created_at: now,
     };
     state.network.send_message(app, message.clone()).await?;
@@ -1472,6 +1674,7 @@ async fn send_quick_alert(
             }
         },
         mode,
+        simulation: None,
         created_at: chrono::Utc::now().timestamp_millis(),
     };
     state
@@ -1493,6 +1696,87 @@ async fn send_quick_alert(
             });
         }
     }
+    Ok(frame)
+}
+
+#[tauri::command]
+async fn simulate_quick_alert(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    simulated_device_id: String,
+    content: String,
+    mode: Option<String>,
+    display_simulation_label: bool,
+) -> Result<QuickAlertFrame, String> {
+    ensure_super_admin_session(&state)?;
+    let simulated = state
+        .storage
+        .get_peer(&simulated_device_id)?
+        .ok_or_else(|| "只能选择已发现的设备作为模拟身份".to_string())?;
+    let profile = state.storage.get_or_create_profile()?;
+    let now = chrono::Utc::now().timestamp_millis();
+    let mode = if mode
+        .as_deref()
+        .unwrap_or("normal")
+        .eq_ignore_ascii_case("disco")
+    {
+        "disco".to_string()
+    } else {
+        "normal".to_string()
+    };
+    let content = {
+        let text = content.trim();
+        if text.is_empty() {
+            "呱呱~呱~~".to_string()
+        } else {
+            text.chars().take(120).collect()
+        }
+    };
+    let frame = QuickAlertFrame {
+        alert_id: Uuid::new_v4().to_string(),
+        sender_device_id: simulated.device_id.clone(),
+        sender_nickname: simulated.nickname.clone(),
+        sender_address: Some(simulated.address.clone()),
+        content: content.clone(),
+        mode: mode.clone(),
+        simulation: Some(SimulationMeta {
+            operator_device_id: profile.device_id.clone(),
+            operator_nickname: profile.nickname.clone(),
+            display_label: display_simulation_label,
+            created_at: now,
+        }),
+        created_at: now,
+    };
+    state
+        .network
+        .broadcast_quick_alert(app, frame.clone())
+        .await?;
+    let settings = state.desktop_pet.settings();
+    if settings.external_push_enabled {
+        for config in settings
+            .external_push_configs
+            .into_iter()
+            .filter(|item| item.enabled && !item.webhook.trim().is_empty())
+        {
+            let notify_frame = frame.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = send_external_push_alert(config, notify_frame).await {
+                    eprintln!("{error}");
+                }
+            });
+        }
+    }
+    state.storage.save_simulation_audit(&SimulationAudit {
+        id: Uuid::new_v4().to_string(),
+        operator_device_id: profile.device_id,
+        operator_nickname: profile.nickname,
+        simulated_device_id: simulated.device_id,
+        action_kind: format!("alert:{mode}"),
+        target_id: None,
+        display_label: display_simulation_label,
+        content,
+        created_at: now,
+    })?;
     Ok(frame)
 }
 
@@ -1589,6 +1873,169 @@ async fn send_admin_alert_mode(
         .await?;
     app.emit("admin_alert_mode_received", &frame).ok();
     Ok(frame)
+}
+
+#[tauri::command]
+fn list_admin_notifications(
+    state: State<'_, AppState>,
+) -> Result<Vec<AdminNotificationRecord>, String> {
+    state.storage.list_admin_notifications()
+}
+
+#[tauri::command]
+async fn send_admin_notification(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    target_device_id: Option<String>,
+    target_scope: Option<String>,
+    title: String,
+    content: String,
+    template: Option<String>,
+    support_url: Option<String>,
+    display_mode: String,
+    deadline_at: Option<i64>,
+    timeout_policy: String,
+) -> Result<Vec<AdminNotificationRecord>, String> {
+    ensure_super_admin_session(&state)?;
+    let profile = state.storage.get_or_create_profile()?;
+    let target_scope = target_scope.unwrap_or_else(|| "device".to_string());
+    let target_device_id = target_device_id.unwrap_or_default().trim().to_lowercase();
+    let title = title.trim().chars().take(60).collect::<String>();
+    let content = content.trim().chars().take(1000).collect::<String>();
+    if title.is_empty() || content.is_empty() {
+        return Err("请填写通知标题和内容".to_string());
+    }
+    let display_mode = if display_mode == "requires_confirmation" {
+        "requires_confirmation"
+    } else {
+        "dismissible"
+    }
+    .to_string();
+    let timeout_policy = match timeout_policy.as_str() {
+        "auto_release" | "keep_locked" => timeout_policy,
+        _ => "manual_review".to_string(),
+    };
+    let targets = if target_scope == "all_online" {
+        state
+            .storage
+            .list_peers()?
+            .into_iter()
+            .filter(|peer| peer.online)
+            .map(|peer| peer.device_id)
+            .collect::<Vec<_>>()
+    } else if target_device_id.is_empty() {
+        return Err("请选择要通知的设备".to_string());
+    } else {
+        vec![target_device_id]
+    };
+    if targets.is_empty() {
+        return Err("当前没有可通知的在线设备".to_string());
+    }
+    let mut delivered = Vec::new();
+    for target_device_id in targets {
+        let frame = AdminNotificationFrame {
+            notification_id: Uuid::new_v4().to_string(),
+            target_device_id: target_device_id.clone(),
+            title: title.clone(),
+            content: content.clone(),
+            template: template.clone().unwrap_or_default(),
+            support_url: support_url.clone().filter(|value| !value.trim().is_empty()),
+            display_mode: display_mode.clone(),
+            deadline_at,
+            timeout_policy: timeout_policy.clone(),
+            issued_by_device_id: profile.device_id.clone(),
+            issued_by_nickname: profile.nickname.clone(),
+            created_at: chrono::Utc::now().timestamp_millis(),
+        };
+        match state
+            .network
+            .send_admin_notification_frame(
+                app.clone(),
+                &target_device_id,
+                protocol::WireFrame::AdminNotification(frame.clone()),
+            )
+            .await
+        {
+            Ok(()) => delivered.push(state.storage.upsert_admin_notification(&frame)?),
+            Err(error) if target_scope == "all_online" => {
+                emit_debug_log(&app, "warn", "admin", "全员通知部分设备未送达", Some(error))
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    if delivered.is_empty() {
+        return Err("通知未送达任何在线设备".to_string());
+    }
+    Ok(delivered)
+}
+
+#[tauri::command]
+async fn submit_admin_notification(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    notification_id: String,
+) -> Result<AdminNotificationRecord, String> {
+    let profile = state.storage.get_or_create_profile()?;
+    let submitted_at = chrono::Utc::now().timestamp_millis();
+    let record = state.storage.submit_admin_notification(
+        &notification_id,
+        &profile.device_id,
+        &profile.nickname,
+        submitted_at,
+    )?;
+    let frame = AdminNotificationSubmissionFrame {
+        notification_id: record.notification_id.clone(),
+        target_device_id: profile.device_id.clone(),
+        submitted_by_device_id: profile.device_id,
+        submitted_by_nickname: profile.nickname,
+        submitted_at,
+    };
+    state
+        .network
+        .send_admin_notification_frame(
+            app,
+            &record.issued_by_device_id,
+            protocol::WireFrame::AdminNotificationSubmission(frame),
+        )
+        .await?;
+    Ok(record)
+}
+
+#[tauri::command]
+async fn decide_admin_notification(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    notification_id: String,
+    decision: String,
+) -> Result<AdminNotificationRecord, String> {
+    ensure_super_admin_session(&state)?;
+    let profile = state.storage.get_or_create_profile()?;
+    let records = state.storage.list_admin_notifications()?;
+    let original = records
+        .into_iter()
+        .find(|item| item.notification_id == notification_id)
+        .ok_or_else(|| "未找到超管通知".to_string())?;
+    if original.issued_by_device_id != profile.device_id {
+        return Err("只能审核本机下发的通知".to_string());
+    }
+    let frame = AdminNotificationDecisionFrame {
+        notification_id,
+        target_device_id: original.target_device_id.clone(),
+        decision,
+        decided_by_device_id: profile.device_id,
+        decided_by_nickname: profile.nickname,
+        decided_at: chrono::Utc::now().timestamp_millis(),
+    };
+    let record = state.storage.decide_admin_notification(&frame)?;
+    state
+        .network
+        .send_admin_notification_frame(
+            app,
+            &original.target_device_id,
+            protocol::WireFrame::AdminNotificationDecision(frame),
+        )
+        .await?;
+    Ok(record)
 }
 
 #[tauri::command]
@@ -2329,6 +2776,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             reset_main_window(app)?;
             let tray_state = Arc::new(Mutex::new(TrayState::default()));
@@ -2373,6 +2821,7 @@ pub fn run() {
                 desktop_pet,
                 desktop_pet_send_hotkey: Arc::new(Mutex::new(None)),
                 desktop_pet_stop_hotkey: Arc::new(Mutex::new(None)),
+                super_admin_session: Arc::new(Mutex::new(false)),
             });
             Ok(())
         })
@@ -2388,6 +2837,10 @@ pub fn run() {
             get_platform_info,
             get_app_version_info,
             check_for_update,
+            is_portable_runtime,
+            install_portable_update,
+            authenticate_super_admin,
+            clear_super_admin_session,
             open_update_url,
             get_profile,
             update_profile,
@@ -2410,6 +2863,7 @@ pub fn run() {
             broadcast_channel_notice,
             list_messages,
             send_message,
+            simulate_message,
             save_system_notice,
             recall_message,
             send_file_message,
@@ -2420,10 +2874,15 @@ pub fn run() {
             send_voice_message,
             send_game_frame,
             send_quick_alert,
+            simulate_quick_alert,
             send_quick_alert_feedback,
             send_quick_alert_trust_reset,
             send_admin_disco_mode,
             send_admin_alert_mode,
+            list_admin_notifications,
+            send_admin_notification,
+            submit_admin_notification,
+            decide_admin_notification,
             list_desktop_pets,
             refresh_desktop_pets,
             import_desktop_pet,

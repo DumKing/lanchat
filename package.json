@@ -1,7 +1,7 @@
 {
   "name": "lanchat",
   "private": true,
-  "version": "0.3.5",
+  "version": "0.3.6",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -22,6 +22,7 @@
     "test:composer-ime": "node scripts/test-composer-ime.mjs",
     "test:peer-presentation": "node scripts/test-peer-presentation.mjs",
     "test:release-notification": "node scripts/test-release-notification.mjs",
+    "test:admin-notification": "node scripts/test-admin-notification.mjs",
     "test:tray-attention": "node scripts/test-tray-attention.mjs",
     "test:app-error-boundary": "node scripts/test-app-error-boundary.mjs",
     "build": "node scripts/write-build-timestamp.mjs && vue-tsc --noEmit && vite build",
@@ -32,6 +33,7 @@
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "crypto-js": "^4.2.0",
     "naive-ui": "^2.44.1",
     "pinia": "^3.0.4",

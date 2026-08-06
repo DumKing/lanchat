@@ -19,6 +19,9 @@ pub enum WireFrame {
     AdminChannelControl(AdminChannelControlFrame),
     AdminDiscoMode(AdminDiscoModeFrame),
     AdminAlertMode(AdminAlertModeFrame),
+    AdminNotification(AdminNotificationFrame),
+    AdminNotificationSubmission(AdminNotificationSubmissionFrame),
+    AdminNotificationDecision(AdminNotificationDecisionFrame),
     Ping,
     Pong,
 }
@@ -86,6 +89,18 @@ pub struct ChatMessageFrame {
     pub nonce: Option<String>,
     #[serde(default)]
     pub key_version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simulation: Option<SimulationMeta>,
+    pub created_at: i64,
+}
+
+/// 由本机超级管理员代为发布时的可追溯操作信息。
+/// 业务展示仍使用消息中的 sender_device_id，审计与可选标签使用本结构。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimulationMeta {
+    pub operator_device_id: String,
+    pub operator_nickname: String,
+    pub display_label: bool,
     pub created_at: i64,
 }
 
@@ -163,6 +178,8 @@ pub struct QuickAlertFrame {
     pub content: String,
     #[serde(default = "default_alert_mode")]
     pub mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simulation: Option<SimulationMeta>,
     pub created_at: i64,
 }
 
@@ -205,6 +222,49 @@ pub struct AdminAlertModeFrame {
     pub issued_by_nickname: String,
     pub created_at: i64,
 }
+
+/// 超管下发给指定设备的通知。确认型通知由目标设备提交后，再由超管审核放行。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdminNotificationFrame {
+    pub notification_id: String,
+    pub target_device_id: String,
+    pub title: String,
+    pub content: String,
+    #[serde(default)]
+    pub template: String,
+    #[serde(default)]
+    pub support_url: Option<String>,
+    /// dismissible | requires_confirmation
+    pub display_mode: String,
+    #[serde(default)]
+    pub deadline_at: Option<i64>,
+    /// auto_release | manual_review | keep_locked
+    #[serde(default)]
+    pub timeout_policy: String,
+    pub issued_by_device_id: String,
+    pub issued_by_nickname: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdminNotificationSubmissionFrame {
+    pub notification_id: String,
+    pub target_device_id: String,
+    pub submitted_by_device_id: String,
+    pub submitted_by_nickname: String,
+    pub submitted_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdminNotificationDecisionFrame {
+    pub notification_id: String,
+    pub target_device_id: String,
+    /// approved | rejected | revoked
+    pub decision: String,
+    pub decided_by_device_id: String,
+    pub decided_by_nickname: String,
+    pub decided_at: i64,
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GameFrame {
     pub frame_id: String,
@@ -244,6 +304,7 @@ mod tests {
             encrypted: false,
             nonce: None,
             key_version: None,
+            simulation: None,
             created_at: 1_756_000_000,
         });
 
@@ -353,7 +414,34 @@ mod tests {
             sender_address: Some("192.168.1.23".to_string()),
             content: "快捷告警".to_string(),
             mode: "disco".to_string(),
+            simulation: None,
             created_at: 130,
+        });
+
+        let encoded = encode_frame(&frame).expect("frame should encode");
+
+        assert_eq!(decode_frame(&encoded).expect("frame should decode"), frame);
+    }
+
+    #[test]
+    fn simulation_metadata_round_trips() {
+        let frame = WireFrame::ChatMessage(ChatMessageFrame {
+            message_id: "simulated-1".to_string(),
+            conversation_id: "lan-room".to_string(),
+            sender_device_id: "device-simulated".to_string(),
+            content: "模拟消息".to_string(),
+            message_type: "text".to_string(),
+            file_meta: None,
+            encrypted: false,
+            nonce: None,
+            key_version: None,
+            simulation: Some(SimulationMeta {
+                operator_device_id: "device-admin".to_string(),
+                operator_nickname: "超级管理员".to_string(),
+                display_label: true,
+                created_at: 140,
+            }),
+            created_at: 140,
         });
 
         let encoded = encode_frame(&frame).expect("frame should encode");
@@ -419,6 +507,41 @@ mod tests {
         let encoded = encode_frame(&frame).expect("frame should encode");
 
         assert_eq!(decode_frame(&encoded).expect("frame should decode"), frame);
+    }
+
+    #[test]
+    fn admin_notification_frames_round_trip() {
+        let notification = WireFrame::AdminNotification(AdminNotificationFrame {
+            notification_id: "notice-1".to_string(),
+            target_device_id: "device-a".to_string(),
+            title: "请确认".to_string(),
+            content: "请完成本次操作后提交确认".to_string(),
+            template: "support".to_string(),
+            support_url: Some("https://example.test/qrcode.png".to_string()),
+            display_mode: "requires_confirmation".to_string(),
+            deadline_at: Some(200),
+            timeout_policy: "manual_review".to_string(),
+            issued_by_device_id: "admin-1".to_string(),
+            issued_by_nickname: "管理员".to_string(),
+            created_at: 100,
+        });
+        assert_eq!(
+            decode_frame(&encode_frame(&notification).unwrap()).unwrap(),
+            notification
+        );
+
+        let decision = WireFrame::AdminNotificationDecision(AdminNotificationDecisionFrame {
+            notification_id: "notice-1".to_string(),
+            target_device_id: "device-a".to_string(),
+            decision: "approved".to_string(),
+            decided_by_device_id: "admin-1".to_string(),
+            decided_by_nickname: "管理员".to_string(),
+            decided_at: 220,
+        });
+        assert_eq!(
+            decode_frame(&encode_frame(&decision).unwrap()).unwrap(),
+            decision
+        );
     }
     #[test]
     fn peer_status_round_trips() {

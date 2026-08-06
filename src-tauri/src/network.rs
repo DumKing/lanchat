@@ -514,6 +514,29 @@ impl Network {
         Ok(frame)
     }
 
+    pub async fn send_admin_notification_frame(
+        &self,
+        app: AppHandle,
+        target_device_id: &str,
+        frame: WireFrame,
+    ) -> Result<(), String> {
+        let target_device_id = normalize_device_id(target_device_id);
+        let delivered = self
+            .send_direct_frame(app.clone(), &target_device_id, frame)
+            .await?;
+        if !delivered {
+            return Err("目标设备当前不在线，通知未送达".to_string());
+        }
+        emit_debug_log(
+            &app,
+            "info",
+            "admin",
+            "超管通知已直连送达",
+            Some(target_device_id),
+        );
+        Ok(())
+    }
+
     pub async fn broadcast_channel_notice(
         &self,
         app: AppHandle,
@@ -697,24 +720,29 @@ impl Network {
         if !self.supports_chat {
             return Err("当前客户端不支持聊天、频道和文件消息".to_string());
         }
+        let authorization_device_id = message
+            .simulation
+            .as_ref()
+            .map(|meta| meta.operator_device_id.as_str())
+            .unwrap_or(message.sender_device_id.as_str());
         let private_channel_key = self.storage.private_channel_key(&message.conversation_id)?;
         if let Some(_) = private_channel_key.as_ref() {
             if !self
                 .storage
-                .is_private_channel_member(&message.conversation_id, &message.sender_device_id)?
+                .is_private_channel_member(&message.conversation_id, authorization_device_id)?
             {
                 return Err("你不是该私有频道成员，不能发送消息".to_string());
             }
             if self.storage.is_private_channel_member_muted(
                 &message.conversation_id,
-                &message.sender_device_id,
+                authorization_device_id,
             )? {
                 return Err("你已被群主禁言，暂不能在该频道发言".to_string());
             }
         } else if message.conversation_id == DEFAULT_GROUP_ID {
             if self
                 .storage
-                .is_channel_muted(DEFAULT_GROUP_ID, &message.sender_device_id)?
+                .is_channel_muted(DEFAULT_GROUP_ID, authorization_device_id)?
             {
                 return Err("你已被超管禁言，暂不能在公共频道发言".to_string());
             }
@@ -757,6 +785,7 @@ impl Network {
             encrypted: false,
             nonce: None,
             key_version: None,
+            simulation: message.simulation.clone(),
             created_at: message.created_at,
         };
 
@@ -1141,6 +1170,7 @@ impl Network {
                             message_type,
                             file_meta,
                             status: MessageStatus::Delivered,
+                            simulation: frame.simulation.clone(),
                             created_at: frame.created_at,
                         };
                         if read_storage.save_message(&message).is_ok() {
@@ -1406,6 +1436,82 @@ impl Network {
                                 Some(format!("{} {}", frame.issued_by_nickname, frame.mode)),
                             );
                             read_app.emit("admin_alert_mode_received", frame).ok();
+                        }
+                    }
+                    Ok(WireFrame::AdminNotification(frame)) => {
+                        if normalize_device_id(&frame.target_device_id) == local_device_id {
+                            match read_storage.upsert_admin_notification(&frame) {
+                                Ok(record) => {
+                                    emit_debug_log(
+                                        &read_app,
+                                        "warn",
+                                        "admin",
+                                        "收到超管通知",
+                                        Some(record.title.clone()),
+                                    );
+                                    read_app.emit("admin_notification_received", record).ok();
+                                }
+                                Err(error) => emit_debug_log(
+                                    &read_app,
+                                    "error",
+                                    "admin",
+                                    "保存超管通知失败",
+                                    Some(error),
+                                ),
+                            }
+                        }
+                    }
+                    Ok(WireFrame::AdminNotificationSubmission(frame)) => {
+                        match read_storage.submit_admin_notification(
+                            &frame.notification_id,
+                            &frame.target_device_id,
+                            &frame.submitted_by_nickname,
+                            frame.submitted_at,
+                        ) {
+                            Ok(record) => {
+                                emit_debug_log(
+                                    &read_app,
+                                    "info",
+                                    "admin",
+                                    "收到通知完成提交",
+                                    Some(frame.notification_id),
+                                );
+                                read_app
+                                    .emit("admin_notification_submission_received", record)
+                                    .ok();
+                            }
+                            Err(error) => emit_debug_log(
+                                &read_app,
+                                "warn",
+                                "admin",
+                                "处理通知完成提交失败",
+                                Some(error),
+                            ),
+                        }
+                    }
+                    Ok(WireFrame::AdminNotificationDecision(frame)) => {
+                        if normalize_device_id(&frame.target_device_id) == local_device_id {
+                            match read_storage.decide_admin_notification(&frame) {
+                                Ok(record) => {
+                                    emit_debug_log(
+                                        &read_app,
+                                        "info",
+                                        "admin",
+                                        "收到通知审核结果",
+                                        Some(record.status.clone()),
+                                    );
+                                    read_app
+                                        .emit("admin_notification_decision_received", record)
+                                        .ok();
+                                }
+                                Err(error) => emit_debug_log(
+                                    &read_app,
+                                    "error",
+                                    "admin",
+                                    "处理通知审核结果失败",
+                                    Some(error),
+                                ),
+                            }
                         }
                     }
                     Ok(WireFrame::AdminChannelControl(frame)) => {
@@ -1785,6 +1891,7 @@ fn save_system_notice(
         message_type: MessageType::System,
         file_meta: None,
         status: MessageStatus::Delivered,
+        simulation: None,
         created_at: chrono::Utc::now().timestamp_millis(),
     };
     storage.save_message(&message)?;
@@ -1998,6 +2105,7 @@ mod tests {
             encrypted: false,
             nonce: None,
             key_version: None,
+            simulation: None,
             created_at: 10,
         };
 
@@ -2019,6 +2127,7 @@ mod tests {
             encrypted: false,
             nonce: None,
             key_version: None,
+            simulation: None,
             created_at: 10,
         };
 
