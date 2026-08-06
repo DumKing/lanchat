@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import type { AdminAlertMode, AdminDiscoMode, ChannelNoticePayload, Conversation, DebugLog, GameFrame, Message, Peer, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset } from "../types/lanchat";
+import type { AdminAlertMode, AdminDiscoMode, AdminNotification, ChannelNoticePayload, Conversation, DebugLog, GameFrame, Message, Peer, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset } from "../types/lanchat";
 
 export async function registerLanChatEvents(handlers: {
   onPeerOnline: (peer: Peer) => void;
@@ -18,6 +18,9 @@ export async function registerLanChatEvents(handlers: {
   onQuickAlertTrustResetReceived: (reset: QuickAlertTrustReset) => void;
   onAdminDiscoModeReceived: (mode: AdminDiscoMode) => void;
   onAdminAlertModeReceived: (mode: AdminAlertMode) => void;
+  onAdminNotificationReceived: (notification: AdminNotification) => void;
+  onAdminNotificationSubmissionReceived: (notification: AdminNotification) => void;
+  onAdminNotificationDecisionReceived: (notification: AdminNotification) => void;
 }) {
   const unlistenPeerOnline = await listen<Peer>("peer_online", (event) => {
     handlers.onPeerOnline(event.payload);
@@ -67,6 +70,15 @@ export async function registerLanChatEvents(handlers: {
   const unlistenAdminAlertMode = await listen<AdminAlertMode>("admin_alert_mode_received", (event) => {
     handlers.onAdminAlertModeReceived(event.payload);
   });
+  const unlistenAdminNotification = await listen<AdminNotification>("admin_notification_received", (event) => {
+    handlers.onAdminNotificationReceived(event.payload);
+  });
+  const unlistenAdminNotificationSubmission = await listen<AdminNotification>("admin_notification_submission_received", (event) => {
+    handlers.onAdminNotificationSubmissionReceived(event.payload);
+  });
+  const unlistenAdminNotificationDecision = await listen<AdminNotification>("admin_notification_decision_received", (event) => {
+    handlers.onAdminNotificationDecisionReceived(event.payload);
+  });
 
   return () => {
     unlistenPeerOnline();
@@ -85,6 +97,9 @@ export async function registerLanChatEvents(handlers: {
     unlistenQuickAlertTrustReset();
     unlistenAdminDiscoMode();
     unlistenAdminAlertMode();
+    unlistenAdminNotification();
+    unlistenAdminNotificationSubmission();
+    unlistenAdminNotificationDecision();
   };
 }
 

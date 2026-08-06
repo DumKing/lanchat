@@ -1,6 +1,7 @@
 use crate::file_server::FileMeta;
 use crate::identity::{normalize_device_id, resolve_device_id, resolve_profile_device_id};
 use crate::network::local_ip_address;
+use crate::protocol::{AdminNotificationDecisionFrame, AdminNotificationFrame, SimulationMeta};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -98,7 +99,42 @@ pub struct Message {
     pub message_type: MessageType,
     pub file_meta: Option<FileMeta>,
     pub status: MessageStatus,
+    pub simulation: Option<SimulationMeta>,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimulationAudit {
+    pub id: String,
+    pub operator_device_id: String,
+    pub operator_nickname: String,
+    pub simulated_device_id: String,
+    pub action_kind: String,
+    pub target_id: Option<String>,
+    pub display_label: bool,
+    pub content: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdminNotificationRecord {
+    pub notification_id: String,
+    pub target_device_id: String,
+    pub title: String,
+    pub content: String,
+    pub template: String,
+    pub support_url: Option<String>,
+    pub display_mode: String,
+    pub deadline_at: Option<i64>,
+    pub timeout_policy: String,
+    pub issued_by_device_id: String,
+    pub issued_by_nickname: String,
+    pub created_at: i64,
+    pub status: String,
+    pub submitted_at: Option<i64>,
+    pub decided_at: Option<i64>,
+    pub decision_by_device_id: Option<String>,
+    pub decision_by_nickname: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -213,7 +249,41 @@ impl Storage {
                 sender_device_id TEXT NOT NULL,
                 content TEXT NOT NULL,
                 status TEXT NOT NULL,
+                simulation_operator_device_id TEXT,
+                simulation_operator_nickname TEXT,
+                simulation_display_label INTEGER,
+                simulation_created_at INTEGER,
                 created_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS simulation_audits (
+                id TEXT PRIMARY KEY,
+                operator_device_id TEXT NOT NULL,
+                operator_nickname TEXT NOT NULL,
+                simulated_device_id TEXT NOT NULL,
+                action_kind TEXT NOT NULL,
+                target_id TEXT,
+                display_label INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS admin_notifications (
+                notification_id TEXT PRIMARY KEY,
+                target_device_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                template TEXT NOT NULL DEFAULT '',
+                support_url TEXT,
+                display_mode TEXT NOT NULL,
+                deadline_at INTEGER,
+                timeout_policy TEXT NOT NULL DEFAULT 'manual_review',
+                issued_by_device_id TEXT NOT NULL,
+                issued_by_nickname TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                submitted_at INTEGER,
+                decided_at INTEGER,
+                decision_by_device_id TEXT,
+                decision_by_nickname TEXT
             );
             CREATE TABLE IF NOT EXISTS private_channels (
                 id TEXT PRIMARY KEY,
@@ -256,6 +326,10 @@ impl Storage {
         ensure_column(&conn, "messages", "file_url", "TEXT")?;
         ensure_column(&conn, "messages", "file_mime_type", "TEXT")?;
         ensure_column(&conn, "messages", "file_duration_ms", "INTEGER")?;
+        ensure_column(&conn, "messages", "simulation_operator_device_id", "TEXT")?;
+        ensure_column(&conn, "messages", "simulation_operator_nickname", "TEXT")?;
+        ensure_column(&conn, "messages", "simulation_display_label", "INTEGER")?;
+        ensure_column(&conn, "messages", "simulation_created_at", "INTEGER")?;
         ensure_column(&conn, "profile", "avatar", "TEXT")?;
         ensure_column(
             &conn,
@@ -776,8 +850,8 @@ impl Storage {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         conn.execute(
             "
-            INSERT INTO messages (id, conversation_id, sender_device_id, content, message_type, file_name, file_size, file_url, file_mime_type, file_duration_ms, status, created_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            INSERT INTO messages (id, conversation_id, sender_device_id, content, message_type, file_name, file_size, file_url, file_mime_type, file_duration_ms, status, simulation_operator_device_id, simulation_operator_nickname, simulation_display_label, simulation_created_at, created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
             ON CONFLICT(id) DO UPDATE SET status = excluded.status
             ",
             params![
@@ -792,6 +866,10 @@ impl Storage {
                 message.file_meta.as_ref().and_then(|meta| meta.mime_type.as_deref()),
                 message.file_meta.as_ref().and_then(|meta| meta.duration_ms.map(|value| value as i64)),
                 message.status.as_str(),
+                message.simulation.as_ref().map(|meta| meta.operator_device_id.as_str()),
+                message.simulation.as_ref().map(|meta| meta.operator_nickname.as_str()),
+                message.simulation.as_ref().map(|meta| i64::from(meta.display_label)),
+                message.simulation.as_ref().map(|meta| meta.created_at),
                 message.created_at
             ],
         )
@@ -802,6 +880,124 @@ impl Storage {
         )
         .ok();
         Ok(())
+    }
+
+    pub fn save_simulation_audit(&self, audit: &SimulationAudit) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        conn.execute(
+            "INSERT INTO simulation_audits (id, operator_device_id, operator_nickname, simulated_device_id, action_kind, target_id, display_label, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![audit.id, audit.operator_device_id, audit.operator_nickname, audit.simulated_device_id, audit.action_kind, audit.target_id, i64::from(audit.display_label), audit.content, audit.created_at],
+        )
+        .map_err(|err| format!("保存模拟操作审计失败：{err}"))?;
+        Ok(())
+    }
+
+    pub fn upsert_admin_notification(
+        &self,
+        frame: &AdminNotificationFrame,
+    ) -> Result<AdminNotificationRecord, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        conn.execute(
+            "INSERT INTO admin_notifications (notification_id, target_device_id, title, content, template, support_url, display_mode, deadline_at, timeout_policy, issued_by_device_id, issued_by_nickname, created_at, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'pending')
+             ON CONFLICT(notification_id) DO UPDATE SET title=excluded.title, content=excluded.content, support_url=excluded.support_url, deadline_at=excluded.deadline_at, timeout_policy=excluded.timeout_policy",
+            params![frame.notification_id, frame.target_device_id, frame.title, frame.content, frame.template, frame.support_url, frame.display_mode, frame.deadline_at, frame.timeout_policy, frame.issued_by_device_id, frame.issued_by_nickname, frame.created_at],
+        ).map_err(|err| format!("保存超管通知失败：{err}"))?;
+        Self::read_admin_notification(&conn, &frame.notification_id)
+    }
+
+    pub fn list_admin_notifications(&self) -> Result<Vec<AdminNotificationRecord>, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        self.resolve_admin_notification_timeouts_locked(&conn)?;
+        let mut stmt = conn.prepare("SELECT notification_id,target_device_id,title,content,template,support_url,display_mode,deadline_at,timeout_policy,issued_by_device_id,issued_by_nickname,created_at,status,submitted_at,decided_at,decision_by_device_id,decision_by_nickname FROM admin_notifications ORDER BY created_at DESC")
+            .map_err(|err| format!("读取超管通知失败：{err}"))?;
+        let rows = stmt
+            .query_map([], Self::admin_notification_from_row)
+            .map_err(|err| format!("读取超管通知失败：{err}"))?;
+        let records = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("解析超管通知失败：{err}"))?;
+        Ok(records)
+    }
+
+    pub fn submit_admin_notification(
+        &self,
+        notification_id: &str,
+        device_id: &str,
+        nickname: &str,
+        submitted_at: i64,
+    ) -> Result<AdminNotificationRecord, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        self.resolve_admin_notification_timeouts_locked(&conn)?;
+        let record = Self::read_admin_notification(&conn, notification_id)?;
+        if normalize_device_id(&record.target_device_id) != normalize_device_id(device_id) {
+            return Err("该通知不属于本机".to_string());
+        }
+        if !matches!(
+            record.status.as_str(),
+            "pending" | "rejected" | "expired_locked"
+        ) {
+            return Err("该通知当前不能提交确认".to_string());
+        }
+        conn.execute("UPDATE admin_notifications SET status='submitted', submitted_at=?1 WHERE notification_id=?2", params![submitted_at, notification_id])
+            .map_err(|err| format!("提交通知确认失败：{err}"))?;
+        let _ = nickname;
+        Self::read_admin_notification(&conn, notification_id)
+    }
+
+    pub fn decide_admin_notification(
+        &self,
+        frame: &AdminNotificationDecisionFrame,
+    ) -> Result<AdminNotificationRecord, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let status = match frame.decision.as_str() {
+            "approved" => "approved",
+            "rejected" => "rejected",
+            "revoked" => "revoked",
+            _ => return Err("无效的通知审核结果".to_string()),
+        };
+        conn.execute("UPDATE admin_notifications SET status=?1, decided_at=?2, decision_by_device_id=?3, decision_by_nickname=?4 WHERE notification_id=?5", params![status, frame.decided_at, frame.decided_by_device_id, frame.decided_by_nickname, frame.notification_id])
+            .map_err(|err| format!("更新通知审核结果失败：{err}"))?;
+        Self::read_admin_notification(&conn, &frame.notification_id)
+    }
+
+    fn resolve_admin_notification_timeouts_locked(&self, conn: &Connection) -> Result<(), String> {
+        let now = chrono::Utc::now().timestamp_millis();
+        conn.execute("UPDATE admin_notifications SET status=CASE WHEN timeout_policy='auto_release' THEN 'expired_released' ELSE 'expired_locked' END WHERE deadline_at IS NOT NULL AND deadline_at <= ?1 AND status IN ('pending','submitted','rejected')", params![now])
+            .map_err(|err| format!("处理通知超时失败：{err}"))?;
+        Ok(())
+    }
+
+    fn read_admin_notification(
+        conn: &Connection,
+        notification_id: &str,
+    ) -> Result<AdminNotificationRecord, String> {
+        conn.query_row("SELECT notification_id,target_device_id,title,content,template,support_url,display_mode,deadline_at,timeout_policy,issued_by_device_id,issued_by_nickname,created_at,status,submitted_at,decided_at,decision_by_device_id,decision_by_nickname FROM admin_notifications WHERE notification_id=?1", params![notification_id], Self::admin_notification_from_row)
+            .map_err(|err| format!("读取超管通知失败：{err}"))
+    }
+
+    fn admin_notification_from_row(
+        row: &rusqlite::Row<'_>,
+    ) -> rusqlite::Result<AdminNotificationRecord> {
+        Ok(AdminNotificationRecord {
+            notification_id: row.get(0)?,
+            target_device_id: row.get(1)?,
+            title: row.get(2)?,
+            content: row.get(3)?,
+            template: row.get(4)?,
+            support_url: row.get(5)?,
+            display_mode: row.get(6)?,
+            deadline_at: row.get(7)?,
+            timeout_policy: row.get(8)?,
+            issued_by_device_id: row.get(9)?,
+            issued_by_nickname: row.get(10)?,
+            created_at: row.get(11)?,
+            status: row.get(12)?,
+            submitted_at: row.get(13)?,
+            decided_at: row.get(14)?,
+            decision_by_device_id: row.get(15)?,
+            decision_by_nickname: row.get(16)?,
+        })
     }
 
     pub fn update_message_status(
@@ -826,7 +1022,7 @@ impl Storage {
         )
         .map_err(|err| format!("撤回消息失败：{err}"))?;
         conn.query_row(
-            "SELECT id, conversation_id, sender_device_id, content, message_type, file_name, file_size, file_url, file_mime_type, file_duration_ms, status, created_at
+            "SELECT id, conversation_id, sender_device_id, content, message_type, file_name, file_size, file_url, file_mime_type, file_duration_ms, status, simulation_operator_device_id, simulation_operator_nickname, simulation_display_label, simulation_created_at, created_at
              FROM messages WHERE id = ?1",
             params![message_id],
             |row| {
@@ -840,7 +1036,8 @@ impl Storage {
                     message_type: MessageType::from_str(&message_type),
                     file_meta: None,
                     status: MessageStatus::from_str(&status),
-                    created_at: row.get(11)?,
+                    simulation: simulation_meta_from_row(row, 11)?,
+                    created_at: row.get(15)?,
                 })
             },
         )
@@ -852,7 +1049,7 @@ impl Storage {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, conversation_id, sender_device_id, content, message_type, file_name, file_size, file_url, file_mime_type, file_duration_ms, status, created_at
+                "SELECT id, conversation_id, sender_device_id, content, message_type, file_name, file_size, file_url, file_mime_type, file_duration_ms, status, simulation_operator_device_id, simulation_operator_nickname, simulation_display_label, simulation_created_at, created_at
                  FROM messages WHERE conversation_id = ?1 ORDER BY created_at ASC",
             )
             .map_err(|err| format!("读取消息失败：{err}"))?;
@@ -882,7 +1079,8 @@ impl Storage {
                         _ => None,
                     },
                     status: MessageStatus::from_str(&status),
-                    created_at: row.get(11)?,
+                    simulation: simulation_meta_from_row(row, 11)?,
+                    created_at: row.get(15)?,
                 })
             })
             .map_err(|err| format!("读取消息失败：{err}"))?;
@@ -1295,6 +1493,35 @@ impl Storage {
     }
 }
 
+fn simulation_meta_from_row(
+    row: &rusqlite::Row<'_>,
+    offset: usize,
+) -> rusqlite::Result<Option<SimulationMeta>> {
+    let operator_device_id: Option<String> = row.get(offset)?;
+    let operator_nickname: Option<String> = row.get(offset + 1)?;
+    let display_label: Option<i64> = row.get(offset + 2)?;
+    let created_at: Option<i64> = row.get(offset + 3)?;
+    match (
+        operator_device_id,
+        operator_nickname,
+        display_label,
+        created_at,
+    ) {
+        (
+            Some(operator_device_id),
+            Some(operator_nickname),
+            Some(display_label),
+            Some(created_at),
+        ) => Ok(Some(SimulationMeta {
+            operator_device_id,
+            operator_nickname,
+            display_label: display_label != 0,
+            created_at,
+        })),
+        _ => Ok(None),
+    }
+}
+
 fn find_duplicate_peer_ids(conn: &Connection, peer: &Peer) -> Result<Vec<String>, String> {
     let mut stmt = conn
         .prepare(
@@ -1502,6 +1729,7 @@ mod tests {
                 message_type: MessageType::Text,
                 file_meta: None,
                 status: MessageStatus::Sent,
+                simulation: None,
                 created_at: 10,
             })
             .expect("message saved");
@@ -1514,6 +1742,12 @@ mod tests {
                 message_type: MessageType::Text,
                 file_meta: None,
                 status: MessageStatus::Delivered,
+                simulation: Some(SimulationMeta {
+                    operator_device_id: "admin-1".to_string(),
+                    operator_nickname: "超级管理员".to_string(),
+                    display_label: true,
+                    created_at: 20,
+                }),
                 created_at: 20,
             })
             .expect("message saved");
@@ -1523,6 +1757,13 @@ mod tests {
         assert_eq!(2, messages.len());
         assert_eq!("第一条", messages[0].content);
         assert_eq!(MessageStatus::Delivered, messages[1].status);
+        assert_eq!(
+            Some("admin-1"),
+            messages[1]
+                .simulation
+                .as_ref()
+                .map(|item| item.operator_device_id.as_str())
+        );
     }
 
     #[test]

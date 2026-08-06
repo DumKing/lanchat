@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { check as checkNativeUpdate } from "@tauri-apps/plugin-updater";
 import CryptoJS from "crypto-js";
 import {
   NAlert,
@@ -44,7 +45,7 @@ import ChatComposerInput from "./components/ChatComposerInput.vue";
 import { DEFAULT_GROUP_ID, useLanChatStore } from "./stores/lanchat";
 import { useDesktopPetStore } from "./stores/desktopPet";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, ExternalPushConfig, ExternalPushKind, PetPackageSource, PetStateKind, PetStatePlaybackConfig } from "./types/desktop-pet";
-import type { AdminAlertMode, AdminDiscoMode, AppVersionInfo, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem, UpdateCheckResult } from "./types/lanchat";
+import type { AdminAlertMode, AdminDiscoMode, AdminNotification, AppVersionInfo, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, SimulationMeta, TrayAttentionItem, UpdateCheckResult } from "./types/lanchat";
 import { DDZ_TURN_TIMEOUT_MS, canBeat, dealHands, evaluatePlay, isTurnTimedOut, playLabel, sortCards, turnRemainingSeconds, type DdzCard, type DdzPhase, type DdzPlay } from "./games/doudizhu";
 import { GOMOKU_TURN_TIMEOUT_MS, chooseAutoGomokuPoint, cloneGomokuBoard, createGomokuBoard, gomokuStoneLabel, gomokuTurnRemainingSeconds, isGomokuTurnTimedOut, placeGomokuStone, type GomokuBoard, type GomokuPhase, type GomokuPoint, type GomokuStone } from "./games/gomoku";
 import { cloneXiangqiBoard, createXiangqiBoard, createXiangqiDisplayGrid, isLegalXiangqiMove, moveXiangqiPiece, otherXiangqiSide, resignXiangqiSide, undoXiangqiMove, xiangqiPieceLabel, xiangqiSideLabel, type XiangqiBoard, type XiangqiPhase, type XiangqiPiece, type XiangqiPoint, type XiangqiSide } from "./games/xiangqi";
@@ -58,6 +59,7 @@ import { peerDisplayName, peerOriginalName, sameDeviceId, sortPeersForDisplay } 
 type UiThemeKey = "theme-dingtalk" | "theme-work" | "theme-lan" | "theme-light";
 type MainSection = "chat" | "devices" | "games" | "alerts" | "settings";
 type RecipientPickerMode = "gameInvite" | "privateChannelCreate" | "privateChannelInvite";
+type SimulationKind = "direct" | "channel" | "alert" | "disco";
 type UndoRequest = {
   requesterId: string;
   requesterName: string;
@@ -85,6 +87,7 @@ type AlertRecord = {
   senderAddress?: string | null;
   content: string;
   mode: PetAlertMode;
+  simulation?: SimulationMeta | null;
   createdAt: number;
   incoming: boolean;
   handled: boolean;
@@ -317,6 +320,7 @@ const {
   latestQuickAlertTrustReset,
   latestAdminDiscoMode,
   latestAdminAlertMode,
+  adminNotifications,
   manualAddress,
   manualPort,
   draft,
@@ -334,6 +338,7 @@ const nicknameDraft = ref("");
 const portDraft = ref(18145);
 const avatarDraft = ref("");
 const profileAvatarInput = ref<HTMLInputElement | null>(null);
+const adminNotificationImageInput = ref<HTMLInputElement | null>(null);
 const AVATAR_MAX_BYTES = 5 * 1024 * 1024;
 const canRepairWindowsNetwork = computed(() => platformInfo.value?.windowsFirewallRepairSupported ?? true);
 const networkRepairDescription = computed(() => {
@@ -394,7 +399,7 @@ const imagePreviewMessage = ref<Message | null>(null);
 const selectedDeviceChannelId = ref("");
 const adminNicknameDraft = ref("");
 const adminNicknameLockAfterIssue = ref(false);
-const superAdminEnabled = ref(readSavedSuperAdminEnabled());
+const superAdminEnabled = ref(false);
 const superAdminTapCount = ref(0);
 const superAdminAuthOpen = ref(false);
 const superAdminPasswordDraft = ref("");
@@ -403,15 +408,51 @@ const SUPER_ADMIN_PASSWORD_MD5 = "D7B9AF919901FA1598BDC21465E3EB3F";
 const alertTrustResetTargetId = ref<string | null>(null);
 const adminAlertModeTargetId = ref<string | null>(null);
 const adminAlertModeDraft = ref<PetAlertMode>("normal");
+const simulationModalOpen = ref(false);
+const simulationSending = ref(false);
+const simulationKind = ref<SimulationKind>("channel");
+const simulationTargetId = ref("");
+const simulationContent = ref("");
+const simulationDisplayLabel = ref(true);
+const adminNotificationModalOpen = ref(false);
+const adminNotificationSending = ref(false);
+const adminNotificationScope = ref<"device" | "all_online">("device");
+const adminNotificationTargetId = ref<string | null>(null);
+const adminNotificationTitle = ref("通知");
+const adminNotificationContent = ref("");
+const adminNotificationTemplate = ref("announcement");
+const adminNotificationSupportUrl = ref("");
+const adminNotificationDisplayMode = ref<"dismissible" | "requires_confirmation">("dismissible");
+const adminNotificationDeadline = ref("");
+const adminNotificationTimeoutPolicy = ref("manual_review");
+const adminNotificationDetail = ref<AdminNotification | null>(null);
+const adminNotificationDetailOpen = ref(false);
+const adminNotificationBulkProcessing = ref(false);
+const dismissedAdminNotificationIds = ref<string[]>(readDismissedAdminNotificationIds());
 const appVersionInfo = ref<AppVersionInfo | null>(null);
 const updateInfo = ref<UpdateCheckResult | null>(readSavedUpdateInfo());
 const updateChecking = ref(false);
 const updateError = ref("");
 const updateReminderOpen = ref(false);
+const nativeUpdateInstalling = ref(false);
 const forceUpdateRequired = computed(() => updateInfo.value?.forceRequired === true);
+const blockingAdminNotification = computed(() => {
+  const deviceId = profile.value?.device_id;
+  if (!deviceId) return null;
+  return adminNotifications.value.find((item) => item.target_device_id === deviceId && item.display_mode === "requires_confirmation" && ["pending", "rejected", "expired_locked"].includes(item.status)) ?? null;
+});
+const visibleAdminAnnouncement = computed(() => {
+  const deviceId = profile.value?.device_id;
+  if (!deviceId) return null;
+  return adminNotifications.value.find((item) => item.target_device_id === deviceId && item.display_mode === "dismissible" && !dismissedAdminNotificationIds.value.includes(item.notification_id)) ?? null;
+});
+const adminNotificationTargetOptions = computed(() => onlinePeers.value.map((peer) => ({
+  label: `${peerDisplayName(peer)} · ${peer.address} · ${peer.device_id}`,
+  value: peer.device_id,
+})));
 const UPDATE_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
 const activeSection = ref<MainSection>("chat");
-const settingsCategory = ref<"basic" | "pet">("basic");
+const settingsCategory = ref<"basic" | "pet" | "admin">("basic");
 const listPaneCollapsed = ref(false);
 type ResizePaneKind = "list" | "group";
 type PaneResizeState = { kind: ResizePaneKind; startX: number; startWidth: number };
@@ -1178,6 +1219,9 @@ async function checkUpdates(manual = false) {
     updateInfo.value = result;
     saveUpdateInfo(result);
     maybeOpenUpdateReminder(result, manual);
+    if (result.forceRequired) {
+      void installNativeUpdate(true);
+    }
     if (manual && !result.updateAvailable) {
       store.error = "";
     }
@@ -1197,6 +1241,31 @@ function scheduleAutomaticUpdateChecks() {
   updateCheckTimer = window.setInterval(() => {
     void checkUpdates(false);
   }, UPDATE_CHECK_INTERVAL_MS);
+}
+async function installNativeUpdate(force = false) {
+  if (nativeUpdateInstalling.value) return;
+  nativeUpdateInstalling.value = true;
+  try {
+    if (await api.isPortableRuntime()) {
+      const url = updateInfo.value?.downloads.windowsPortable;
+      const sha256 = updateInfo.value?.downloads.windowsPortableSha256;
+      if (!url || !sha256) throw new Error("当前绿色版更新包尚未提供完整性校验信息");
+      await api.installPortableUpdate(url, sha256);
+      return;
+    }
+    const update = await checkNativeUpdate();
+    if (!update) {
+      if (force) updateError.value = "已发现强制更新，但签名更新包尚未就绪，请从 Release 页面完成更新。";
+      return;
+    }
+    await update.downloadAndInstall();
+    await api.quitApp();
+  } catch (err) {
+    updateError.value = `自动更新失败：${stringifyError(err)}`;
+    if (force) updateReminderOpen.value = true;
+  } finally {
+    nativeUpdateInstalling.value = false;
+  }
 }
 async function openPreferredUpdateUrl() {
   const url = preferredUpdateUrl.value;
@@ -1312,6 +1381,13 @@ watch(profile, (next) => {
   portDraft.value = next?.listen_port ?? 18145;
   avatarDraft.value = next?.avatar ?? "";
 });
+const simulationDirectTargetOptions = computed(() => peers.value
+  .filter((peer) => peer.online && peer.supports_chat !== false)
+  .map((peer) => ({ label: `${peerDisplayName(peer)} · ${peer.address}`, value: peer.device_id })));
+const simulationChannelOptions = computed(() => conversations.value
+  .filter((conversation) => conversation.kind === "group")
+  .filter((conversation) => !conversation.is_private || (channelMembersByConversation.value[conversation.id] ?? []).some((member) => sameDeviceId(member.device_id, profile.value?.device_id)))
+  .map((conversation) => ({ label: conversation.is_private ? `${conversation.title} · 私有频道` : conversation.title, value: conversation.id })));
 watch([peers, profile], () => {
   let changed = false;
   const next = alertRecords.value.map((record) => {
@@ -1535,6 +1611,15 @@ function maybeOpenUpdateReminder(info: UpdateCheckResult, manual = false) {
   }
   if (!manual && readDismissedUpdateReminderKey() === updateReminderKey(info)) return;
   updateReminderOpen.value = true;
+}
+
+function readDismissedAdminNotificationIds(): string[] {
+  try {
+    const value = JSON.parse(window.localStorage.getItem("lanchat-dismissed-admin-notifications") ?? "[]");
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").slice(-200) : [];
+  } catch {
+    return [];
+  }
 }
 function readSavedNavExpanded() {
   if (typeof window === "undefined") return false;
@@ -3370,6 +3455,7 @@ function alertRecordFromFrame(alert: QuickAlert): AlertRecord {
     senderAddress: sender.address,
     content: alert.content || "呱呱~呱~~",
     mode: normalizePetAlertMode(alert.mode),
+    simulation: alert.simulation ?? null,
     createdAt: alert.created_at,
     incoming: alert.sender_device_id !== profile.value?.device_id,
     handled: alert.sender_device_id === profile.value?.device_id,
@@ -3399,6 +3485,7 @@ function applyQuickAlert(alert: QuickAlert) {
             senderAddress: sender.address ?? item.senderAddress ?? null,
             content: alert.content || item.content,
             mode: normalizePetAlertMode(alert.mode || item.mode),
+            simulation: alert.simulation ?? item.simulation ?? null,
             createdAt: alert.created_at || item.createdAt,
           }
         : item,
@@ -3495,7 +3582,7 @@ async function syncDesktopPetRuntime() {
     latest_alert_id: alert?.alertId ?? null,
     latest_sender: alert?.senderNickname ?? null,
     latest_sender_address: alert?.senderAddress ?? null,
-    latest_content: alert?.content ?? null,
+    latest_content: alert ? `${alert.content}${simulationLabel(alert.simulation) ? ` · ${simulationLabel(alert.simulation)}` : ""}` : null,
     latest_created_at: alert?.createdAt ?? null,
     feedbackable: !!latestPendingAlert.value,
     flashing: !!alert,
@@ -3567,6 +3654,136 @@ function openDevice(peer: Peer) {
   adminNicknameDraft.value = peer.nickname;
   peerNoteDraft.value = peer.note ?? "";
   adminNicknameLockAfterIssue.value = !!peer.nickname_locked;
+}
+function openSimulationModal() {
+  if (!superAdminEnabled.value || !selectedPeerDetail.value) return;
+  simulationKind.value = "channel";
+  simulationTargetId.value = DEFAULT_GROUP_ID;
+  simulationContent.value = "";
+  simulationDisplayLabel.value = true;
+  simulationModalOpen.value = true;
+}
+function openAdminNotificationModal() {
+  if (!superAdminEnabled.value) return;
+  adminNotificationScope.value = "device";
+  adminNotificationTargetId.value = selectedPeerDetail.value?.online
+    ? selectedPeerDetail.value.device_id
+    : onlinePeers.value[0]?.device_id ?? null;
+  adminNotificationTitle.value = "通知";
+  adminNotificationContent.value = "";
+  adminNotificationTemplate.value = "announcement";
+  adminNotificationSupportUrl.value = "";
+  adminNotificationDisplayMode.value = "dismissible";
+  adminNotificationDeadline.value = "";
+  adminNotificationTimeoutPolicy.value = "manual_review";
+  adminNotificationModalOpen.value = true;
+}
+function triggerAdminNotificationImageSelect() {
+  adminNotificationImageInput.value?.click();
+}
+function clearAdminNotificationImage() {
+  adminNotificationSupportUrl.value = "";
+  if (adminNotificationImageInput.value) adminNotificationImageInput.value.value = "";
+}
+function handleAdminNotificationImageSelected(event: Event) {
+  const input = event.target as HTMLInputElement | null;
+  const file = input?.files?.[0];
+  if (!file) return;
+  if (!file.type.startsWith("image/")) {
+    store.error = "请选择图片作为公告配图";
+    input.value = "";
+    return;
+  }
+  if (file.size > AVATAR_MAX_BYTES) {
+    store.error = "公告图片不能超过 5M";
+    input.value = "";
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => { adminNotificationSupportUrl.value = typeof reader.result === "string" ? reader.result : ""; };
+  reader.onerror = () => { store.error = "读取公告图片失败"; };
+  reader.readAsDataURL(file);
+}
+function adminNotificationDeadlineAt() {
+  if (!adminNotificationDeadline.value) return null;
+  const value = new Date(adminNotificationDeadline.value).getTime();
+  return Number.isFinite(value) ? value : -1;
+}
+async function submitAdminNotification() {
+  if (!superAdminEnabled.value || (adminNotificationScope.value === "device" && !adminNotificationTargetId.value)) return;
+  if (!adminNotificationTitle.value.trim() || !adminNotificationContent.value.trim()) {
+    store.error = "请填写通知标题和内容";
+    return;
+  }
+  if (adminNotificationDeadlineAt() === -1) {
+    store.error = "截至时间格式无效，请使用 2026-08-06 18:00";
+    return;
+  }
+  adminNotificationSending.value = true;
+  try {
+    await store.sendAdminNotification(adminNotificationScope.value === "device" ? adminNotificationTargetId.value : null, adminNotificationScope.value, adminNotificationTitle.value, adminNotificationContent.value, adminNotificationTemplate.value, adminNotificationSupportUrl.value.trim() || null, adminNotificationDisplayMode.value, adminNotificationDeadlineAt(), adminNotificationTimeoutPolicy.value);
+    adminNotificationModalOpen.value = false;
+  } finally { adminNotificationSending.value = false; }
+}
+async function submitBlockingAdminNotification(notification: AdminNotification) {
+  try { await store.submitAdminNotification(notification.notification_id); } catch (err) { store.error = String(err); }
+}
+function dismissAdminAnnouncement(notification: AdminNotification) {
+  if (dismissedAdminNotificationIds.value.includes(notification.notification_id)) return;
+  dismissedAdminNotificationIds.value = [...dismissedAdminNotificationIds.value, notification.notification_id].slice(-200);
+  window.localStorage.setItem("lanchat-dismissed-admin-notifications", JSON.stringify(dismissedAdminNotificationIds.value));
+}
+async function decideAdminNotification(notification: AdminNotification, decision: "approved" | "rejected" | "revoked") {
+  try { await store.decideAdminNotification(notification.notification_id, decision); } catch (err) { store.error = String(err); }
+}
+function adminNotificationTargetDetail(notification: AdminNotification) {
+  return peers.value.find((peer) => sameDeviceId(peer.device_id, notification.target_device_id));
+}
+function openAdminNotificationDetail(notification: AdminNotification) {
+  adminNotificationDetail.value = notification;
+  adminNotificationDetailOpen.value = true;
+}
+async function decideAdminNotificationFromDetail(decision: "approved" | "rejected" | "revoked") {
+  if (!adminNotificationDetail.value) return;
+  await decideAdminNotification(adminNotificationDetail.value, decision);
+  adminNotificationDetailOpen.value = false;
+}
+async function decideAllSubmittedAdminNotifications(decision: "approved" | "rejected") {
+  const pending = adminNotifications.value.filter((item) => item.issued_by_device_id === profile.value?.device_id && item.status === "submitted");
+  if (pending.length === 0 || adminNotificationBulkProcessing.value) return;
+  adminNotificationBulkProcessing.value = true;
+  try {
+    for (const notification of pending) await store.decideAdminNotification(notification.notification_id, decision);
+  } catch (err) {
+    store.error = String(err);
+  } finally {
+    adminNotificationBulkProcessing.value = false;
+  }
+}
+async function submitSimulation() {
+  const simulated = selectedPeerDetail.value;
+  if (!simulated || !superAdminEnabled.value) return;
+  const content = simulationContent.value.trim() || "呱呱~呱~~";
+  if ((simulationKind.value === "direct" || simulationKind.value === "channel") && !simulationContent.value.trim()) {
+    store.error = "消息内容不能为空";
+    return;
+  }
+  if ((simulationKind.value === "direct" || simulationKind.value === "channel") && !simulationTargetId.value) {
+    store.error = simulationKind.value === "direct" ? "请选择在线接收设备" : "请选择频道";
+    return;
+  }
+  simulationSending.value = true;
+  try {
+    if (simulationKind.value === "alert" || simulationKind.value === "disco") {
+      const alert = await store.simulateQuickAlert(simulated.device_id, content, simulationKind.value === "disco" ? "disco" : "normal", simulationDisplayLabel.value);
+      if (alert) applyQuickAlert(alert);
+    } else {
+      await store.simulateMessage(simulated.device_id, simulationTargetId.value, simulationContent.value, simulationDisplayLabel.value);
+    }
+    if (!store.error) simulationModalOpen.value = false;
+  } finally {
+    simulationSending.value = false;
+  }
 }
 async function openDeviceChannel(conversation: Conversation) {
   selectedDeviceChannelId.value = conversation.id;
@@ -3781,10 +3998,6 @@ function peerBuildTimeLabel(peer?: Peer | null) {
     second: "2-digit",
   }).format(new Date(millis))}`;
 }
-function readSavedSuperAdminEnabled() {
-  if (typeof window === "undefined") return false;
-  return window.localStorage.getItem("lanchat-super-admin-enabled") === "true";
-}
 function setSavedSuperAdminEnabled(enabled: boolean) {
   if (typeof window === "undefined") return;
   window.localStorage.setItem("lanchat-super-admin-enabled", enabled ? "true" : "false");
@@ -3796,6 +4009,7 @@ function disableSuperAdmin() {
   superAdminPasswordDraft.value = "";
   superAdminPasswordError.value = "";
   setSavedSuperAdminEnabled(false);
+  void api.clearSuperAdminSession();
 }
 function handleSuperAdminTap() {
   if (superAdminEnabled.value) {
@@ -3810,9 +4024,15 @@ function handleSuperAdminTap() {
     superAdminPasswordError.value = "";
   }
 }
-function confirmSuperAdminPassword() {
+async function confirmSuperAdminPassword() {
   const actual = CryptoJS.MD5(superAdminPasswordDraft.value).toString().toUpperCase();
   if (actual !== SUPER_ADMIN_PASSWORD_MD5.toUpperCase()) {
+    superAdminPasswordError.value = "验证失败";
+    return;
+  }
+  try {
+    await api.authenticateSuperAdmin(superAdminPasswordDraft.value);
+  } catch {
     superAdminPasswordError.value = "验证失败";
     return;
   }
@@ -3921,6 +4141,9 @@ function peerSubtitle(peer: Peer) {
   const kind = peerSupportsFullFeatures(peer) ? "完整版" : "受限设备";
   const originalName = peerOriginalName(peer);
   return [originalName ? `原昵称：${originalName}` : "", kind, `${peer.address}:${peer.port}`].filter(Boolean).join(" · ");
+}
+function simulationLabel(meta?: SimulationMeta | null) {
+  return meta?.display_label ? `超管模拟发送 · ${meta.operator_nickname}` : "";
 }
 function memberDisplayName(member: ChannelMember | Peer) {
   const peer = peers.value.find((item) => sameDeviceId(item.device_id, member.device_id));
@@ -4217,7 +4440,8 @@ async function closeWindow() {
           </div>
           <pre class="update-notes">{{ updateNotesPreview(updateInfo?.notes) }}</pre>
           <div class="force-update-actions">
-            <NButton type="primary" size="large" @click="openPreferredUpdateUrl">下载更新</NButton>
+            <NButton type="primary" size="large" :loading="nativeUpdateInstalling" @click="installNativeUpdate(false)">自动更新</NButton>
+            <NButton secondary size="large" @click="openPreferredUpdateUrl">手动下载</NButton>
             <NButton secondary size="large" @click="openReleasePage">Release 页面</NButton>
             <NButton v-if="!forceUpdateRequired" quaternary size="large" @click="dismissUpdateReminder">稍后提醒</NButton>
             <NButton v-else quaternary size="large" @click="api.quitApp">退出软件</NButton>
@@ -4234,6 +4458,64 @@ async function closeWindow() {
           <button class="image-preview-close" type="button" title="关闭预览" @click="closeImagePreview">×</button>
           <img :src="imagePreviewSource(imagePreviewMessage)" :alt="imagePreviewMessage.file_meta?.name ?? '图片预览'" />
         </div>
+      </NModal>
+      <NModal v-model:show="simulationModalOpen" preset="card" title="超管模拟发送" class="simulation-modal" :mask-closable="!simulationSending">
+        <div v-if="selectedPeerDetail" class="simulation-form">
+          <div class="simulation-identity">
+            <img v-if="avatarImage(selectedPeerDetail.avatar)" class="avatar-image peer-avatar" :src="avatarImage(selectedPeerDetail.avatar)" alt="模拟设备头像" />
+            <NAvatar v-else class="peer-avatar">{{ firstLetter(peerDisplayName(selectedPeerDetail)) }}</NAvatar>
+            <div><strong>{{ peerDisplayName(selectedPeerDetail) }}</strong><small>{{ selectedPeerDetail.device_id }}</small></div>
+          </div>
+          <NRadioGroup v-model:value="simulationKind" name="simulation-kind">
+            <NSpace>
+              <NRadioButton value="direct">模拟私聊</NRadioButton>
+              <NRadioButton value="channel">模拟频道消息</NRadioButton>
+              <NRadioButton value="alert">模拟普通告警</NRadioButton>
+              <NRadioButton value="disco">模拟蹦迪告警</NRadioButton>
+            </NSpace>
+          </NRadioGroup>
+          <NFormItem v-if="simulationKind === 'direct'" label="接收设备" :show-feedback="false">
+            <NSelect v-model:value="simulationTargetId" :options="simulationDirectTargetOptions" filterable placeholder="仅显示在线且支持聊天的设备" />
+          </NFormItem>
+          <NFormItem v-else-if="simulationKind === 'channel'" label="发送频道" :show-feedback="false">
+            <NSelect v-model:value="simulationTargetId" :options="simulationChannelOptions" placeholder="选择频道" />
+          </NFormItem>
+          <NFormItem label="内容" :show-feedback="false">
+            <NInput v-model:value="simulationContent" type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" maxlength="120" :placeholder="simulationKind === 'alert' || simulationKind === 'disco' ? '留空使用默认告警文案' : '输入要模拟发送的文本'" />
+          </NFormItem>
+          <NCheckbox v-model:checked="simulationDisplayLabel">显示超管模拟发送</NCheckbox>
+          <NText depth="3">仅支持文本消息和告警；文件、图片、语音与游戏操作不支持模拟。</NText>
+          <div class="simulation-actions"><NButton @click="simulationModalOpen = false">取消</NButton><NButton type="warning" :loading="simulationSending" @click="submitSimulation">发送</NButton></div>
+        </div>
+      </NModal>
+      <NModal v-model:show="adminNotificationModalOpen" preset="card" title="下发超管通知" class="simulation-modal" :mask-closable="!adminNotificationSending">
+        <div class="simulation-form">
+          <NRadioGroup v-model:value="adminNotificationScope" name="admin-notification-scope"><NSpace><NRadioButton value="device">指定设备</NRadioButton><NRadioButton value="all_online">所有在线成员</NRadioButton></NSpace></NRadioGroup>
+          <NFormItem v-if="adminNotificationScope === 'device'" label="接收设备" :show-feedback="false"><NSelect v-model:value="adminNotificationTargetId" :options="adminNotificationTargetOptions" filterable placeholder="选择在线设备" /></NFormItem>
+          <NText v-else depth="3">将向 {{ onlinePeers.length }} 台在线设备分别下发。</NText>
+          <NFormItem label="通知标题" :show-feedback="false"><NInput v-model:value="adminNotificationTitle" maxlength="60" /></NFormItem>
+          <NFormItem label="通知内容" :show-feedback="false"><NInput v-model:value="adminNotificationContent" type="textarea" :autosize="{ minRows: 3, maxRows: 6 }" maxlength="1000" /></NFormItem>
+          <NFormItem label="通知类型" :show-feedback="false"><NSelect v-model:value="adminNotificationTemplate" :options="[{ label: '普通公告', value: 'announcement' }, { label: '赞赏提醒', value: 'support' }]" /></NFormItem>
+          <NFormItem label="公告配图" :show-feedback="false"><div class="admin-notification-image-picker"><input ref="adminNotificationImageInput" class="hidden-file-input" type="file" accept="image/*" @change="handleAdminNotificationImageSelected" /><img v-if="adminNotificationSupportUrl.startsWith('data:image/')" :src="adminNotificationSupportUrl" alt="公告图片预览" /><NText v-else depth="3">可选择本地图片，最大 5MB。</NText><NSpace><NButton size="small" secondary @click="triggerAdminNotificationImageSelect">选择图片</NButton><NButton v-if="adminNotificationSupportUrl" size="small" quaternary @click="clearAdminNotificationImage">清除</NButton></NSpace></div></NFormItem>
+          <NFormItem v-if="adminNotificationTemplate === 'support' && !adminNotificationSupportUrl.startsWith('data:image/')" label="赞赏页面地址" :show-feedback="false"><NInput v-model:value="adminNotificationSupportUrl" placeholder="可直接粘贴 https:// 图片或页面地址" /></NFormItem>
+          <NFormItem label="处理方式" :show-feedback="false"><NRadioGroup v-model:value="adminNotificationDisplayMode"><NSpace><NRadioButton value="dismissible">可关闭</NRadioButton><NRadioButton value="requires_confirmation">必须确认</NRadioButton></NSpace></NRadioGroup></NFormItem>
+          <template v-if="adminNotificationDisplayMode === 'requires_confirmation'"><NFormItem label="截至时间" :show-feedback="false"><NInput v-model:value="adminNotificationDeadline" placeholder="例如 2026-08-06 18:00，留空则不超时" /></NFormItem><NFormItem label="超时策略" :show-feedback="false"><NSelect v-model:value="adminNotificationTimeoutPolicy" :options="[{ label: '等待超管手动决定', value: 'manual_review' }, { label: '自动撤销并放行', value: 'auto_release' }, { label: '继续锁定', value: 'keep_locked' }]" /></NFormItem></template>
+          <div class="simulation-actions"><NButton @click="adminNotificationModalOpen = false">取消</NButton><NButton type="warning" :loading="adminNotificationSending" @click="submitAdminNotification">下发</NButton></div>
+        </div>
+      </NModal>
+      <NModal v-model:show="adminNotificationDetailOpen" preset="card" title="通知审核详情" class="admin-notification-announcement">
+        <div v-if="adminNotificationDetail" class="admin-notification-lock-content">
+          <div class="admin-notification-detail-device"><img v-if="avatarImage(adminNotificationTargetDetail(adminNotificationDetail)?.avatar)" class="avatar-image large-avatar" :src="avatarImage(adminNotificationTargetDetail(adminNotificationDetail)?.avatar)" alt="设备头像" /><NAvatar v-else :size="48" class="peer-avatar">{{ firstLetter(adminNotificationTargetDetail(adminNotificationDetail)?.nickname ?? '?') }}</NAvatar><div><strong>{{ adminNotificationTargetDetail(adminNotificationDetail)?.nickname ?? '未知设备' }}</strong><small>IP：{{ adminNotificationTargetDetail(adminNotificationDetail)?.address ?? '未知' }}</small><small>MAC：{{ adminNotificationDetail.target_device_id }}</small></div></div>
+          <NTag :type="adminNotificationDetail.status === 'submitted' ? 'warning' : 'default'">{{ adminNotificationDetail.status }}</NTag><h2>{{ adminNotificationDetail.title }}</h2><p>{{ adminNotificationDetail.content }}</p><img v-if="adminNotificationDetail.support_url && /^(https?:|asset:|data:image)/.test(adminNotificationDetail.support_url)" :src="adminNotificationDetail.support_url" alt="通知配图" /><NText depth="3">下发时间：{{ formatTime(adminNotificationDetail.created_at) }}</NText>
+          <NSpace v-if="adminNotificationDetail.status === 'submitted'"><NButton type="success" @click="decideAdminNotificationFromDetail('approved')">通过</NButton><NButton type="error" @click="decideAdminNotificationFromDetail('rejected')">拒绝</NButton></NSpace>
+          <NButton v-else-if="['pending','rejected','expired_locked'].includes(adminNotificationDetail.status)" tertiary type="warning" @click="decideAdminNotificationFromDetail('revoked')">撤销并放行</NButton>
+        </div>
+      </NModal>
+      <NModal :show="!!blockingAdminNotification" preset="card" class="admin-notification-lock" :mask-closable="false" :closable="false">
+        <div v-if="blockingAdminNotification" class="admin-notification-lock-content"><NTag type="warning">需要完成确认</NTag><h2>{{ blockingAdminNotification.title }}</h2><p>{{ blockingAdminNotification.content }}</p><img v-if="blockingAdminNotification.support_url && /^(https?:|asset:|data:image)/.test(blockingAdminNotification.support_url)" :src="blockingAdminNotification.support_url" alt="通知图片" /><NText v-if="blockingAdminNotification.deadline_at" depth="3">截至：{{ formatTime(blockingAdminNotification.deadline_at) }}</NText><NAlert v-if="blockingAdminNotification.status === 'rejected'" type="error" :show-icon="false">超管未确认，请完成后重新提交。</NAlert><NAlert v-else-if="blockingAdminNotification.status === 'expired_locked'" type="warning" :show-icon="false">已超时，等待超管决定。</NAlert><NButton v-if="blockingAdminNotification.status !== 'expired_locked'" type="primary" @click="submitBlockingAdminNotification(blockingAdminNotification)">提交已完成</NButton><NButton quaternary @click="api.quitApp">退出软件</NButton></div>
+      </NModal>
+      <NModal :show="!!visibleAdminAnnouncement" preset="card" class="admin-notification-announcement" :mask-closable="true" @update:show="(visible) => { if (!visible && visibleAdminAnnouncement) dismissAdminAnnouncement(visibleAdminAnnouncement); }">
+        <div v-if="visibleAdminAnnouncement" class="admin-notification-lock-content"><NTag type="info">超管公告</NTag><h2>{{ visibleAdminAnnouncement.title }}</h2><p>{{ visibleAdminAnnouncement.content }}</p><img v-if="visibleAdminAnnouncement.support_url && /^(https?:|asset:|data:image)/.test(visibleAdminAnnouncement.support_url)" :src="visibleAdminAnnouncement.support_url" alt="公告图片" /><NText depth="3">{{ visibleAdminAnnouncement.issued_by_nickname }} · {{ formatTime(visibleAdminAnnouncement.created_at) }}</NText><NButton type="primary" @click="dismissAdminAnnouncement(visibleAdminAnnouncement)">我知道了</NButton></div>
       </NModal>
       <div class="desktop-frame">
         <header class="app-titlebar" @mousedown="startWindowDrag">
@@ -4548,6 +4830,7 @@ async function closeWindow() {
                     <div class="message-stack">
                       <div class="message-meta">
                         <span class="message-meta-name">{{ messageSenderTitle(message) }}</span>
+                        <NTag v-if="simulationLabel(message.simulation)" size="tiny" :bordered="false" type="warning">{{ simulationLabel(message.simulation) }}</NTag>
                         <span class="message-meta-time">{{ formatTime(message.created_at) }}</span>
                       </div>
                       <div class="message-content-line">
@@ -5205,6 +5488,7 @@ async function closeWindow() {
                     <NButton block secondary type="warning" :disabled="!selectedPeerDetail.online || !adminNicknameDraft.trim()" @click="adminUnlockSelectedPeerNickname">
                       解除昵称修改限制
                     </NButton>
+                    <NButton block type="warning" @click="openSimulationModal">超管模拟发送</NButton>
                     <NText depth="3">目标设备在线时会立即更新本机昵称，并通过在线广播同步给局域网。</NText>
                   </div>
                   <div class="device-detail-actions">
@@ -5299,6 +5583,7 @@ async function closeWindow() {
                       <div>
                         <strong>{{ alert.senderDeviceId === profile?.device_id ? `我 · ${alert.senderNickname}` : alert.senderNickname }}</strong>
                         <span>{{ alert.content }}</span>
+                        <NTag v-if="simulationLabel(alert.simulation)" size="tiny" :bordered="false" type="warning">{{ simulationLabel(alert.simulation) }}</NTag>
                       </div>
                       <div class="alert-history-meta">
                         <NTag size="small" :bordered="false" :type="alertTruthScore(alert, nowTick).feedbackCount === 0 ? 'default' : alertTruthScore(alert, nowTick).probability >= 60 ? 'success' : 'error'">
@@ -5330,11 +5615,20 @@ async function closeWindow() {
                   >
                     桌宠设置
                   </button>
+                  <button
+                    v-if="superAdminEnabled"
+                    type="button"
+                    :class="{ active: settingsCategory === 'admin' }"
+                    :aria-current="settingsCategory === 'admin' ? 'page' : undefined"
+                    @click="settingsCategory = 'admin'"
+                  >
+                    超管通知
+                  </button>
                 </nav>
                 <div class="settings-content">
                   <div class="workspace-header">
                     <h2 class="settings-title">设置<button class="settings-secret-trigger" type="button" aria-label="设置" @click="handleSuperAdminTap">✦</button></h2>
-                    <p>{{ settingsCategory === 'basic' ? '管理本机资料、网络、主题和语言。' : '管理桌宠资源、行为与告警能力。' }}</p>
+                    <p>{{ settingsCategory === 'basic' ? '管理本机资料、网络、主题和语言。' : settingsCategory === 'pet' ? '管理桌宠资源、行为与告警能力。' : '下发公告并审核设备提交的确认。' }}</p>
                   </div>
                   <div class="settings-grid">
                 <NCard v-if="settingsCategory === 'basic' && profile" title="本机资料" size="small">
@@ -5412,6 +5706,22 @@ async function closeWindow() {
                       <NButton quaternary :disabled="!updateInfo" @click="openReleasePage">Release 页面</NButton>
                     </NSpace>
                   </NSpace>
+                </NCard>
+                <NCard v-if="settingsCategory === 'admin' && superAdminEnabled" title="下发超管通知" size="small">
+                  <NSpace vertical>
+                    <NText depth="3">指定设备会直连送达；全员模式会为每台在线设备独立创建一条通知，便于逐人审核。</NText>
+                    <NButton type="warning" @click="openAdminNotificationModal">下发通知</NButton>
+                  </NSpace>
+                </NCard>
+                <NCard v-if="settingsCategory === 'admin' && superAdminEnabled" title="超管通知审核" size="small">
+                  <div class="admin-notification-review-list">
+                    <NEmpty v-if="adminNotifications.filter((item) => item.issued_by_device_id === profile?.device_id).length === 0" description="暂无本机下发的通知" />
+                    <div v-else class="admin-notification-review-actions"><NButton size="small" type="success" :loading="adminNotificationBulkProcessing" @click="decideAllSubmittedAdminNotifications('approved')">一键通过待审核</NButton><NButton size="small" type="error" secondary :loading="adminNotificationBulkProcessing" @click="decideAllSubmittedAdminNotifications('rejected')">一键拒绝待审核</NButton></div>
+                    <div v-for="notification in adminNotifications.filter((item) => item.issued_by_device_id === profile?.device_id).slice(0, 20)" :key="notification.notification_id" class="admin-notification-review-row">
+                      <div class="admin-notification-review-device"><img v-if="avatarImage(adminNotificationTargetDetail(notification)?.avatar)" class="avatar-image compact-avatar" :src="avatarImage(adminNotificationTargetDetail(notification)?.avatar)" alt="设备头像" /><NAvatar v-else :size="28" class="peer-avatar">{{ firstLetter(adminNotificationTargetDetail(notification)?.nickname ?? '?') }}</NAvatar><div><strong>{{ notification.title }}</strong><small>昵称：{{ adminNotificationTargetDetail(notification)?.nickname ?? '未知设备' }} · IP：{{ adminNotificationTargetDetail(notification)?.address ?? '未知' }} · MAC：{{ notification.target_device_id }} · {{ notification.status }}</small></div></div>
+                      <NSpace :size="6"><NButton size="small" quaternary @click="openAdminNotificationDetail(notification)">详情</NButton><template v-if="notification.status === 'submitted'"><NButton size="small" type="success" @click="decideAdminNotification(notification, 'approved')">通过</NButton><NButton size="small" type="error" secondary @click="decideAdminNotification(notification, 'rejected')">拒绝</NButton></template><NButton v-else-if="['pending','expired_locked','rejected'].includes(notification.status)" size="small" tertiary type="warning" @click="decideAdminNotification(notification, 'revoked')">撤销放行</NButton></NSpace>
+                    </div>
+                  </div>
                 </NCard>
                 <NCard v-if="settingsCategory === 'pet'" title="桌宠与告警器" size="small" class="desktop-pet-settings-card">
                   <NSpace vertical>

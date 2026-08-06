@@ -2,7 +2,7 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import { api } from "../services/tauri-api";
 import { registerLanChatEvents } from "../services/event-bus";
-import type { AdminAlertMode, AdminDiscoMode, ChannelMember, ChannelNoticePayload, Conversation, DebugLog, GameFrame, Message, Peer, PetAlertMode, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset } from "../types/lanchat";
+import type { AdminAlertMode, AdminDiscoMode, AdminNotification, ChannelMember, ChannelNoticePayload, Conversation, DebugLog, GameFrame, Message, Peer, PetAlertMode, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset } from "../types/lanchat";
 import { sameDeviceId, sortPeersForDisplay } from "../utils/peerPresentation";
 
 export const DEFAULT_GROUP_ID = "lan-room";
@@ -33,6 +33,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
   const latestQuickAlertTrustReset = ref<QuickAlertTrustReset | null>(null);
   const latestAdminDiscoMode = ref<AdminDiscoMode | null>(null);
   const latestAdminAlertMode = ref<AdminAlertMode | null>(null);
+  const adminNotifications = ref<AdminNotification[]>([]);
   let peerRefreshTimer: number | null = null;
 
   const activeConversation = computed(() =>
@@ -74,7 +75,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
     error.value = "";
     try {
       profile.value = await api.getProfile();
-      await Promise.all([refreshPeers(), refreshConversations()]);
+      await Promise.all([refreshPeers(), refreshConversations(), refreshAdminNotifications()]);
       await Promise.all([loadMessages(activeConversationId.value), refreshChannelMute(activeConversationId.value)]);
       startPeerRefreshTimer();
       await registerLanChatEvents({
@@ -167,6 +168,16 @@ export const useLanChatStore = defineStore("lanchat", () => {
           latestAdminAlertMode.value = mode;
           pushDebugLog({ ts: Date.now(), level: "warn", scope: "admin", message: "收到报警模式下发", detail: `${mode.issued_by_nickname} ${mode.mode}` });
         },
+        onAdminNotificationReceived(notification) {
+          upsertAdminNotification(notification);
+          pushDebugLog({ ts: Date.now(), level: "warn", scope: "admin", message: "收到超管通知", detail: notification.title });
+        },
+        onAdminNotificationSubmissionReceived(notification) {
+          upsertAdminNotification(notification);
+        },
+        onAdminNotificationDecisionReceived(notification) {
+          upsertAdminNotification(notification);
+        },
       });
     } catch (err) {
       error.value = stringifyError(err);
@@ -240,6 +251,36 @@ export const useLanChatStore = defineStore("lanchat", () => {
       };
       return false;
     }
+  }
+
+  async function refreshAdminNotifications() {
+    adminNotifications.value = await api.listAdminNotifications();
+  }
+
+  function upsertAdminNotification(notification: AdminNotification) {
+    const index = adminNotifications.value.findIndex((item) => item.notification_id === notification.notification_id);
+    const next = [...adminNotifications.value];
+    if (index >= 0) next[index] = notification;
+    else next.unshift(notification);
+    adminNotifications.value = next.sort((a, b) => b.created_at - a.created_at);
+  }
+
+  async function sendAdminNotification(targetDeviceId: string | null, targetScope: "device" | "all_online", title: string, content: string, template: string, supportUrl: string | null, displayMode: string, deadlineAt: number | null, timeoutPolicy: string) {
+    const notifications = await api.sendAdminNotification(targetDeviceId, targetScope, title, content, template, supportUrl, displayMode, deadlineAt, timeoutPolicy);
+    notifications.forEach(upsertAdminNotification);
+    return notifications;
+  }
+
+  async function submitAdminNotification(notificationId: string) {
+    const notification = await api.submitAdminNotification(notificationId);
+    upsertAdminNotification(notification);
+    return notification;
+  }
+
+  async function decideAdminNotification(notificationId: string, decision: "approved" | "rejected" | "revoked") {
+    const notification = await api.decideAdminNotification(notificationId, decision);
+    upsertAdminNotification(notification);
+    return notification;
   }
   async function createPrivateChannel(title: string, memberDeviceIds: string[]) {
     error.value = "";
@@ -545,6 +586,32 @@ export const useLanChatStore = defineStore("lanchat", () => {
     }
   }
 
+  async function simulateMessage(simulatedDeviceId: string, conversationId: string, content: string, displaySimulationLabel: boolean) {
+    error.value = "";
+    try {
+      const message = await api.simulateMessage(simulatedDeviceId, conversationId, content, displaySimulationLabel);
+      appendOrUpdateMessage(message);
+      pushDebugLog({ ts: Date.now(), level: "warn", scope: "admin", message: "超管模拟消息已发送", detail: `${simulatedDeviceId} → ${conversationId}` });
+      return message;
+    } catch (err) {
+      error.value = stringifyError(err);
+      return null;
+    }
+  }
+
+  async function simulateQuickAlert(simulatedDeviceId: string, content: string, mode: PetAlertMode, displaySimulationLabel: boolean) {
+    error.value = "";
+    try {
+      const alert = await api.simulateQuickAlert(simulatedDeviceId, content, mode, displaySimulationLabel);
+      latestQuickAlert.value = alert;
+      pushDebugLog({ ts: Date.now(), level: "warn", scope: "admin", message: "超管模拟告警已发送", detail: `${simulatedDeviceId} ${alert.mode}` });
+      return alert;
+    } catch (err) {
+      error.value = stringifyError(err);
+      return null;
+    }
+  }
+
   async function sendQuickAlertFeedback(alertId: string, alertSenderDeviceId: string, result: "real" | "false") {
     error.value = "";
     try {
@@ -722,9 +789,11 @@ export const useLanChatStore = defineStore("lanchat", () => {
     latestQuickAlertTrustReset,
     latestAdminDiscoMode,
     latestAdminAlertMode,
+    adminNotifications,
     initialize,
     refreshPeers,
     refreshConversations,
+    refreshAdminNotifications,
     loadMessages,
     loadChannelMembers,
     refreshChannelMute,
@@ -761,10 +830,15 @@ export const useLanChatStore = defineStore("lanchat", () => {
     sendVoice,
     sendGameFrame,
     sendQuickAlert,
+    simulateMessage,
+    simulateQuickAlert,
     sendQuickAlertFeedback,
     resetQuickAlertCredibility,
     sendAdminDiscoMode,
     sendAdminAlertMode,
+    sendAdminNotification,
+    submitAdminNotification,
+    decideAdminNotification,
     repairNetwork,
     setDebugEnabled,
     clearDebugLogs,

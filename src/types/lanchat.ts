@@ -21,6 +21,7 @@ export type AppVersionInfo = {
 
 export type UpdateDownloadLinks = {
   windowsPortable?: string | null;
+  windowsPortableSha256?: string | null;
   windowsInstaller?: string | null;
   macosDmg?: string | null;
   releasePage: string;
@@ -108,6 +109,13 @@ export type TrayAttentionItem = {
 export type MessageStatus = "sending" | "sent" | "delivered" | "failed";
 export type MessageType = "text" | "file" | "voice" | "system";
 
+export type SimulationMeta = {
+  operator_device_id: string;
+  operator_nickname: string;
+  display_label: boolean;
+  created_at: number;
+};
+
 export type FileMeta = {
   name: string;
   size: number;
@@ -130,6 +138,7 @@ export type Message = {
   message_type: MessageType;
   file_meta?: FileMeta | null;
   status: MessageStatus;
+  simulation?: SimulationMeta | null;
   created_at: number;
 };
 
@@ -162,6 +171,7 @@ export type QuickAlert = {
   sender_address?: string | null;
   content: string;
   mode: PetAlertMode;
+  simulation?: SimulationMeta | null;
   created_at: number;
 };
 
@@ -195,6 +205,28 @@ export type AdminAlertMode = {
   issued_by_device_id: string;
   issued_by_nickname: string;
   created_at: number;
+};
+
+export type AdminNotificationStatus = "pending" | "submitted" | "approved" | "rejected" | "revoked" | "expired_released" | "expired_locked" | string;
+
+export type AdminNotification = {
+  notification_id: string;
+  target_device_id: string;
+  title: string;
+  content: string;
+  template: string;
+  support_url?: string | null;
+  display_mode: "dismissible" | "requires_confirmation" | string;
+  deadline_at?: number | null;
+  timeout_policy: "auto_release" | "manual_review" | "keep_locked" | string;
+  issued_by_device_id: string;
+  issued_by_nickname: string;
+  created_at: number;
+  status: AdminNotificationStatus;
+  submitted_at?: number | null;
+  decided_at?: number | null;
+  decision_by_device_id?: string | null;
+  decision_by_nickname?: string | null;
 };
 
 export type DesktopPetRuntimeState = {

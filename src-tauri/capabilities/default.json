@@ -13,6 +13,7 @@
     "core:window:allow-close",
     "core:window:allow-start-dragging",
     "opener:default",
+    "updater:default",
     "dialog:default",
     "dialog:allow-confirm"
   ]

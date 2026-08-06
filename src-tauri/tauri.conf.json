@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "lanchat",
   "mainBinaryName": "lanchat",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "identifier": "com.lanchat.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -39,6 +39,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
       "icons/32x32.png",
@@ -52,6 +53,17 @@
     ],
     "macOS": {
       "signingIdentity": "-"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVBRjM5QTU3MjJCMTUyQ0YKUldUUFVyRWlWNXJ6Nm5ENCtaeDNQeUpFdXRDR09td0I3RnZPTE5VQ254QnVmemNQZmwzV3lsajMK",
+      "endpoints": [
+        "https://github.com/DumKing/lanchat/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }
