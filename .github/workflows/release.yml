@@ -119,6 +119,7 @@ jobs:
           if-no-files-found: error
           path: |
             release-assets/bundles/**/*.exe
+            release-assets/bundles/**/*.sig
             release-assets/bundles/**/*.dmg
             release-assets/portable/*.zip
             release-assets/desktop-pets/*.zip
