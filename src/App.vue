@@ -25,6 +25,7 @@ import {
   NListItem,
   NMessageProvider,
   NModal,
+  NProgress,
   NRadioButton,
   NRadioGroup,
   NScrollbar,
@@ -435,7 +436,19 @@ const updateChecking = ref(false);
 const updateError = ref("");
 const updateReminderOpen = ref(false);
 const nativeUpdateInstalling = ref(false);
+const nativeUpdateProgress = ref({ downloaded: 0, total: 0, phase: "idle" as "idle" | "downloading" | "installing" });
 const forceUpdateRequired = computed(() => updateInfo.value?.forceRequired === true);
+const nativeUpdateProgressPercent = computed(() => {
+  if (nativeUpdateProgress.value.total <= 0) return nativeUpdateInstalling.value ? 0 : 100;
+  return Math.min(100, Math.round((nativeUpdateProgress.value.downloaded / nativeUpdateProgress.value.total) * 100));
+});
+const nativeUpdateProgressLabel = computed(() => {
+  const progress = nativeUpdateProgress.value;
+  if (!nativeUpdateInstalling.value && progress.phase === "idle") return "";
+  if (progress.phase === "installing") return "下载完成，正在安装更新...";
+  if (progress.total > 0) return `正在下载更新 ${formatFileSize(progress.downloaded)} / ${formatFileSize(progress.total)}`;
+  return progress.downloaded > 0 ? `正在下载更新 ${formatFileSize(progress.downloaded)}` : "正在准备下载更新...";
+});
 const blockingAdminNotification = computed(() => {
   const deviceId = profile.value?.device_id;
   if (!deviceId) return null;
@@ -1245,11 +1258,13 @@ function scheduleAutomaticUpdateChecks() {
 async function installNativeUpdate(force = false) {
   if (nativeUpdateInstalling.value) return;
   nativeUpdateInstalling.value = true;
+  nativeUpdateProgress.value = { downloaded: 0, total: 0, phase: "downloading" };
   try {
     if (await api.isPortableRuntime()) {
       const url = updateInfo.value?.downloads.windowsPortable;
       const sha256 = updateInfo.value?.downloads.windowsPortableSha256;
       if (!url || !sha256) throw new Error("当前绿色版更新包尚未提供完整性校验信息");
+      nativeUpdateProgress.value = { downloaded: 0, total: 0, phase: "installing" };
       await api.installPortableUpdate(url, sha256);
       return;
     }
@@ -1258,13 +1273,28 @@ async function installNativeUpdate(force = false) {
       if (force) updateError.value = "已发现强制更新，但签名更新包尚未就绪，请从 Release 页面完成更新。";
       return;
     }
-    await update.downloadAndInstall();
+    let downloaded = 0;
+    let total = 0;
+    await update.download((event) => {
+      if (event.event === "Started") {
+        downloaded = 0;
+        total = event.data.contentLength ?? 0;
+      } else if (event.event === "Progress") {
+        downloaded += event.data.chunkLength;
+      } else if (event.event === "Finished") {
+        downloaded = total > 0 ? total : downloaded;
+      }
+      nativeUpdateProgress.value = { downloaded, total, phase: "downloading" };
+    });
+    nativeUpdateProgress.value = { downloaded, total, phase: "installing" };
+    await update.install();
     await api.quitApp();
   } catch (err) {
     updateError.value = `自动更新失败：${stringifyError(err)}`;
     if (force) updateReminderOpen.value = true;
   } finally {
     nativeUpdateInstalling.value = false;
+    nativeUpdateProgress.value = { downloaded: 0, total: 0, phase: "idle" };
   }
 }
 async function openPreferredUpdateUrl() {
@@ -4439,6 +4469,10 @@ async function closeWindow() {
             <span>检查时间</span><strong>{{ formatDateTime(updateInfo?.checkedAt) }}</strong>
           </div>
           <pre class="update-notes">{{ updateNotesPreview(updateInfo?.notes) }}</pre>
+          <div v-if="nativeUpdateInstalling" class="update-progress-panel">
+            <NProgress type="line" :percentage="nativeUpdateProgressPercent" :height="10" processing />
+            <span>{{ nativeUpdateProgressLabel }}</span>
+          </div>
           <div class="force-update-actions">
             <NButton type="primary" size="large" :loading="nativeUpdateInstalling" @click="installNativeUpdate(false)">自动更新</NButton>
             <NButton secondary size="large" @click="openPreferredUpdateUrl">手动下载</NButton>
@@ -5700,6 +5734,10 @@ async function closeWindow() {
                       {{ updateInfo.title }}
                     </NAlert>
                     <pre v-if="updateInfo" class="update-notes compact">{{ updateNotesPreview(updateInfo.notes) }}</pre>
+                    <div v-if="nativeUpdateInstalling" class="update-progress-panel compact">
+                      <NProgress type="line" :percentage="nativeUpdateProgressPercent" :height="8" processing />
+                      <span>{{ nativeUpdateProgressLabel }}</span>
+                    </div>
                     <NSpace>
                       <NButton type="primary" :loading="updateChecking" @click="checkUpdates(true)">检查更新</NButton>
                       <NButton secondary :disabled="!preferredUpdateUrl" @click="openPreferredUpdateUrl">下载更新</NButton>
