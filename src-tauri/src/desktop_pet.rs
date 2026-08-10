@@ -16,7 +16,7 @@ pub const DESKTOP_PET_STATES: [PetStateKind; 5] = [
     PetStateKind::Interact,
     PetStateKind::Life,
 ];
-pub const DEFAULT_DESKTOP_PET_ID: &str = "frog-buddy";
+pub const DEFAULT_DESKTOP_PET_ID: &str = "frog-hood-girl";
 pub const FALLBACK_DESKTOP_PET_ID: &str = "frog-buddy";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -799,6 +799,10 @@ pub struct DesktopPetSettings {
     pub disco_movement_mode: String,
     #[serde(default)]
     pub external_push_enabled: bool,
+    #[serde(default = "default_external_push_min_credibility")]
+    pub external_push_min_credibility: u8,
+    #[serde(default)]
+    pub external_push_min_credibility_locked: bool,
     #[serde(default)]
     pub external_push_configs: Vec<ExternalPushConfig>,
     #[serde(default, skip_serializing)]
@@ -817,6 +821,10 @@ fn default_disco_movement_mode() -> String {
 
 fn default_external_push_template() -> String {
     String::new()
+}
+
+fn default_external_push_min_credibility() -> u8 {
+    50
 }
 
 fn default_send_hotkey() -> String {
@@ -843,6 +851,8 @@ impl Default for DesktopPetSettings {
             random_life_enabled: true,
             disco_movement_mode: default_disco_movement_mode(),
             external_push_enabled: false,
+            external_push_min_credibility: default_external_push_min_credibility(),
+            external_push_min_credibility_locked: false,
             external_push_configs: Vec::new(),
             enterprise_wechat_enabled: false,
             enterprise_wechat_webhook: String::new(),
@@ -1041,6 +1051,7 @@ impl DesktopPetManager {
             .into_iter()
             .map(ExternalPushConfig::normalized)
             .collect();
+        settings.external_push_min_credibility = settings.external_push_min_credibility.min(100);
         if let Some(id) = settings.selected_pet_id.as_deref() {
             if self
                 .registry

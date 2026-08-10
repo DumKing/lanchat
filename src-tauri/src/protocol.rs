@@ -19,6 +19,9 @@ pub enum WireFrame {
     AdminChannelControl(AdminChannelControlFrame),
     AdminDiscoMode(AdminDiscoModeFrame),
     AdminAlertMode(AdminAlertModeFrame),
+    CallSignal(CallSignalFrame),
+    Nudge(NudgeFrame),
+    AdminAlertPushPolicy(AdminAlertPushPolicyFrame),
     AdminNotification(AdminNotificationFrame),
     AdminNotificationSubmission(AdminNotificationSubmissionFrame),
     AdminNotificationDecision(AdminNotificationDecisionFrame),
@@ -205,6 +208,42 @@ pub struct QuickAlertTrustResetFrame {
     pub created_at: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CallSignalFrame {
+    pub call_id: String,
+    pub sender_device_id: String,
+    pub sender_nickname: String,
+    /// offer | answer | ice_candidate | hangup | reject
+    pub kind: String,
+    #[serde(default)]
+    pub media: String,
+    #[serde(default)]
+    pub payload: serde_json::Value,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NudgeFrame {
+    pub nudge_id: String,
+    pub sender_device_id: String,
+    pub sender_nickname: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdminAlertPushPolicyFrame {
+    /// A concrete device id, or * for all online devices.
+    pub target_device_id: String,
+    /// 0-100. Alerts below the configured credibility do not trigger external group bots.
+    pub min_credibility: u8,
+    /// When enabled, only a later administrator policy can change this threshold.
+    #[serde(default)]
+    pub min_credibility_locked: bool,
+    pub issued_by_device_id: String,
+    pub issued_by_nickname: String,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdminDiscoModeFrame {
     pub target_device_id: String,
@@ -241,6 +280,8 @@ pub struct AdminNotificationFrame {
     /// auto_release | manual_review | keep_locked
     #[serde(default)]
     pub timeout_policy: String,
+    #[serde(default)]
+    pub force_open_main_window: bool,
     pub issued_by_device_id: String,
     pub issued_by_nickname: String,
     pub created_at: i64,
@@ -424,6 +465,47 @@ mod tests {
     }
 
     #[test]
+    fn call_signal_round_trips() {
+        let frame = WireFrame::CallSignal(CallSignalFrame {
+            call_id: "call-1".to_string(),
+            sender_device_id: "device-a".to_string(),
+            sender_nickname: "Alice".to_string(),
+            kind: "offer".to_string(),
+            media: "video".to_string(),
+            payload: serde_json::json!({ "type": "offer", "sdp": "v=0" }),
+            created_at: 131,
+        });
+
+        assert_eq!(decode_frame(&encode_frame(&frame).unwrap()).unwrap(), frame);
+    }
+
+    #[test]
+    fn nudge_round_trips() {
+        let frame = WireFrame::Nudge(NudgeFrame {
+            nudge_id: "nudge-1".to_string(),
+            sender_device_id: "device-a".to_string(),
+            sender_nickname: "Alice".to_string(),
+            created_at: 132,
+        });
+
+        assert_eq!(decode_frame(&encode_frame(&frame).unwrap()).unwrap(), frame);
+    }
+
+    #[test]
+    fn admin_alert_push_policy_round_trips() {
+        let frame = WireFrame::AdminAlertPushPolicy(AdminAlertPushPolicyFrame {
+            target_device_id: "*".to_string(),
+            min_credibility: 50,
+            min_credibility_locked: true,
+            issued_by_device_id: "admin-1".to_string(),
+            issued_by_nickname: "管理员".to_string(),
+            created_at: 132,
+        });
+
+        assert_eq!(decode_frame(&encode_frame(&frame).unwrap()).unwrap(), frame);
+    }
+
+    #[test]
     fn simulation_metadata_round_trips() {
         let frame = WireFrame::ChatMessage(ChatMessageFrame {
             message_id: "simulated-1".to_string(),
@@ -521,6 +603,7 @@ mod tests {
             display_mode: "requires_confirmation".to_string(),
             deadline_at: Some(200),
             timeout_policy: "manual_review".to_string(),
+            force_open_main_window: true,
             issued_by_device_id: "admin-1".to_string(),
             issued_by_nickname: "管理员".to_string(),
             created_at: 100,

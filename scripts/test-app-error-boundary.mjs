@@ -13,8 +13,10 @@ const boundary = readFileSync(boundaryPath, 'utf8');
 assert.match(mainTs, /import AppErrorBoundary from "\.\/components\/AppErrorBoundary\.vue";/, 'main.ts 应导入根级错误边界');
 assert.match(mainTs, /h\(AppErrorBoundary,[\s\S]*?h\(App\)/, 'App 应被错误边界包裹，而不是直接挂载');
 assert.match(mainTs, /app\.config\.errorHandler\s*=/, 'Vue 全局错误应进入统一兜底处理');
+assert.match(mainTs, /app\.config\.errorHandler[\s\S]*?isIgnorableResizeObserverError\(error\)/, 'Vue 全局错误入口应忽略 ResizeObserver 布局通知');
 assert.match(mainTs, /window\.addEventListener\("error"/, '普通运行时错误应被捕获');
 assert.match(mainTs, /event instanceof ErrorEvent/, '图片等资源加载失败不应被升级成整页致命错误');
+assert.match(mainTs, /window\.addEventListener\("unhandledrejection"[\s\S]*?isIgnorableResizeObserverError\(event\.reason\)/, '异步拒绝入口应忽略 ResizeObserver 布局通知');
 assert.match(mainTs, /window\.addEventListener\("unhandledrejection"/, '未处理 Promise 错误应被捕获');
 assert.match(mainTs, /window\.dispatchEvent\(new CustomEvent\("lanchat-app-error"/, '入口捕获到的错误应通知错误边界展示兜底页');
 

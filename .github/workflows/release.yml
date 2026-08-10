@@ -107,7 +107,7 @@ jobs:
           LanChat Windows 绿色版
 
           1. 解压后直接运行 lanchat.exe。
-          2. 默认内置 frog-buddy 桌宠。
+          2. 默认内置 frog-hood-girl 桌宠，仍可在设置中切换 frog-buddy。
           3. 如系统缺少 WebView2 Runtime，请先安装 Microsoft Edge WebView2 Runtime。
           "@ | Set-Content -Encoding UTF8 (Join-Path $portableRoot "README.txt")
           Compress-Archive -Path "$portableRoot/*" -DestinationPath "release-assets/portable/lanchat-windows-portable.zip" -Force
@@ -216,11 +216,18 @@ jobs:
             exit 1
           fi
 
+          RELEASE_NOTES_PATH="docs/releases/${RELEASE_TAG}.md"
+          if [ ! -f "${RELEASE_NOTES_PATH}" ]; then
+            echo "未找到本次发布说明：${RELEASE_NOTES_PATH}"
+            exit 1
+          fi
+          RELEASE_NOTES=$(cat "${RELEASE_NOTES_PATH}")
           MARKDOWN_CONTENT=$(cat <<EOF
           ## LanChat 新版本已发布
           > **版本：** <font color="info">${RELEASE_TAG}</font>
           > **仓库：** ${REPOSITORY}
-          > **构建产物：** Windows 安装包、Windows 绿色版、macOS 安装包
+
+          ${RELEASE_NOTES}
 
           [查看 Release 与下载附件](${RELEASE_URL})
           EOF

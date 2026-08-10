@@ -163,7 +163,7 @@ async fn handle_connection(
     let Some(file) = file else {
         return write_status(&mut stream, 404, "Not Found").await;
     };
-    let bytes = tokio::fs::read(&file.path)
+    let mut file_handle = tokio::fs::File::open(&file.path)
         .await
         .map_err(|err| format!("读取共享文件失败：{err}"))?;
     let header = format!(
@@ -175,8 +175,7 @@ async fn handle_connection(
         .write_all(header.as_bytes())
         .await
         .map_err(|err| format!("发送下载响应失败：{err}"))?;
-    stream
-        .write_all(&bytes)
+    tokio::io::copy(&mut file_handle, &mut stream)
         .await
         .map_err(|err| format!("发送文件失败：{err}"))?;
     Ok(())

@@ -164,6 +164,25 @@ export type GameFrame = {
 
 export type PetAlertMode = "normal" | "disco";
 
+export type CallSignalKind = "offer" | "answer" | "ice_candidate" | "hangup" | "reject";
+
+export type CallSignal = {
+  call_id: string;
+  sender_device_id: string;
+  sender_nickname: string;
+  kind: CallSignalKind | string;
+  media: "audio" | "video" | string;
+  payload: unknown;
+  created_at: number;
+};
+
+export type Nudge = {
+  nudge_id: string;
+  sender_device_id: string;
+  sender_nickname: string;
+  created_at: number;
+};
+
 export type QuickAlert = {
   alert_id: string;
   sender_device_id: string;
@@ -207,6 +226,15 @@ export type AdminAlertMode = {
   created_at: number;
 };
 
+export type AdminAlertPushPolicy = {
+  target_device_id: string;
+  min_credibility: number;
+  min_credibility_locked: boolean;
+  issued_by_device_id: string;
+  issued_by_nickname: string;
+  created_at: number;
+};
+
 export type AdminNotificationStatus = "pending" | "submitted" | "approved" | "rejected" | "revoked" | "expired_released" | "expired_locked" | string;
 
 export type AdminNotification = {
@@ -219,6 +247,7 @@ export type AdminNotification = {
   display_mode: "dismissible" | "requires_confirmation" | string;
   deadline_at?: number | null;
   timeout_policy: "auto_release" | "manual_review" | "keep_locked" | string;
+  force_open_main_window: boolean;
   issued_by_device_id: string;
   issued_by_nickname: string;
   created_at: number;
@@ -238,6 +267,9 @@ export type DesktopPetRuntimeState = {
   latest_sender_address?: string | null;
   latest_content?: string | null;
   latest_created_at?: number | null;
+  incoming_call_id?: string | null;
+  incoming_call_sender?: string | null;
+  incoming_call_media?: "audio" | "video" | null;
   feedbackable: boolean;
   flashing: boolean;
   disco: boolean;
