@@ -33,6 +33,8 @@ export const api = {
     invoke<ChannelMember[]>("invite_private_channel_members", { conversationId, memberDeviceIds, superAdmin }),
   removePrivateChannelMember: (conversationId: string, memberDeviceId: string, superAdmin = false) =>
     invoke<ChannelMember[]>("remove_private_channel_member", { conversationId, memberDeviceId, superAdmin }),
+  leavePrivateChannel: (conversationId: string) =>
+    invoke<void>("leave_private_channel", { conversationId }),
   setPrivateChannelMemberMuted: (conversationId: string, memberDeviceId: string, muted: boolean, superAdmin = false) =>
     invoke<ChannelMember[]>("set_private_channel_member_muted", { conversationId, memberDeviceId, muted, superAdmin }),
   dissolvePrivateChannel: (conversationId: string, superAdmin = false) =>

@@ -971,6 +971,40 @@ async fn remove_private_channel_member(
 }
 
 #[tauri::command]
+async fn leave_private_channel(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    conversation_id: String,
+) -> Result<(), String> {
+    ensure_full_client(&state, "退出频道")?;
+    let channel = state
+        .storage
+        .get_private_channel(&conversation_id)?
+        .ok_or_else(|| "请选择私有频道".to_string())?;
+    let profile = state.storage.get_or_create_profile()?;
+    if profile.device_id == channel.owner_device_id {
+        return Err("群主不能退出频道，请使用解散频道".to_string());
+    }
+    if !state
+        .storage
+        .is_private_channel_member(&conversation_id, &profile.device_id)?
+    {
+        return Err("你不是该频道成员".to_string());
+    }
+    state
+        .network
+        .send_admin_channel_control(
+            app,
+            channel.owner_device_id.clone(),
+            conversation_id.clone(),
+            "leave".to_string(),
+            false,
+        )
+        .await?;
+    state.storage.delete_private_channel(&conversation_id)
+}
+
+#[tauri::command]
 async fn set_private_channel_member_muted(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -3009,6 +3043,7 @@ pub fn run() {
             create_private_channel,
             invite_private_channel_members,
             remove_private_channel_member,
+            leave_private_channel,
             set_private_channel_member_muted,
             dissolve_private_channel,
             admin_mute_channel_member,

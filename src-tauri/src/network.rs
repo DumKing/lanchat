@@ -1781,6 +1781,21 @@ impl Network {
                                 "remove" | "dissolve" => {
                                     read_storage.delete_private_channel(&frame.channel_id)
                                 }
+                                "leave" => {
+                                    let leaving_id = normalize_device_id(&frame.issued_by_device_id);
+                                    let notice = format!("{} 退出了群聊", frame.issued_by_nickname);
+                                    read_storage
+                                        .remove_private_channel_member(&frame.channel_id, &leaving_id)
+                                        .map(|()| {
+                                            if let Ok(message) = save_system_notice(
+                                                &read_storage,
+                                                &frame.channel_id,
+                                                notice,
+                                            ) {
+                                                read_app.emit("message_received", &message).ok();
+                                            }
+                                        })
+                                }
                                 _ => Ok(()),
                             };
                             match result {
