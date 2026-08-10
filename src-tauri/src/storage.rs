@@ -127,6 +127,7 @@ pub struct AdminNotificationRecord {
     pub display_mode: String,
     pub deadline_at: Option<i64>,
     pub timeout_policy: String,
+    pub force_open_main_window: bool,
     pub issued_by_device_id: String,
     pub issued_by_nickname: String,
     pub created_at: i64,
@@ -276,6 +277,7 @@ impl Storage {
                 display_mode TEXT NOT NULL,
                 deadline_at INTEGER,
                 timeout_policy TEXT NOT NULL DEFAULT 'manual_review',
+                force_open_main_window INTEGER NOT NULL DEFAULT 0,
                 issued_by_device_id TEXT NOT NULL,
                 issued_by_nickname TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
@@ -367,6 +369,12 @@ impl Storage {
             &conn,
             "channel_members",
             "muted",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column(
+            &conn,
+            "admin_notifications",
+            "force_open_main_window",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
         Ok(())
@@ -898,10 +906,10 @@ impl Storage {
     ) -> Result<AdminNotificationRecord, String> {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         conn.execute(
-            "INSERT INTO admin_notifications (notification_id, target_device_id, title, content, template, support_url, display_mode, deadline_at, timeout_policy, issued_by_device_id, issued_by_nickname, created_at, status)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'pending')
-             ON CONFLICT(notification_id) DO UPDATE SET title=excluded.title, content=excluded.content, support_url=excluded.support_url, deadline_at=excluded.deadline_at, timeout_policy=excluded.timeout_policy",
-            params![frame.notification_id, frame.target_device_id, frame.title, frame.content, frame.template, frame.support_url, frame.display_mode, frame.deadline_at, frame.timeout_policy, frame.issued_by_device_id, frame.issued_by_nickname, frame.created_at],
+            "INSERT INTO admin_notifications (notification_id, target_device_id, title, content, template, support_url, display_mode, deadline_at, timeout_policy, force_open_main_window, issued_by_device_id, issued_by_nickname, created_at, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'pending')
+             ON CONFLICT(notification_id) DO UPDATE SET title=excluded.title, content=excluded.content, support_url=excluded.support_url, deadline_at=excluded.deadline_at, timeout_policy=excluded.timeout_policy, force_open_main_window=excluded.force_open_main_window",
+            params![frame.notification_id, frame.target_device_id, frame.title, frame.content, frame.template, frame.support_url, frame.display_mode, frame.deadline_at, frame.timeout_policy, if frame.force_open_main_window { 1 } else { 0 }, frame.issued_by_device_id, frame.issued_by_nickname, frame.created_at],
         ).map_err(|err| format!("保存超管通知失败：{err}"))?;
         Self::read_admin_notification(&conn, &frame.notification_id)
     }
@@ -909,7 +917,7 @@ impl Storage {
     pub fn list_admin_notifications(&self) -> Result<Vec<AdminNotificationRecord>, String> {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         self.resolve_admin_notification_timeouts_locked(&conn)?;
-        let mut stmt = conn.prepare("SELECT notification_id,target_device_id,title,content,template,support_url,display_mode,deadline_at,timeout_policy,issued_by_device_id,issued_by_nickname,created_at,status,submitted_at,decided_at,decision_by_device_id,decision_by_nickname FROM admin_notifications ORDER BY created_at DESC")
+        let mut stmt = conn.prepare("SELECT notification_id,target_device_id,title,content,template,support_url,display_mode,deadline_at,timeout_policy,force_open_main_window,issued_by_device_id,issued_by_nickname,created_at,status,submitted_at,decided_at,decision_by_device_id,decision_by_nickname FROM admin_notifications ORDER BY created_at DESC")
             .map_err(|err| format!("读取超管通知失败：{err}"))?;
         let rows = stmt
             .query_map([], Self::admin_notification_from_row)
@@ -972,7 +980,7 @@ impl Storage {
         conn: &Connection,
         notification_id: &str,
     ) -> Result<AdminNotificationRecord, String> {
-        conn.query_row("SELECT notification_id,target_device_id,title,content,template,support_url,display_mode,deadline_at,timeout_policy,issued_by_device_id,issued_by_nickname,created_at,status,submitted_at,decided_at,decision_by_device_id,decision_by_nickname FROM admin_notifications WHERE notification_id=?1", params![notification_id], Self::admin_notification_from_row)
+        conn.query_row("SELECT notification_id,target_device_id,title,content,template,support_url,display_mode,deadline_at,timeout_policy,force_open_main_window,issued_by_device_id,issued_by_nickname,created_at,status,submitted_at,decided_at,decision_by_device_id,decision_by_nickname FROM admin_notifications WHERE notification_id=?1", params![notification_id], Self::admin_notification_from_row)
             .map_err(|err| format!("读取超管通知失败：{err}"))
     }
 
@@ -989,14 +997,15 @@ impl Storage {
             display_mode: row.get(6)?,
             deadline_at: row.get(7)?,
             timeout_policy: row.get(8)?,
-            issued_by_device_id: row.get(9)?,
-            issued_by_nickname: row.get(10)?,
-            created_at: row.get(11)?,
-            status: row.get(12)?,
-            submitted_at: row.get(13)?,
-            decided_at: row.get(14)?,
-            decision_by_device_id: row.get(15)?,
-            decision_by_nickname: row.get(16)?,
+            force_open_main_window: row.get::<_, i64>(9)? != 0,
+            issued_by_device_id: row.get(10)?,
+            issued_by_nickname: row.get(11)?,
+            created_at: row.get(12)?,
+            status: row.get(13)?,
+            submitted_at: row.get(14)?,
+            decided_at: row.get(15)?,
+            decision_by_device_id: row.get(16)?,
+            decision_by_nickname: row.get(17)?,
         })
     }
 
@@ -1046,15 +1055,18 @@ impl Storage {
     }
 
     pub fn list_messages(&self, conversation_id: &str) -> Result<Vec<Message>, String> {
+        const MESSAGE_PAGE_LIMIT: i64 = 500;
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, conversation_id, sender_device_id, content, message_type, file_name, file_size, file_url, file_mime_type, file_duration_ms, status, simulation_operator_device_id, simulation_operator_nickname, simulation_display_label, simulation_created_at, created_at
-                 FROM messages WHERE conversation_id = ?1 ORDER BY created_at ASC",
+                 FROM (SELECT id, conversation_id, sender_device_id, content, message_type, file_name, file_size, file_url, file_mime_type, file_duration_ms, status, simulation_operator_device_id, simulation_operator_nickname, simulation_display_label, simulation_created_at, created_at
+                       FROM messages WHERE conversation_id = ?1 ORDER BY created_at DESC LIMIT ?2)
+                 ORDER BY created_at ASC",
             )
             .map_err(|err| format!("读取消息失败：{err}"))?;
         let rows = stmt
-            .query_map(params![conversation_id], |row| {
+            .query_map(params![conversation_id, MESSAGE_PAGE_LIMIT], |row| {
                 let message_type: String = row.get(4)?;
                 let status: String = row.get(10)?;
                 let file_name: Option<String> = row.get(5)?;
@@ -1964,7 +1976,7 @@ mod tests {
     }
 
     #[test]
-    fn stores_device_note_and_keeps_peer_order_stable_across_heartbeats() {
+    fn stores_device_note_and_orders_online_peers_before_offline_peers() {
         let temp = tempfile::tempdir().expect("tempdir");
         let db_path = temp.path().join("lanchat.sqlite3");
         let storage = Storage::open(&db_path).expect("storage opens");
@@ -2001,16 +2013,16 @@ mod tests {
         let first = storage.list_peers().expect("peers listed");
         assert_eq!(
             vec![
+                "aa:bb:cc:dd:ee:03",
                 "aa:bb:cc:dd:ee:01",
-                "aa:bb:cc:dd:ee:02",
-                "aa:bb:cc:dd:ee:03"
+                "aa:bb:cc:dd:ee:02"
             ],
             first
                 .iter()
                 .map(|peer| peer.device_id.as_str())
                 .collect::<Vec<_>>()
         );
-        assert_eq!(Some("阿尔法".to_string()), first[0].note);
+        assert_eq!(Some("阿尔法".to_string()), first[1].note);
 
         let mut refreshed = first[2].clone();
         refreshed.online = false;
@@ -2021,9 +2033,9 @@ mod tests {
         let second = storage.list_peers().expect("peers listed again");
         assert_eq!(
             vec![
+                "aa:bb:cc:dd:ee:03",
                 "aa:bb:cc:dd:ee:01",
-                "aa:bb:cc:dd:ee:02",
-                "aa:bb:cc:dd:ee:03"
+                "aa:bb:cc:dd:ee:02"
             ],
             second
                 .iter()

@@ -1,11 +1,13 @@
 use crate::channel_crypto::{decrypt_channel_content, encrypt_channel_content};
 use crate::debug_log::emit_debug_log;
+use crate::desktop_pet::DesktopPetManager;
 use crate::identity::normalize_device_id;
 use crate::protocol::{
-    decode_frame, encode_frame, AckFrame, AdminAlertModeFrame, AdminChannelControlFrame,
-    AdminDiscoModeFrame, AdminNicknameFrame, ChannelMemberFrame, ChannelNoticeFrame,
-    ChatMessageFrame, GameFrame, HelloFrame, PeerStatusFrame, PrivateChannelInviteFrame,
-    QuickAlertFeedbackFrame, QuickAlertFrame, QuickAlertTrustResetFrame, WireFrame,
+    decode_frame, encode_frame, AckFrame, AdminAlertModeFrame, AdminAlertPushPolicyFrame,
+    AdminChannelControlFrame, AdminDiscoModeFrame, AdminNicknameFrame, CallSignalFrame,
+    ChannelMemberFrame, ChannelNoticeFrame, ChatMessageFrame, GameFrame, HelloFrame, NudgeFrame,
+    PeerStatusFrame, PrivateChannelInviteFrame, QuickAlertFeedbackFrame, QuickAlertFrame,
+    QuickAlertTrustResetFrame, WireFrame,
 };
 use crate::storage::{
     system_login_nickname, ChannelMemberSeed, Message, MessageStatus, MessageType, Peer, Profile,
@@ -16,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::mpsc;
@@ -41,7 +43,7 @@ fn build_timestamp() -> i64 {
 #[derive(Clone)]
 struct PeerSender {
     id: String,
-    sender: mpsc::UnboundedSender<WireFrame>,
+    sender: mpsc::Sender<WireFrame>,
 }
 
 type PeerSenders = Arc<Mutex<HashMap<String, PeerSender>>>;
@@ -59,6 +61,7 @@ pub struct Network {
     senders: PeerSenders,
     client_kind: String,
     supports_chat: bool,
+    desktop_pet: Option<DesktopPetManager>,
 }
 
 impl Network {
@@ -74,7 +77,14 @@ impl Network {
             senders: Arc::new(Mutex::new(HashMap::new())),
             client_kind,
             supports_chat: true,
+            desktop_pet: None,
         }
+    }
+
+    pub fn new_with_desktop_pet(storage: Arc<Storage>, desktop_pet: DesktopPetManager) -> Self {
+        let mut network = Self::new(storage);
+        network.desktop_pet = Some(desktop_pet);
+        network
     }
 
     pub fn supports_chat(&self) -> bool {
@@ -207,7 +217,7 @@ impl Network {
             .map_err(|_| "连接表已损坏".to_string())?;
         let mut pushed = 0;
         for sender in senders.values() {
-            if sender.sender.send(frame.clone()).is_ok() {
+            if sender.sender.try_send(frame.clone()).is_ok() {
                 pushed += 1;
             }
         }
@@ -246,7 +256,7 @@ impl Network {
                     if !self.peer_supports_full_features(peer_id)? {
                         continue;
                     }
-                    delivered |= sender.sender.send(wire_frame.clone()).is_ok();
+                    delivered |= sender.sender.try_send(wire_frame.clone()).is_ok();
                 }
                 delivered
             };
@@ -360,7 +370,7 @@ impl Network {
                 continue;
             }
             if let Some(sender) = senders.get(&normalize_device_id(&member.device_id)) {
-                sender.sender.send(frame.clone()).ok();
+                sender.sender.try_send(frame.clone()).ok();
             }
         }
         emit_debug_log(
@@ -514,6 +524,126 @@ impl Network {
         Ok(frame)
     }
 
+    pub async fn send_call_signal(
+        &self,
+        app: AppHandle,
+        target_device_id: String,
+        frame: CallSignalFrame,
+    ) -> Result<(), String> {
+        let target_device_id = normalize_device_id(&target_device_id);
+        self.require_full_feature_peer(&target_device_id, "语音/视频通话")?;
+        if !self
+            .send_direct_frame(
+                app.clone(),
+                &target_device_id,
+                WireFrame::CallSignal(frame.clone()),
+            )
+            .await?
+        {
+            return Err("对方不在线或通话信令未送达".to_string());
+        }
+        emit_debug_log(
+            &app,
+            "info",
+            "call",
+            "通话信令已发送",
+            Some(format!("{} {}", target_device_id, frame.kind)),
+        );
+        Ok(())
+    }
+
+    pub async fn send_nudge(
+        &self,
+        app: AppHandle,
+        target_device_id: String,
+    ) -> Result<NudgeFrame, String> {
+        let target_device_id = normalize_device_id(&target_device_id);
+        self.require_full_feature_peer(&target_device_id, "抖一抖")?;
+        let profile = self.storage.get_or_create_profile()?;
+        let frame = NudgeFrame {
+            nudge_id: Uuid::new_v4().to_string(),
+            sender_device_id: profile.device_id,
+            sender_nickname: profile.nickname,
+            created_at: chrono::Utc::now().timestamp_millis(),
+        };
+        if !self
+            .send_direct_frame(
+                app.clone(),
+                &target_device_id,
+                WireFrame::Nudge(frame.clone()),
+            )
+            .await?
+        {
+            return Err("对方不在线，抖一抖未送达".to_string());
+        }
+        emit_debug_log(
+            &app,
+            "info",
+            "nudge",
+            "抖一抖已发送",
+            Some(target_device_id),
+        );
+        Ok(frame)
+    }
+
+    pub async fn send_admin_alert_push_policy(
+        &self,
+        app: AppHandle,
+        target_device_id: String,
+        min_credibility: u8,
+        min_credibility_locked: bool,
+    ) -> Result<AdminAlertPushPolicyFrame, String> {
+        let target_device_id = target_device_id.trim().to_string();
+        let profile = self.storage.get_or_create_profile()?;
+        let frame = AdminAlertPushPolicyFrame {
+            target_device_id: target_device_id.clone(),
+            min_credibility,
+            min_credibility_locked,
+            issued_by_device_id: profile.device_id.clone(),
+            issued_by_nickname: profile.nickname.clone(),
+            created_at: chrono::Utc::now().timestamp_millis(),
+        };
+        let wire = WireFrame::AdminAlertPushPolicy(frame.clone());
+        let delivered = if target_device_id == "*" {
+            let peers = self.storage.list_peers()?;
+            let mut delivered = false;
+            for peer in peers.into_iter().filter(|peer| {
+                peer.online
+                    && peer.supports_full_features()
+                    && normalize_device_id(&peer.device_id)
+                        != normalize_device_id(&profile.device_id)
+            }) {
+                delivered |= self
+                    .send_direct_frame(app.clone(), &peer.device_id, wire.clone())
+                    .await?;
+            }
+            delivered
+        } else if normalize_device_id(&target_device_id) == normalize_device_id(&profile.device_id)
+        {
+            true
+        } else {
+            self.send_direct_frame(app.clone(), &target_device_id, wire)
+                .await?
+        };
+        if !delivered
+            && target_device_id != "*"
+            && target_device_id != normalize_device_id(&profile.device_id)
+        {
+            return Err("没有可用连接，推送阈值未送达".to_string());
+        }
+        emit_debug_log(
+            &app,
+            "info",
+            "admin",
+            "狼来了推送阈值已下发",
+            Some(format!(
+                "{} {min_credibility} locked={min_credibility_locked}",
+                target_device_id
+            )),
+        );
+        Ok(frame)
+    }
+
     pub async fn send_admin_notification_frame(
         &self,
         app: AppHandle,
@@ -577,14 +707,14 @@ impl Network {
         let mut delivered = 0;
         if target_ids.is_empty() && conversation_id == DEFAULT_GROUP_ID {
             for sender in senders.values() {
-                if sender.sender.send(frame.clone()).is_ok() {
+                if sender.sender.try_send(frame.clone()).is_ok() {
                     delivered += 1;
                 }
             }
         } else {
             for target_id in &target_ids {
                 if let Some(sender) = senders.get(target_id) {
-                    if sender.sender.send(frame.clone()).is_ok() {
+                    if sender.sender.try_send(frame.clone()).is_ok() {
                         delivered += 1;
                     }
                 }
@@ -618,7 +748,7 @@ impl Network {
                 .lock()
                 .map_err(|_| "连接表已损坏".to_string())?;
             for sender in senders.values() {
-                delivered |= sender.sender.send(wire_frame.clone()).is_ok();
+                delivered |= sender.sender.try_send(wire_frame.clone()).is_ok();
             }
         } else {
             delivered = self
@@ -647,7 +777,7 @@ impl Network {
             .map_err(|_| "连接表已损坏".to_string())?;
         let mut delivered = 0;
         for sender in senders.values() {
-            if sender.sender.send(wire_frame.clone()).is_ok() {
+            if sender.sender.try_send(wire_frame.clone()).is_ok() {
                 delivered += 1;
             }
         }
@@ -673,7 +803,7 @@ impl Network {
             .map_err(|_| "连接表已损坏".to_string())?;
         let mut delivered = 0;
         for sender in senders.values() {
-            if sender.sender.send(wire_frame.clone()).is_ok() {
+            if sender.sender.try_send(wire_frame.clone()).is_ok() {
                 delivered += 1;
             }
         }
@@ -702,7 +832,7 @@ impl Network {
             .map_err(|_| "连接表已损坏".to_string())?;
         let mut delivered = 0;
         for sender in senders.values() {
-            if sender.sender.send(wire_frame.clone()).is_ok() {
+            if sender.sender.try_send(wire_frame.clone()).is_ok() {
                 delivered += 1;
             }
         }
@@ -818,7 +948,7 @@ impl Network {
                 if !self.peer_supports_full_features(peer_id)? {
                     continue;
                 }
-                delivered |= sender.sender.send(wire_frame.clone()).is_ok();
+                delivered |= sender.sender.try_send(wire_frame.clone()).is_ok();
             }
         } else {
             delivered = self
@@ -853,7 +983,7 @@ impl Network {
             .get(&peer_device_id)
             .cloned()
         {
-            return Ok(sender.sender.send(frame).is_ok());
+            return Ok(sender.sender.try_send(frame).is_ok());
         }
 
         if let Some(peer) = self.storage.get_peer(&peer_device_id)? {
@@ -870,7 +1000,7 @@ impl Network {
                     .get(&peer_device_id)
                     .cloned()
                 {
-                    return Ok(sender.sender.send(frame).is_ok());
+                    return Ok(sender.sender.try_send(frame).is_ok());
                 }
             }
         }
@@ -1014,7 +1144,8 @@ impl Network {
         );
         app.emit("peer_online", &peer).ok();
 
-        let (tx, mut rx) = mpsc::unbounded_channel::<WireFrame>();
+        // A disconnected peer must not be able to grow the process indefinitely.
+        let (tx, mut rx) = mpsc::channel::<WireFrame>(128);
         let connection_id = Uuid::new_v4().to_string();
         self.senders
             .lock()
@@ -1026,7 +1157,7 @@ impl Network {
                     sender: tx.clone(),
                 },
             );
-        tx.send(WireFrame::PeerStatus(self.status_frame(&profile)))
+        tx.try_send(WireFrame::PeerStatus(self.status_frame(&profile)))
             .ok();
 
         let writer_app = app.clone();
@@ -1063,6 +1194,7 @@ impl Network {
         });
 
         let read_storage = self.storage.clone();
+        let read_desktop_pet = self.desktop_pet.clone();
         let read_network = self.clone();
         let read_app = app.clone();
         let local_device_id = profile.device_id.clone();
@@ -1178,7 +1310,7 @@ impl Network {
                         }
                         if let Some(sender) = &ack_sender {
                             sender
-                                .send(WireFrame::Ack(AckFrame {
+                                .try_send(WireFrame::Ack(AckFrame {
                                     message_id: frame.message_id,
                                 }))
                                 .ok();
@@ -1367,6 +1499,63 @@ impl Network {
                             .emit("quick_alert_trust_reset_received", frame)
                             .ok();
                     }
+                    Ok(WireFrame::CallSignal(frame)) => {
+                        if !read_supports_chat {
+                            continue;
+                        }
+                        emit_debug_log(
+                            &read_app,
+                            "info",
+                            "call",
+                            "收到通话信令",
+                            Some(format!("{} {}", frame.sender_nickname, frame.kind)),
+                        );
+                        read_app.emit("call_signal_received", frame).ok();
+                    }
+                    Ok(WireFrame::Nudge(frame)) => {
+                        if !read_supports_chat {
+                            continue;
+                        }
+                        emit_debug_log(
+                            &read_app,
+                            "info",
+                            "nudge",
+                            "收到抖一抖",
+                            Some(frame.sender_nickname.clone()),
+                        );
+                        read_app.emit("nudge_received", frame).ok();
+                    }
+                    Ok(WireFrame::AdminAlertPushPolicy(frame)) => {
+                        if frame.target_device_id == "*"
+                            || normalize_device_id(&frame.target_device_id) == local_device_id
+                        {
+                            if let Some(desktop_pet) = &read_desktop_pet {
+                                let mut settings = desktop_pet.settings();
+                                settings.external_push_min_credibility = frame.min_credibility;
+                                settings.external_push_min_credibility_locked =
+                                    frame.min_credibility_locked;
+                                if let Err(err) = desktop_pet.update_settings(settings) {
+                                    emit_debug_log(
+                                        &read_app,
+                                        "error",
+                                        "admin",
+                                        "保存狼来了推送阈值失败",
+                                        Some(err),
+                                    );
+                                }
+                            }
+                            emit_debug_log(
+                                &read_app,
+                                "info",
+                                "admin",
+                                "收到狼来了推送阈值",
+                                Some(frame.min_credibility.to_string()),
+                            );
+                            read_app
+                                .emit("admin_alert_push_policy_received", frame)
+                                .ok();
+                        }
+                    }
                     Ok(WireFrame::AdminNickname(frame)) => {
                         if normalize_device_id(&frame.target_device_id) == local_device_id {
                             let requested = if frame.use_system_username {
@@ -1402,7 +1591,7 @@ impl Network {
                                     read_app.emit("profile_updated", &updated).ok();
                                     if let Some(sender) = &ack_sender {
                                         sender
-                                            .send(WireFrame::PeerStatus(
+                                            .try_send(WireFrame::PeerStatus(
                                                 read_network.status_frame(&updated),
                                             ))
                                             .ok();
@@ -1442,6 +1631,21 @@ impl Network {
                         if normalize_device_id(&frame.target_device_id) == local_device_id {
                             match read_storage.upsert_admin_notification(&frame) {
                                 Ok(record) => {
+                                    if record.force_open_main_window {
+                                        if let Some(window) = read_app.get_webview_window("main") {
+                                            let _ = window.set_skip_taskbar(false);
+                                            let _ = window.show();
+                                            let _ = window.unminimize();
+                                            let _ = window.set_focus();
+                                        }
+                                        emit_debug_log(
+                                            &read_app,
+                                            "warn",
+                                            "admin",
+                                            "超管通知强制打开主窗口",
+                                            Some(record.title.clone()),
+                                        );
+                                    }
                                     emit_debug_log(
                                         &read_app,
                                         "warn",
@@ -1618,7 +1822,7 @@ impl Network {
                     }
                     Ok(WireFrame::Ping) => {
                         if let Some(sender) = &ack_sender {
-                            sender.send(WireFrame::Pong).ok();
+                            sender.try_send(WireFrame::Pong).ok();
                         }
                     }
                     _ => {}
@@ -1804,7 +2008,7 @@ impl Network {
             let mut pushed = 0;
             if let Ok(senders) = self.senders.lock() {
                 for sender in senders.values() {
-                    if sender.sender.send(tcp_frame.clone()).is_ok() {
+                    if sender.sender.try_send(tcp_frame.clone()).is_ok() {
                         pushed += 1;
                     }
                 }

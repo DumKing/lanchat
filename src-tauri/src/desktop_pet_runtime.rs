@@ -18,7 +18,8 @@ const DISCO_HOP_SECONDS: f32 = 0.72;
 const DISCO_HOPS_PER_LEG: i32 = 8;
 const DISCO_CROUCH_OUT_END: f32 = 0.25;
 const DISCO_LEAP_END: f32 = 0.78;
-const PET_CLICK_DRAG_THRESHOLD_SQ: f32 = 196.0;
+// Keep normal clicks responsive while allowing a short, deliberate movement to start dragging.
+const PET_CLICK_DRAG_THRESHOLD_SQ: f32 = 25.0;
 const PET_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(420);
 const PET_SINGLE_CLICK_DELAY: Duration = Duration::from_millis(450);
 const PET_DOUBLE_CLICK_DISTANCE_SQ: f32 = 900.0;
@@ -89,6 +90,12 @@ pub struct DesktopPetRuntimeState {
     pub latest_sender_address: Option<String>,
     pub latest_content: Option<String>,
     pub latest_created_at: Option<i64>,
+    #[serde(default)]
+    pub incoming_call_id: Option<String>,
+    #[serde(default)]
+    pub incoming_call_sender: Option<String>,
+    #[serde(default)]
+    pub incoming_call_media: Option<String>,
     pub feedbackable: bool,
     pub flashing: bool,
     pub disco: bool,
@@ -107,6 +114,42 @@ fn default_true() -> bool {
 
 fn default_disco_movement_mode() -> String {
     "jump".to_string()
+}
+
+fn is_missing_alert_detail(value: Option<&String>) -> bool {
+    value.is_none_or(|value| {
+        let value = value.trim();
+        value.is_empty() || matches!(value, "未知设备" | "未知 IP" | "未知IP")
+    })
+}
+
+// Frontend state updates can arrive out of order. For the same alert, preserve
+// known sender metadata instead of replacing it with an incomplete snapshot.
+fn merge_runtime_state(
+    previous: &DesktopPetRuntimeState,
+    mut incoming: DesktopPetRuntimeState,
+) -> DesktopPetRuntimeState {
+    if previous.latest_alert_id != incoming.latest_alert_id || incoming.latest_alert_id.is_none() {
+        return incoming;
+    }
+
+    if is_missing_alert_detail(incoming.latest_sender.as_ref()) {
+        incoming.latest_sender = previous.latest_sender.clone();
+    }
+    if is_missing_alert_detail(incoming.latest_sender_address.as_ref()) {
+        incoming.latest_sender_address = previous.latest_sender_address.clone();
+    }
+    if incoming
+        .latest_content
+        .as_deref()
+        .is_none_or(|content| content.trim().is_empty())
+    {
+        incoming.latest_content = previous.latest_content.clone();
+    }
+    if incoming.latest_created_at.is_none() {
+        incoming.latest_created_at = previous.latest_created_at;
+    }
+    incoming
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,12 +205,44 @@ fn should_rehydrate_pet_process(enabled: bool) -> bool {
 
 #[cfg(test)]
 mod desktop_pet_enable_tests {
-    use super::should_rehydrate_pet_process;
+    use super::{merge_runtime_state, should_rehydrate_pet_process, DesktopPetRuntimeState};
 
     #[test]
     fn enabling_pet_requires_state_and_package_rehydration() {
         assert!(should_rehydrate_pet_process(true));
         assert!(!should_rehydrate_pet_process(false));
+    }
+
+    #[test]
+    fn same_alert_keeps_known_sender_details_when_a_later_snapshot_is_incomplete() {
+        let previous = DesktopPetRuntimeState {
+            latest_alert_id: Some("alert-1".to_string()),
+            latest_sender: Some("王二".to_string()),
+            latest_sender_address: Some("192.168.1.23".to_string()),
+            latest_content: Some("呱呱~呱~~".to_string()),
+            latest_created_at: Some(1_700_000_000_000),
+            flashing: true,
+            ..Default::default()
+        };
+        let incoming = DesktopPetRuntimeState {
+            latest_alert_id: Some("alert-1".to_string()),
+            latest_sender: Some("未知设备".to_string()),
+            latest_sender_address: None,
+            latest_content: None,
+            latest_created_at: None,
+            flashing: true,
+            ..Default::default()
+        };
+
+        let merged = merge_runtime_state(&previous, incoming);
+
+        assert_eq!(merged.latest_sender.as_deref(), Some("王二"));
+        assert_eq!(
+            merged.latest_sender_address.as_deref(),
+            Some("192.168.1.23")
+        );
+        assert_eq!(merged.latest_content.as_deref(), Some("呱呱~呱~~"));
+        assert_eq!(merged.latest_created_at, Some(1_700_000_000_000));
     }
 }
 
@@ -193,7 +268,7 @@ impl DesktopPetController {
     pub fn update(&self, next: DesktopPetRuntimeState) {
         let enabled = next.enabled;
         if let Ok(mut state) = self.state.lock() {
-            *state = next;
+            *state = merge_runtime_state(&state, next);
         }
         self.send_command(DesktopPetProcessCommand::State(self.state()));
         if let Ok(context) = self.repaint.lock() {
@@ -985,6 +1060,72 @@ impl DesktopPetApp {
         }
     }
 
+    fn draw_call_details(
+        &mut self,
+        ui: &mut egui::Ui,
+        panel: Rect,
+        state: &DesktopPetRuntimeState,
+    ) {
+        let painter = ui.painter();
+        painter.rect_filled(panel, 12.0, Self::alert_detail_background(state));
+        let sender = state.incoming_call_sender.as_deref().unwrap_or("好友");
+        let media = if state.incoming_call_media.as_deref() == Some("video") {
+            "视频通话邀请"
+        } else {
+            "语音通话邀请"
+        };
+        painter.text(
+            panel.left_top() + Vec2::new(12.0, 11.0),
+            egui::Align2::LEFT_TOP,
+            sender,
+            egui::FontId::proportional(13.0),
+            Color32::from_rgb(32, 38, 45),
+        );
+        painter.text(
+            panel.left_top() + Vec2::new(12.0, 34.0),
+            egui::Align2::LEFT_TOP,
+            media,
+            egui::FontId::proportional(11.0),
+            Color32::from_rgb(116, 126, 138),
+        );
+        let accept = Rect::from_min_size(
+            panel.left_bottom() + Vec2::new(12.0, -29.0),
+            Vec2::new(74.0, 23.0),
+        );
+        let reject = Rect::from_min_size(
+            panel.left_bottom() + Vec2::new(94.0, -29.0),
+            Vec2::new(74.0, 23.0),
+        );
+        painter.rect_filled(accept, 7.0, Color32::from_rgb(24, 167, 105));
+        painter.rect_filled(reject, 7.0, Color32::from_rgb(218, 65, 79));
+        painter.text(
+            accept.center(),
+            egui::Align2::CENTER_CENTER,
+            "接听",
+            egui::FontId::proportional(11.0),
+            Color32::WHITE,
+        );
+        painter.text(
+            reject.center(),
+            egui::Align2::CENTER_CENTER,
+            "拒绝",
+            egui::FontId::proportional(11.0),
+            Color32::WHITE,
+        );
+        if ui
+            .interact(accept, ui.id().with("call-accept"), egui::Sense::click())
+            .clicked()
+        {
+            self.emit_action("accept_call", state.incoming_call_id.clone());
+        }
+        if ui
+            .interact(reject, ui.id().with("call-reject"), egui::Sense::click())
+            .clicked()
+        {
+            self.emit_action("reject_call", state.incoming_call_id.clone());
+        }
+    }
+
     fn draw_bold_temperature(painter: &egui::Painter, pos: Pos2, text: String, font: egui::FontId) {
         let color = Color32::from_rgb(228, 58, 68);
         painter.text(
@@ -1196,10 +1337,13 @@ impl eframe::App for DesktopPetApp {
         }
         let runtime_state = self.update_runtime_state(&state);
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        if self.details_open && state.pending_count == 0 {
+        let incoming_call = state.incoming_call_id.is_some();
+        if incoming_call {
+            self.details_open = true;
+        } else if self.details_open && state.pending_count == 0 {
             self.details_open = false;
         }
-        let detail_is_open = self.details_open && state.pending_count > 0;
+        let detail_is_open = self.details_open && (state.pending_count > 0 || incoming_call);
         let detail_space = if detail_is_open {
             DETAIL_WIDTH + DETAIL_GAP
         } else {
@@ -1359,19 +1503,39 @@ impl eframe::App for DesktopPetApp {
                     center + Vec2::new(0.0, 5.0 * scale),
                     Vec2::new(138.0 * scale, 138.0 * scale),
                 );
-                let pet_hit_rect = pet_rect.expand(22.0 * scale);
+                // Transparent margins do not receive pointer input reliably on every platform.
+                // Give the rendered body a generous hit target so dragging works from the whole pet.
+                let pet_hit_rect = pet_rect.expand(34.0 * scale);
                 let pet_response = ui.interact(
                     pet_hit_rect,
                     ui.id().with("pet-body"),
                     egui::Sense::click_and_drag(),
                 );
-                if pet_response.drag_started_by(egui::PointerButton::Primary) {
-                    self.pet_press_pos = pet_response.interact_pointer_pos();
+                let primary_pressed_in_pet = ctx.input(|input| {
+                    input.pointer.button_pressed(egui::PointerButton::Primary)
+                        && input
+                            .pointer
+                            .interact_pos()
+                            .is_some_and(|pos| pet_hit_rect.contains(pos))
+                });
+                if primary_pressed_in_pet
+                    || pet_response.drag_started_by(egui::PointerButton::Primary)
+                {
+                    self.pet_press_pos = pet_response
+                        .interact_pointer_pos()
+                        .or_else(|| ctx.input(|input| input.pointer.interact_pos()));
                     self.pet_press_dragged = false;
                 }
-                let manually_dragging = pet_response.dragged()
-                    && pet_response.drag_delta().length_sq() > PET_CLICK_DRAG_THRESHOLD_SQ;
-                if manually_dragging {
+                let manually_dragging = ctx.input(|input| {
+                    input.pointer.button_down(egui::PointerButton::Primary)
+                        && self
+                            .pet_press_pos
+                            .zip(input.pointer.interact_pos())
+                            .is_some_and(|(press_pos, pointer_pos)| {
+                                (pointer_pos - press_pos).length_sq() > PET_CLICK_DRAG_THRESHOLD_SQ
+                            })
+                });
+                if manually_dragging && !self.pet_press_dragged {
                     self.pet_press_dragged = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
@@ -1429,7 +1593,11 @@ impl eframe::App for DesktopPetApp {
                 }
                 if detail_is_open {
                     let panel = Self::detail_panel_rect(available, pet_rect, self.detail_side);
-                    self.draw_alert_details(ui, panel, &state);
+                    if incoming_call {
+                        self.draw_call_details(ui, panel, &state);
+                    } else {
+                        self.draw_alert_details(ui, panel, &state);
+                    }
                 }
 
                 if state.pending_count > 0 || state.latest_sender.is_some() {

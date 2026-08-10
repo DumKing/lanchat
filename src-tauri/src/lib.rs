@@ -22,13 +22,13 @@ use desktop_pet_runtime::{DesktopPetController, DesktopPetRuntimeState};
 use file_server::FileServer;
 use fs2::FileExt;
 use network::{local_ip_address, Network};
-use protocol::GameFrame;
 use protocol::MessageRecallFrame;
 use protocol::{
-    AdminAlertModeFrame, AdminDiscoModeFrame, AdminNotificationDecisionFrame,
-    AdminNotificationFrame, AdminNotificationSubmissionFrame, QuickAlertFeedbackFrame,
-    QuickAlertFrame, QuickAlertTrustResetFrame, SimulationMeta,
+    AdminAlertModeFrame, AdminAlertPushPolicyFrame, AdminDiscoModeFrame,
+    AdminNotificationDecisionFrame, AdminNotificationFrame, AdminNotificationSubmissionFrame,
+    QuickAlertFeedbackFrame, QuickAlertFrame, QuickAlertTrustResetFrame, SimulationMeta,
 };
+use protocol::{CallSignalFrame, GameFrame};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::collections::HashMap;
@@ -44,7 +44,10 @@ use storage::{
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItemBuilder, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Emitter, LogicalSize, Manager, Size, State, UserAttentionType, WindowEvent};
+use tauri::{
+    Emitter, LogicalSize, Manager, PhysicalPosition, Position, Size, State, UserAttentionType,
+    WindowEvent,
+};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use uuid::Uuid;
 
@@ -659,6 +662,7 @@ async fn install_portable_update(
             return Err("绿色版更新校验失败，已取消替换".to_string());
         }
         let update_root = std::env::temp_dir().join(format!("lanchat-update-{}", Uuid::new_v4()));
+        let app_process_id = std::process::id();
         std::fs::create_dir_all(&update_root)
             .map_err(|error| format!("创建更新临时目录失败：{error}"))?;
         let archive = update_root.join("lanchat-update.zip");
@@ -666,13 +670,18 @@ async fn install_portable_update(
         std::fs::write(&archive, bytes).map_err(|error| format!("保存绿色版更新失败：{error}"))?;
         let script_text = format!(
             r#"
-Start-Sleep -Seconds 2
 $ErrorActionPreference = 'Stop'
 $root = '{root}'
 $archive = '{archive}'
+$appProcessId = {app_process_id}
 $staging = Join-Path (Split-Path $archive -Parent) 'staging'
 $backup = Join-Path (Split-Path $archive -Parent) 'backup'
 try {{
+  $deadline = (Get-Date).AddSeconds(45)
+  while (Get-Process -Id $appProcessId -ErrorAction SilentlyContinue) {{
+    if ((Get-Date) -ge $deadline) {{ throw '等待旧版 LanChat 退出超时' }}
+    Start-Sleep -Milliseconds 250
+  }}
   Expand-Archive -LiteralPath $archive -DestinationPath $staging -Force
   $payload = Get-ChildItem -LiteralPath $staging -Directory | Select-Object -First 1
   if ($null -eq $payload) {{ throw '更新包结构无效' }}
@@ -685,7 +694,8 @@ try {{
 }}
 "#,
             root = root.to_string_lossy().replace('\'', "''"),
-            archive = archive.to_string_lossy().replace('\'', "''")
+            archive = archive.to_string_lossy().replace('\'', "''"),
+            app_process_id = app_process_id
         );
         std::fs::write(&script, script_text)
             .map_err(|error| format!("生成绿色版更新脚本失败：{error}"))?;
@@ -907,13 +917,18 @@ async fn invite_private_channel_members(
     super_admin: bool,
 ) -> Result<Vec<ChannelMember>, String> {
     ensure_full_client(&state, "邀请频道成员")?;
-    let channel = state
+    let _channel = state
         .storage
         .get_private_channel(&conversation_id)?
         .ok_or_else(|| "请选择私有频道".to_string())?;
     let profile = state.storage.get_or_create_profile()?;
-    if !can_manage_private_channel(&channel.owner_device_id, &profile.device_id, super_admin) {
-        return Err("只有频道群主或超管可以邀请成员".to_string());
+    let is_member = state
+        .storage
+        .list_channel_members(&conversation_id)?
+        .iter()
+        .any(|member| member.device_id == profile.device_id);
+    if !super_admin && !is_member {
+        return Err("只有频道成员或超管可以邀请成员".to_string());
     }
     let _ = member_device_ids;
     state.storage.list_channel_members(&conversation_id)
@@ -1064,8 +1079,13 @@ fn build_private_channel_invite_card(
         .get_private_channel(&conversation_id)?
         .ok_or_else(|| "请选择私有频道".to_string())?;
     let profile = state.storage.get_or_create_profile()?;
-    if !can_manage_private_channel(&channel.owner_device_id, &profile.device_id, super_admin) {
-        return Err("只有频道群主或超管可以邀请成员".to_string());
+    let is_member = state
+        .storage
+        .list_channel_members(&conversation_id)?
+        .iter()
+        .any(|member| member.device_id == profile.device_id);
+    if !super_admin && !is_member {
+        return Err("只有频道成员或超管可以邀请成员".to_string());
     }
     let members = state
         .storage
@@ -1232,6 +1252,14 @@ fn clear_super_admin_session(state: State<'_, AppState>) -> Result<(), String> {
         .lock()
         .map_err(|_| "超级管理员会话状态异常".to_string())? = false;
     Ok(())
+}
+
+#[tauri::command]
+fn is_super_admin_authenticated(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(*state
+        .super_admin_session
+        .lock()
+        .map_err(|_| "超级管理员会话状态异常".to_string())?)
 }
 
 fn ensure_super_admin_session(state: &AppState) -> Result<(), String> {
@@ -1644,11 +1672,29 @@ async fn send_game_frame(
 }
 
 #[tauri::command]
+async fn send_call_signal(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    target_device_id: String,
+    frame: CallSignalFrame,
+) -> Result<(), String> {
+    let profile = state.storage.get_or_create_profile()?;
+    if frame.sender_device_id != profile.device_id {
+        return Err("通话信令身份校验失败".to_string());
+    }
+    state
+        .network
+        .send_call_signal(app, target_device_id, frame)
+        .await
+}
+
+#[tauri::command]
 async fn send_quick_alert(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     content: String,
     mode: Option<String>,
+    sender_credibility: Option<u8>,
 ) -> Result<QuickAlertFrame, String> {
     let profile = state.storage.get_or_create_profile()?;
     let mode = if mode
@@ -1679,10 +1725,11 @@ async fn send_quick_alert(
     };
     state
         .network
-        .broadcast_quick_alert(app, frame.clone())
+        .broadcast_quick_alert(app.clone(), frame.clone())
         .await?;
     let settings = state.desktop_pet.settings();
-    if settings.external_push_enabled {
+    let credibility = sender_credibility.unwrap_or(100).min(100);
+    if settings.external_push_enabled && credibility >= settings.external_push_min_credibility {
         for config in settings
             .external_push_configs
             .into_iter()
@@ -1695,6 +1742,17 @@ async fn send_quick_alert(
                 }
             });
         }
+    } else if settings.external_push_enabled {
+        emit_debug_log(
+            &app,
+            "info",
+            "alert",
+            "告警可信度低于外部群推送阈值，已跳过",
+            Some(format!(
+                "{credibility} < {}",
+                settings.external_push_min_credibility
+            )),
+        );
     }
     Ok(frame)
 }
@@ -1876,6 +1934,81 @@ async fn send_admin_alert_mode(
 }
 
 #[tauri::command]
+async fn send_admin_alert_push_policy(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    target_device_id: String,
+    min_credibility: u8,
+    min_credibility_locked: bool,
+) -> Result<AdminAlertPushPolicyFrame, String> {
+    ensure_super_admin_session(&state)?;
+    let target = target_device_id.trim();
+    if target.is_empty() {
+        return Err("请选择要下发推送配置的设备".to_string());
+    }
+    let frame = state
+        .network
+        .send_admin_alert_push_policy(
+            app.clone(),
+            target.to_string(),
+            min_credibility.min(100),
+            min_credibility_locked,
+        )
+        .await?;
+    if frame.target_device_id == "*"
+        || frame.target_device_id == state.storage.get_or_create_profile()?.device_id
+    {
+        let mut settings = state.desktop_pet.settings();
+        settings.external_push_min_credibility = frame.min_credibility;
+        settings.external_push_min_credibility_locked = frame.min_credibility_locked;
+        state.desktop_pet.update_settings(settings)?;
+    }
+    app.emit("admin_alert_push_policy_received", &frame).ok();
+    Ok(frame)
+}
+
+#[tauri::command]
+async fn send_nudge(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    target_device_id: String,
+) -> Result<protocol::NudgeFrame, String> {
+    let target_device_id = target_device_id.trim();
+    if target_device_id.is_empty() {
+        return Err("请选择在线设备".to_string());
+    }
+    state
+        .network
+        .send_nudge(app, target_device_id.to_string())
+        .await
+}
+
+#[tauri::command]
+fn reveal_and_shake_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    let Some(window) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+    let needs_attention =
+        window.is_minimized().unwrap_or(false) || !window.is_visible().unwrap_or(true);
+    if needs_attention {
+        show_main_window(&app, None)?;
+    }
+    let origin = window
+        .outer_position()
+        .map_err(|err| format!("读取窗口位置失败：{err}"))?;
+    tauri::async_runtime::spawn(async move {
+        for offset in [0, 12, -12, 12, -12, 0, 0, 12, -12, 12, -12, 0] {
+            let _ = window.set_position(Position::Physical(PhysicalPosition::new(
+                origin.x + offset,
+                origin.y,
+            )));
+            tokio::time::sleep(std::time::Duration::from_millis(68)).await;
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
 fn list_admin_notifications(
     state: State<'_, AppState>,
 ) -> Result<Vec<AdminNotificationRecord>, String> {
@@ -1895,6 +2028,7 @@ async fn send_admin_notification(
     display_mode: String,
     deadline_at: Option<i64>,
     timeout_policy: String,
+    force_open_main_window: bool,
 ) -> Result<Vec<AdminNotificationRecord>, String> {
     ensure_super_admin_session(&state)?;
     let profile = state.storage.get_or_create_profile()?;
@@ -1943,6 +2077,7 @@ async fn send_admin_notification(
             display_mode: display_mode.clone(),
             deadline_at,
             timeout_policy: timeout_policy.clone(),
+            force_open_main_window,
             issued_by_device_id: profile.device_id.clone(),
             issued_by_nickname: profile.nickname.clone(),
             created_at: chrono::Utc::now().timestamp_millis(),
@@ -2111,6 +2246,13 @@ fn update_desktop_pet_settings(
     state: State<'_, AppState>,
     settings: DesktopPetSettings,
 ) -> Result<DesktopPetSettings, String> {
+    let current = state.desktop_pet.settings();
+    if current.external_push_min_credibility_locked
+        && (settings.external_push_min_credibility != current.external_push_min_credibility
+            || !settings.external_push_min_credibility_locked)
+    {
+        return Err("管理员已禁止本机修改告警可信度阈值".to_string());
+    }
     let settings = state.desktop_pet.update_settings(settings)?;
     state.desktop_pet_controller.set_enabled(settings.enabled);
     state
@@ -2118,6 +2260,18 @@ fn update_desktop_pet_settings(
         .set_package(state.desktop_pet.selected_package());
     app.emit("desktop_pet_selected", &settings).ok();
     Ok(settings)
+}
+
+#[tauri::command]
+fn apply_admin_alert_push_policy(
+    state: State<'_, AppState>,
+    min_credibility: u8,
+    min_credibility_locked: bool,
+) -> Result<DesktopPetSettings, String> {
+    let mut settings = state.desktop_pet.settings();
+    settings.external_push_min_credibility = min_credibility.min(100);
+    settings.external_push_min_credibility_locked = min_credibility_locked;
+    state.desktop_pet.update_settings(settings)
 }
 
 #[tauri::command]
@@ -2792,10 +2946,6 @@ pub fn run() {
                     .map_err(|err| format!("初始化本地存储失败：{err}"))?,
             );
             storage.get_or_create_profile()?;
-            let network = Network::new(storage.clone());
-            network.start(app.handle().clone())?;
-            let file_server = FileServer::new();
-            file_server.start();
             let desktop_pet_app_dir = shared_desktop_pet_app_dir(&app_dir);
             let pet_roots = desktop_pet_resource_roots(app, &desktop_pet_app_dir);
             let desktop_pet = DesktopPetManager::new_lazy(
@@ -2803,6 +2953,10 @@ pub fn run() {
                 desktop_pet_app_dir.join("desktop-pets"),
                 desktop_pet_app_dir.join("desktop-pet-settings.json"),
             );
+            let network = Network::new_with_desktop_pet(storage.clone(), desktop_pet.clone());
+            network.start(app.handle().clone())?;
+            let file_server = FileServer::new();
+            file_server.start();
             let desktop_pet_controller = DesktopPetController::start(app.handle().clone());
             let pet_settings = desktop_pet.settings();
             desktop_pet_controller.set_enabled(pet_settings.enabled);
@@ -2841,6 +2995,7 @@ pub fn run() {
             install_portable_update,
             authenticate_super_admin,
             clear_super_admin_session,
+            is_super_admin_authenticated,
             open_update_url,
             get_profile,
             update_profile,
@@ -2873,12 +3028,16 @@ pub fn run() {
             clear_preview_media_cache,
             send_voice_message,
             send_game_frame,
+            send_call_signal,
             send_quick_alert,
             simulate_quick_alert,
             send_quick_alert_feedback,
             send_quick_alert_trust_reset,
             send_admin_disco_mode,
             send_admin_alert_mode,
+            send_admin_alert_push_policy,
+            send_nudge,
+            reveal_and_shake_main_window,
             list_admin_notifications,
             send_admin_notification,
             submit_admin_notification,
@@ -2890,6 +3049,7 @@ pub fn run() {
             select_desktop_pet,
             get_desktop_pet_settings,
             update_desktop_pet_settings,
+            apply_admin_alert_push_policy,
             update_desktop_pet_playback_config,
             open_desktop_pet_folder,
             set_desktop_pet_enabled,

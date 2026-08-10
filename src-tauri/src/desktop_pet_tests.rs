@@ -346,6 +346,7 @@ fn manager_selects_the_builtin_default_pet_when_settings_have_no_selection() {
     let user_root = temp.path().join("user");
     fs::create_dir_all(&builtin_root).expect("builtin root");
     write_package(&builtin_root, "frog-buddy", 2);
+    write_package(&builtin_root, "frog-hood-girl", 2);
     write_package(&builtin_root, "violet-tail-girl", 2);
 
     let manager = DesktopPetManager::new(
@@ -359,11 +360,11 @@ fn manager_selects_the_builtin_default_pet_when_settings_have_no_selection() {
 
     assert_eq!(
         manager.settings().selected_pet_id.as_deref(),
-        Some("frog-buddy")
+        Some("frog-hood-girl")
     );
     assert_eq!(
         manager.selected_package().expect("default pet").id(),
-        "frog-buddy"
+        "frog-hood-girl"
     );
 }
 
@@ -398,6 +399,7 @@ fn manager_preserves_an_existing_valid_pet_selection() {
     let settings_path = temp.path().join("settings.json");
     fs::create_dir_all(&builtin_root).expect("builtin root");
     write_package(&builtin_root, "frog-buddy", 2);
+    write_package(&builtin_root, "frog-hood-girl", 2);
     write_package(&builtin_root, "violet-tail-girl", 2);
     DesktopPetSettings {
         selected_pet_id: Some("violet-tail-girl".to_string()),
@@ -429,6 +431,7 @@ fn manager_repairs_a_missing_selection_to_default_pet() {
     let settings_path = temp.path().join("settings.json");
     fs::create_dir_all(&builtin_root).expect("builtin root");
     write_package(&builtin_root, "frog-buddy", 2);
+    write_package(&builtin_root, "frog-hood-girl", 2);
     write_package(&builtin_root, "violet-tail-girl", 2);
     DesktopPetSettings {
         selected_pet_id: Some("legacy-frog".to_string()),
@@ -448,11 +451,11 @@ fn manager_repairs_a_missing_selection_to_default_pet() {
 
     assert_eq!(
         manager.settings().selected_pet_id.as_deref(),
-        Some("frog-buddy")
+        Some("frog-hood-girl")
     );
     assert_eq!(
         manager.selected_package().expect("fallback pet").id(),
-        "frog-buddy"
+        "frog-hood-girl"
     );
 }
 

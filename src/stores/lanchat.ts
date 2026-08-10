@@ -2,10 +2,12 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import { api } from "../services/tauri-api";
 import { registerLanChatEvents } from "../services/event-bus";
-import type { AdminAlertMode, AdminDiscoMode, AdminNotification, ChannelMember, ChannelNoticePayload, Conversation, DebugLog, GameFrame, Message, Peer, PetAlertMode, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset } from "../types/lanchat";
+import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, CallSignal, ChannelMember, ChannelNoticePayload, Conversation, DebugLog, GameFrame, Message, Nudge, Peer, PetAlertMode, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset } from "../types/lanchat";
 import { sameDeviceId, sortPeersForDisplay } from "../utils/peerPresentation";
 
 export const DEFAULT_GROUP_ID = "lan-room";
+const MAX_MESSAGES_PER_CONVERSATION = 500;
+const MAX_CACHED_CONVERSATIONS = 12;
 
 export const useLanChatStore = defineStore("lanchat", () => {
   const profile = ref<Profile | null>(null);
@@ -33,8 +35,14 @@ export const useLanChatStore = defineStore("lanchat", () => {
   const latestQuickAlertTrustReset = ref<QuickAlertTrustReset | null>(null);
   const latestAdminDiscoMode = ref<AdminDiscoMode | null>(null);
   const latestAdminAlertMode = ref<AdminAlertMode | null>(null);
+  const latestCallSignal = ref<CallSignal | null>(null);
+  const latestNudge = ref<Nudge | null>(null);
+  const latestAdminAlertPushPolicy = ref<AdminAlertPushPolicy | null>(null);
   const adminNotifications = ref<AdminNotification[]>([]);
   let peerRefreshTimer: number | null = null;
+  let peerRefreshRevision = 0;
+  let conversationRefreshRevision = 0;
+  const messageCacheTouchedAt = new Map<string, number>();
 
   const activeConversation = computed(() =>
     conversations.value.find((item) => item.id === activeConversationId.value) ?? null,
@@ -94,6 +102,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
         },
         onPeerOffline(deviceId) {
           pushDebugLog({ ts: Date.now(), level: "warn", scope: "frontend", message: "收到 peer_offline 事件", detail: deviceId });
+          peerRefreshRevision += 1;
           const previous = peers.value.find((peer) => sameDeviceId(peer.device_id, deviceId));
           peers.value = sortPeersForDisplay(peers.value.map((peer) =>
             sameDeviceId(peer.device_id, deviceId) ? { ...peer, online: false } : peer,
@@ -168,6 +177,18 @@ export const useLanChatStore = defineStore("lanchat", () => {
           latestAdminAlertMode.value = mode;
           pushDebugLog({ ts: Date.now(), level: "warn", scope: "admin", message: "收到报警模式下发", detail: `${mode.issued_by_nickname} ${mode.mode}` });
         },
+        onCallSignalReceived(signal) {
+          latestCallSignal.value = signal;
+          pushDebugLog({ ts: Date.now(), level: "info", scope: "call", message: "收到通话信令", detail: `${signal.sender_nickname} ${signal.kind}` });
+        },
+        onNudgeReceived(nudge) {
+          latestNudge.value = nudge;
+          pushDebugLog({ ts: Date.now(), level: "info", scope: "nudge", message: "收到抖一抖", detail: nudge.sender_nickname });
+        },
+        onAdminAlertPushPolicyReceived(policy) {
+          latestAdminAlertPushPolicy.value = policy;
+          pushDebugLog({ ts: Date.now(), level: "info", scope: "admin", message: "收到狼来了推送阈值", detail: `${policy.issued_by_nickname} ${policy.min_credibility}` });
+        },
         onAdminNotificationReceived(notification) {
           upsertAdminNotification(notification);
           pushDebugLog({ ts: Date.now(), level: "warn", scope: "admin", message: "收到超管通知", detail: notification.title });
@@ -193,23 +214,35 @@ export const useLanChatStore = defineStore("lanchat", () => {
     }, 10_000);
   }
   async function refreshPeers() {
+    const revision = ++peerRefreshRevision;
     const next = await api.listPeers();
+    if (revision !== peerRefreshRevision) return;
     peers.value = sortPeersForDisplay(dedupePeers(next));
     pushDebugLog({ ts: Date.now(), level: "info", scope: "frontend", message: "刷新设备列表", detail: `${peers.value.filter((peer) => peer.online).length}/${peers.value.length} 在线` });
   }
 
   async function refreshConversations() {
-    conversations.value = await api.listConversations();
+    const revision = ++conversationRefreshRevision;
+    const next = await api.listConversations();
+    const privateChannelIds = next
+      .filter((conversation) => conversation.kind === "group" && conversation.is_private)
+      .map((conversation) => conversation.id);
+    const memberEntries = await Promise.all(privateChannelIds.map(async (conversationId) => [
+      conversationId,
+      await api.listChannelMembers(conversationId),
+    ] as const));
+    if (revision !== conversationRefreshRevision) return;
+    conversations.value = next;
+    const nextMembers: Record<string, ChannelMember[]> = {};
+    for (const [conversationId, members] of memberEntries) nextMembers[conversationId] = members;
+    channelMembersByConversation.value = nextMembers;
     if (!conversations.value.some((item) => item.id === activeConversationId.value)) {
       activeConversationId.value = conversations.value[0]?.id ?? DEFAULT_GROUP_ID;
     }
   }
 
   async function loadMessages(conversationId: string) {
-    messagesByConversation.value = {
-      ...messagesByConversation.value,
-      [conversationId]: await api.listMessages(conversationId),
-    };
+    cacheMessages(conversationId, await api.listMessages(conversationId));
   }
 
   async function loadChannelMembers(conversationId: string) {
@@ -265,8 +298,8 @@ export const useLanChatStore = defineStore("lanchat", () => {
     adminNotifications.value = next.sort((a, b) => b.created_at - a.created_at);
   }
 
-  async function sendAdminNotification(targetDeviceId: string | null, targetScope: "device" | "all_online", title: string, content: string, template: string, supportUrl: string | null, displayMode: string, deadlineAt: number | null, timeoutPolicy: string) {
-    const notifications = await api.sendAdminNotification(targetDeviceId, targetScope, title, content, template, supportUrl, displayMode, deadlineAt, timeoutPolicy);
+  async function sendAdminNotification(targetDeviceId: string | null, targetScope: "device" | "all_online", title: string, content: string, template: string, supportUrl: string | null, displayMode: string, deadlineAt: number | null, timeoutPolicy: string, forceOpenMainWindow: boolean) {
+    const notifications = await api.sendAdminNotification(targetDeviceId, targetScope, title, content, template, supportUrl, displayMode, deadlineAt, timeoutPolicy, forceOpenMainWindow);
     notifications.forEach(upsertAdminNotification);
     return notifications;
   }
@@ -573,10 +606,30 @@ export const useLanChatStore = defineStore("lanchat", () => {
     }
   }
 
-  async function sendQuickAlert(content = "呱呱~呱~~", mode: PetAlertMode = "normal") {
+  async function sendCallSignal(targetDeviceId: string, frame: CallSignal) {
     error.value = "";
     try {
-      const alert = await api.sendQuickAlert(content, mode);
+      await api.sendCallSignal(targetDeviceId, frame);
+    } catch (err) {
+      error.value = stringifyError(err);
+      throw err;
+    }
+  }
+
+  async function sendNudge(targetDeviceId: string) {
+    error.value = "";
+    try {
+      return await api.sendNudge(targetDeviceId);
+    } catch (err) {
+      error.value = stringifyError(err);
+      return null;
+    }
+  }
+
+  async function sendQuickAlert(content = "呱呱~呱~~", mode: PetAlertMode = "normal", senderCredibility?: number) {
+    error.value = "";
+    try {
+      const alert = await api.sendQuickAlert(content, mode, senderCredibility);
       latestQuickAlert.value = alert;
       pushDebugLog({ ts: Date.now(), level: "warn", scope: "alert", message: "快捷告警已发出", detail: `${alert.alert_id} ${alert.mode}` });
       return alert;
@@ -664,6 +717,18 @@ export const useLanChatStore = defineStore("lanchat", () => {
     }
   }
 
+  async function sendAdminAlertPushPolicy(targetDeviceId: string, minCredibility: number, minCredibilityLocked: boolean) {
+    error.value = "";
+    try {
+      const policy = await api.sendAdminAlertPushPolicy(targetDeviceId, minCredibility, minCredibilityLocked);
+      latestAdminAlertPushPolicy.value = policy;
+      return policy;
+    } catch (err) {
+      error.value = stringifyError(err);
+      return null;
+    }
+  }
+
   function readSavedDebugEnabled() {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem("lanchat-debug-enabled") === "true";
@@ -698,6 +763,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
     }
   }
   function upsertPeer(peer: Peer) {
+    peerRefreshRevision += 1;
     const endpoint = `${peer.address}:${peer.port}`;
     const currentIndex = peers.value.findIndex((item) => sameDeviceId(item.device_id, peer.device_id));
     const existing = currentIndex >= 0 ? peers.value[currentIndex] : undefined;
@@ -728,10 +794,25 @@ export const useLanChatStore = defineStore("lanchat", () => {
     const next = current.filter((item) => item.id !== message.id);
     next.push(message);
     next.sort((a, b) => a.created_at - b.created_at);
-    messagesByConversation.value = {
+    cacheMessages(message.conversation_id, next);
+  }
+
+  function cacheMessages(conversationId: string, messages: Message[]) {
+    messageCacheTouchedAt.set(conversationId, Date.now());
+    const next = {
       ...messagesByConversation.value,
-      [message.conversation_id]: next,
+      [conversationId]: messages.slice(-MAX_MESSAGES_PER_CONVERSATION),
     };
+    const evictable = Object.keys(next)
+      .filter((id) => id !== activeConversationId.value)
+      .sort((left, right) => (messageCacheTouchedAt.get(left) ?? 0) - (messageCacheTouchedAt.get(right) ?? 0));
+    while (Object.keys(next).length > MAX_CACHED_CONVERSATIONS && evictable.length > 0) {
+      const id = evictable.shift();
+      if (!id) break;
+      delete next[id];
+      messageCacheTouchedAt.delete(id);
+    }
+    messagesByConversation.value = next;
   }
 
   function updateMessageStatus(messageId: string, status: Message["status"]) {
@@ -789,6 +870,9 @@ export const useLanChatStore = defineStore("lanchat", () => {
     latestQuickAlertTrustReset,
     latestAdminDiscoMode,
     latestAdminAlertMode,
+    latestCallSignal,
+    latestNudge,
+    latestAdminAlertPushPolicy,
     adminNotifications,
     initialize,
     refreshPeers,
@@ -829,6 +913,8 @@ export const useLanChatStore = defineStore("lanchat", () => {
     sendPastedImage,
     sendVoice,
     sendGameFrame,
+    sendCallSignal,
+    sendNudge,
     sendQuickAlert,
     simulateMessage,
     simulateQuickAlert,
@@ -836,6 +922,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
     resetQuickAlertCredibility,
     sendAdminDiscoMode,
     sendAdminAlertMode,
+    sendAdminAlertPushPolicy,
     sendAdminNotification,
     submitAdminNotification,
     decideAdminNotification,

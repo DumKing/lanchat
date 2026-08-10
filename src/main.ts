@@ -33,9 +33,11 @@ function isIgnorableResizeObserverError(error: unknown) {
     ? error.message
     : typeof error === "string"
       ? error
-      : "";
-  return message === "ResizeObserver loop limit exceeded"
-    || message === "ResizeObserver loop completed with undelivered notifications.";
+      : typeof error === "object" && error !== null && "message" in error
+        ? String(error.message ?? "")
+        : "";
+  return message.includes("ResizeObserver loop limit exceeded")
+    || message.includes("ResizeObserver loop completed with undelivered notifications");
 }
 
 const app = createApp({
@@ -43,6 +45,7 @@ const app = createApp({
 });
 
 app.config.errorHandler = (error, _instance, info) => {
+  if (isIgnorableResizeObserverError(error)) return;
   notifyAppError(error, `Vue 全局异常：${info}`);
 };
 
@@ -57,6 +60,10 @@ window.addEventListener("error", (event) => {
 });
 
 window.addEventListener("unhandledrejection", (event) => {
+  if (isIgnorableResizeObserverError(event.reason)) {
+    event.preventDefault();
+    return;
+  }
   notifyAppError(event.reason, "未处理的异步异常");
 });
 

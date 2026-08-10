@@ -1,7 +1,7 @@
 {
   "name": "lanchat",
   "private": true,
-  "version": "0.3.6",
+  "version": "0.4.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -22,7 +22,10 @@
     "test:composer-ime": "node scripts/test-composer-ime.mjs",
     "test:peer-presentation": "node scripts/test-peer-presentation.mjs",
     "test:release-notification": "node scripts/test-release-notification.mjs",
+    "test:update-progress-ui": "node scripts/test-update-progress-ui.mjs",
     "test:admin-notification": "node scripts/test-admin-notification.mjs",
+    "test:state-recovery": "node scripts/test-state-recovery.mjs",
+    "test:memory-bounds": "node scripts/test-memory-bounds.mjs",
     "test:tray-attention": "node scripts/test-tray-attention.mjs",
     "test:app-error-boundary": "node scripts/test-app-error-boundary.mjs",
     "build": "node scripts/write-build-timestamp.mjs && vue-tsc --noEmit && vite build",

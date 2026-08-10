@@ -83,6 +83,10 @@ export const useDesktopPetStore = defineStore("desktop-pet", () => {
     settings.value = await api.updateDesktopPetSettings(next);
   }
 
+  async function refreshSettings() {
+    settings.value = await api.getDesktopPetSettings();
+  }
+
   async function updatePlaybackConfig(petId: string, configs: Record<string, PetStatePlaybackConfig>) {
     await api.updateDesktopPetPlaybackConfig(petId, configs);
     registry.value = await api.refreshDesktopPets();
@@ -108,6 +112,7 @@ export const useDesktopPetStore = defineStore("desktop-pet", () => {
     selectPackage,
     removePackage,
     updateSettings,
+    refreshSettings,
     updatePlaybackConfig,
     setEnabled,
   };

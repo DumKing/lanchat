@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import type { AdminAlertMode, AdminDiscoMode, AdminNotification, ChannelNoticePayload, Conversation, DebugLog, GameFrame, Message, Peer, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset } from "../types/lanchat";
+import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, CallSignal, ChannelNoticePayload, Conversation, DebugLog, GameFrame, Message, Nudge, Peer, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset } from "../types/lanchat";
 
 export async function registerLanChatEvents(handlers: {
   onPeerOnline: (peer: Peer) => void;
@@ -18,6 +18,9 @@ export async function registerLanChatEvents(handlers: {
   onQuickAlertTrustResetReceived: (reset: QuickAlertTrustReset) => void;
   onAdminDiscoModeReceived: (mode: AdminDiscoMode) => void;
   onAdminAlertModeReceived: (mode: AdminAlertMode) => void;
+  onCallSignalReceived: (signal: CallSignal) => void;
+  onNudgeReceived: (nudge: Nudge) => void;
+  onAdminAlertPushPolicyReceived: (policy: AdminAlertPushPolicy) => void;
   onAdminNotificationReceived: (notification: AdminNotification) => void;
   onAdminNotificationSubmissionReceived: (notification: AdminNotification) => void;
   onAdminNotificationDecisionReceived: (notification: AdminNotification) => void;
@@ -70,6 +73,15 @@ export async function registerLanChatEvents(handlers: {
   const unlistenAdminAlertMode = await listen<AdminAlertMode>("admin_alert_mode_received", (event) => {
     handlers.onAdminAlertModeReceived(event.payload);
   });
+  const unlistenCallSignal = await listen<CallSignal>("call_signal_received", (event) => {
+    handlers.onCallSignalReceived(event.payload);
+  });
+  const unlistenNudge = await listen<Nudge>("nudge_received", (event) => {
+    handlers.onNudgeReceived(event.payload);
+  });
+  const unlistenAdminAlertPushPolicy = await listen<AdminAlertPushPolicy>("admin_alert_push_policy_received", (event) => {
+    handlers.onAdminAlertPushPolicyReceived(event.payload);
+  });
   const unlistenAdminNotification = await listen<AdminNotification>("admin_notification_received", (event) => {
     handlers.onAdminNotificationReceived(event.payload);
   });
@@ -97,6 +109,9 @@ export async function registerLanChatEvents(handlers: {
     unlistenQuickAlertTrustReset();
     unlistenAdminDiscoMode();
     unlistenAdminAlertMode();
+    unlistenCallSignal();
+    unlistenNudge();
+    unlistenAdminAlertPushPolicy();
     unlistenAdminNotification();
     unlistenAdminNotificationSubmission();
     unlistenAdminNotificationDecision();

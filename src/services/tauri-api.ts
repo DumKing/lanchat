@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AdminAlertMode, AdminDiscoMode, AdminNotification, AppVersionInfo, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem, UpdateCheckResult } from "../types/lanchat";
+import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AppVersionInfo, CallSignal, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Nudge, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem, UpdateCheckResult } from "../types/lanchat";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, PetStatePlaybackConfig } from "../types/desktop-pet";
 
 export const api = {
@@ -10,6 +10,7 @@ export const api = {
   installPortableUpdate: (downloadUrl: string, sha256: string) => invoke<void>("install_portable_update", { downloadUrl, sha256 }),
   authenticateSuperAdmin: (password: string) => invoke<boolean>("authenticate_super_admin", { password }),
   clearSuperAdminSession: () => invoke<void>("clear_super_admin_session"),
+  isSuperAdminAuthenticated: () => invoke<boolean>("is_super_admin_authenticated"),
   openUpdateUrl: (url: string) => invoke<void>("open_update_url", { url }),
   getProfile: () => invoke<Profile>("get_profile"),
   updateProfile: (nickname: string, listenPort: number, avatar?: string | null) =>
@@ -66,8 +67,12 @@ export const api = {
     invoke<Message>("send_voice_message", { conversationId, fileName, bytes, durationMs }),
   sendGameFrame: (targetDeviceId: string | null, frame: GameFrame) =>
     invoke<void>("send_game_frame", { targetDeviceId, frame }),
-  sendQuickAlert: (content: string, mode: PetAlertMode = "normal") =>
-    invoke<QuickAlert>("send_quick_alert", { content, mode }),
+  sendCallSignal: (targetDeviceId: string, frame: CallSignal) =>
+    invoke<void>("send_call_signal", { targetDeviceId, frame }),
+  sendNudge: (targetDeviceId: string) => invoke<Nudge>("send_nudge", { targetDeviceId }),
+  revealAndShakeMainWindow: () => invoke<void>("reveal_and_shake_main_window"),
+  sendQuickAlert: (content: string, mode: PetAlertMode = "normal", senderCredibility?: number) =>
+    invoke<QuickAlert>("send_quick_alert", { content, mode, senderCredibility }),
   simulateQuickAlert: (simulatedDeviceId: string, content: string, mode: PetAlertMode, displaySimulationLabel: boolean) =>
     invoke<QuickAlert>("simulate_quick_alert", { simulatedDeviceId, content, mode, displaySimulationLabel }),
   sendQuickAlertFeedback: (alertId: string, alertSenderDeviceId: string, result: "real" | "false") =>
@@ -78,9 +83,11 @@ export const api = {
     invoke<AdminDiscoMode>("send_admin_disco_mode", { targetDeviceId, durationMs }),
   sendAdminAlertMode: (targetDeviceId: string, mode: PetAlertMode) =>
     invoke<AdminAlertMode>("send_admin_alert_mode", { targetDeviceId, mode }),
+  sendAdminAlertPushPolicy: (targetDeviceId: string, minCredibility: number, minCredibilityLocked: boolean) =>
+    invoke<AdminAlertPushPolicy>("send_admin_alert_push_policy", { targetDeviceId, minCredibility, minCredibilityLocked }),
   listAdminNotifications: () => invoke<AdminNotification[]>("list_admin_notifications"),
-  sendAdminNotification: (targetDeviceId: string | null, targetScope: "device" | "all_online", title: string, content: string, template: string, supportUrl: string | null, displayMode: string, deadlineAt: number | null, timeoutPolicy: string) =>
-    invoke<AdminNotification[]>("send_admin_notification", { targetDeviceId, targetScope, title, content, template, supportUrl, displayMode, deadlineAt, timeoutPolicy }),
+  sendAdminNotification: (targetDeviceId: string | null, targetScope: "device" | "all_online", title: string, content: string, template: string, supportUrl: string | null, displayMode: string, deadlineAt: number | null, timeoutPolicy: string, forceOpenMainWindow: boolean) =>
+    invoke<AdminNotification[]>("send_admin_notification", { targetDeviceId, targetScope, title, content, template, supportUrl, displayMode, deadlineAt, timeoutPolicy, forceOpenMainWindow }),
   submitAdminNotification: (notificationId: string) =>
     invoke<AdminNotification>("submit_admin_notification", { notificationId }),
   decideAdminNotification: (notificationId: string, decision: "approved" | "rejected" | "revoked") =>

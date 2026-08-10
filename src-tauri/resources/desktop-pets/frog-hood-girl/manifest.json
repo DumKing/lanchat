@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 2,
+  "id": "frog-hood-girl",
+  "name": "青蛙兜帽女孩",
+  "version": "1.0.0",
+  "author": "Custom",
+  "description": "青蛙兜帽女孩 Desktop Pet",
+  "resolution": 512,
+  "fps": 8,
+  "transparent": true,
+  "defaultState": "Idle",
+  "states": {
+    "Idle": {
+      "loop": "repeat",
+      "minDurationMs": 3000,
+      "maxDurationMs": 7000,
+      "minActionCount": 1,
+      "maxActionCount": 2,
+      "minIntervalMs": 500,
+      "maxIntervalMs": 1200
+    },
+    "Alert": {
+      "loop": "repeat",
+      "minDurationMs": 2000,
+      "maxDurationMs": 4000,
+      "minActionCount": 1,
+      "maxActionCount": 2,
+      "minIntervalMs": 250,
+      "maxIntervalMs": 700
+    },
+    "Move": {
+      "loop": "repeat",
+      "minDurationMs": 1200,
+      "maxDurationMs": 2400,
+      "minActionCount": 2,
+      "maxActionCount": 4,
+      "minIntervalMs": 120,
+      "maxIntervalMs": 420
+    },
+    "Interact": {
+      "loop": "once",
+      "minDurationMs": 0,
+      "maxDurationMs": 0,
+      "minActionCount": 1,
+      "maxActionCount": 1,
+      "minIntervalMs": 0,
+      "maxIntervalMs": 0
+    },
+    "Life": {
+      "loop": "once",
+      "minDurationMs": 0,
+      "maxDurationMs": 0,
+      "minActionCount": 2,
+      "maxActionCount": 4,
+      "minIntervalMs": 800,
+      "maxIntervalMs": 2000
+    }
+  },
+  "clips": {
+    "Move/walk_left": { "fps": 6, "loop": "repeat", "direction": "left" },
+    "Move/walk_right": { "fps": 6, "loop": "repeat", "direction": "right" },
+    "Move/jump_left": { "fps": 7, "loop": "once", "direction": "left" },
+    "Move/jump_right": { "fps": 7, "loop": "once", "direction": "right" },
+    "Move/skip_left": { "fps": 8, "loop": "once", "direction": "left" },
+    "Move/skip_right": { "fps": 8, "loop": "once", "direction": "right" }
+  }
+}

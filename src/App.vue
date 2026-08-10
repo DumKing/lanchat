@@ -25,6 +25,7 @@ import {
   NListItem,
   NMessageProvider,
   NModal,
+  NProgress,
   NRadioButton,
   NRadioGroup,
   NScrollbar,
@@ -45,7 +46,7 @@ import ChatComposerInput from "./components/ChatComposerInput.vue";
 import { DEFAULT_GROUP_ID, useLanChatStore } from "./stores/lanchat";
 import { useDesktopPetStore } from "./stores/desktopPet";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, ExternalPushConfig, ExternalPushKind, PetPackageSource, PetStateKind, PetStatePlaybackConfig } from "./types/desktop-pet";
-import type { AdminAlertMode, AdminDiscoMode, AdminNotification, AppVersionInfo, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, SimulationMeta, TrayAttentionItem, UpdateCheckResult } from "./types/lanchat";
+import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AppVersionInfo, CallSignal, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Nudge, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, SimulationMeta, TrayAttentionItem, UpdateCheckResult } from "./types/lanchat";
 import { DDZ_TURN_TIMEOUT_MS, canBeat, dealHands, evaluatePlay, isTurnTimedOut, playLabel, sortCards, turnRemainingSeconds, type DdzCard, type DdzPhase, type DdzPlay } from "./games/doudizhu";
 import { GOMOKU_TURN_TIMEOUT_MS, chooseAutoGomokuPoint, cloneGomokuBoard, createGomokuBoard, gomokuStoneLabel, gomokuTurnRemainingSeconds, isGomokuTurnTimedOut, placeGomokuStone, type GomokuBoard, type GomokuPhase, type GomokuPoint, type GomokuStone } from "./games/gomoku";
 import { cloneXiangqiBoard, createXiangqiBoard, createXiangqiDisplayGrid, isLegalXiangqiMove, moveXiangqiPiece, otherXiangqiSide, resignXiangqiSide, undoXiangqiMove, xiangqiPieceLabel, xiangqiSideLabel, type XiangqiBoard, type XiangqiPhase, type XiangqiPiece, type XiangqiPoint, type XiangqiSide } from "./games/xiangqi";
@@ -320,6 +321,9 @@ const {
   latestQuickAlertTrustReset,
   latestAdminDiscoMode,
   latestAdminAlertMode,
+  latestCallSignal,
+  latestNudge,
+  latestAdminAlertPushPolicy,
   adminNotifications,
   manualAddress,
   manualPort,
@@ -396,6 +400,9 @@ const previewMediaPaths = ref<Record<string, string>>({});
 const previewMediaCacheInfo = ref<PreviewMediaCacheInfo | null>(null);
 const previewMediaCacheClearing = ref(false);
 const imagePreviewMessage = ref<Message | null>(null);
+const imagePreviewScale = ref(1);
+const operationNotice = ref("");
+let operationNoticeTimer: ReturnType<typeof setTimeout> | undefined;
 const selectedDeviceChannelId = ref("");
 const adminNicknameDraft = ref("");
 const adminNicknameLockAfterIssue = ref(false);
@@ -408,6 +415,21 @@ const SUPER_ADMIN_PASSWORD_MD5 = "D7B9AF919901FA1598BDC21465E3EB3F";
 const alertTrustResetTargetId = ref<string | null>(null);
 const adminAlertModeTargetId = ref<string | null>(null);
 const adminAlertModeDraft = ref<PetAlertMode>("normal");
+const adminAlertPushPolicyTargetId = ref<string | null>("*");
+const adminAlertPushPolicyDraft = ref(50);
+const adminAlertPushPolicyLockAfterIssue = ref(false);
+type CallMedia = "audio" | "video";
+type CallSession = { callId: string; peerDeviceId: string; peerNickname: string; media: CallMedia; status: "incoming" | "outgoing" | "connected" };
+const callSession = ref<CallSession | null>(null);
+const incomingCallSignal = ref<CallSignal | null>(null);
+const localCallVideo = ref<HTMLVideoElement | null>(null);
+const remoteCallVideo = ref<HTMLVideoElement | null>(null);
+const callMuted = ref(false);
+const callCameraOn = ref(true);
+let callPeerConnection: RTCPeerConnection | null = null;
+let callLocalStream: MediaStream | null = null;
+let queuedCallCandidates: RTCIceCandidateInit[] = [];
+const pendingCallCandidatesById = new Map<string, RTCIceCandidateInit[]>();
 const simulationModalOpen = ref(false);
 const simulationSending = ref(false);
 const simulationKind = ref<SimulationKind>("channel");
@@ -425,6 +447,7 @@ const adminNotificationSupportUrl = ref("");
 const adminNotificationDisplayMode = ref<"dismissible" | "requires_confirmation">("dismissible");
 const adminNotificationDeadline = ref("");
 const adminNotificationTimeoutPolicy = ref("manual_review");
+const adminNotificationForceOpenMainWindow = ref(false);
 const adminNotificationDetail = ref<AdminNotification | null>(null);
 const adminNotificationDetailOpen = ref(false);
 const adminNotificationBulkProcessing = ref(false);
@@ -435,7 +458,19 @@ const updateChecking = ref(false);
 const updateError = ref("");
 const updateReminderOpen = ref(false);
 const nativeUpdateInstalling = ref(false);
+const nativeUpdateProgress = ref({ downloaded: 0, total: 0, phase: "idle" as "idle" | "downloading" | "installing" });
 const forceUpdateRequired = computed(() => updateInfo.value?.forceRequired === true);
+const nativeUpdateProgressPercent = computed(() => {
+  if (nativeUpdateProgress.value.total <= 0) return nativeUpdateInstalling.value ? 0 : 100;
+  return Math.min(100, Math.round((nativeUpdateProgress.value.downloaded / nativeUpdateProgress.value.total) * 100));
+});
+const nativeUpdateProgressLabel = computed(() => {
+  const progress = nativeUpdateProgress.value;
+  if (!nativeUpdateInstalling.value && progress.phase === "idle") return "";
+  if (progress.phase === "installing") return "下载完成，正在安装更新...";
+  if (progress.total > 0) return `正在下载更新 ${formatFileSize(progress.downloaded)} / ${formatFileSize(progress.total)}`;
+  return progress.downloaded > 0 ? `正在下载更新 ${formatFileSize(progress.downloaded)}` : "正在准备下载更新...";
+});
 const blockingAdminNotification = computed(() => {
   const deviceId = profile.value?.device_id;
   if (!deviceId) return null;
@@ -649,6 +684,10 @@ const mentionPickerMembers = computed<Array<ChannelMember | Peer>>(() => {
 });
 const channelMembersOnlineCount = computed(() => normalizedChannelMembers.value.filter((member) => sameDeviceId(member.device_id, profile.value?.device_id) || member.online).length);
 const canManageActivePrivateChannel = computed(() => !!activeConversation.value?.is_private && (sameDeviceId(activeConversation.value.owner_device_id, profile.value?.device_id) || superAdminEnabled.value));
+const canInviteActivePrivateChannel = computed(() => !!activeConversation.value?.is_private && (
+  superAdminEnabled.value
+  || activePrivateChannelMembers.value.some((member) => sameDeviceId(member.device_id, profile.value?.device_id))
+));
 const groupInspectorAvailable = computed(() => activeSection.value === "chat" && activeConversation.value?.kind === "group");
 const canManageActivePublicChannel = computed(() => !!superAdminEnabled.value && activeConversation.value?.id === DEFAULT_GROUP_ID);
 const canEditActiveChannelNotice = computed(() => {
@@ -673,6 +712,11 @@ const activeSelfMuted = computed(() => {
 });
 const activePeerStatusLabel = computed(() => (activePeer.value?.online ? "在线" : "离线"));
 const activePeerStatusType = computed(() => (activePeer.value?.online ? "success" : "default"));
+const canStartPrivateCall = computed(() => Boolean(
+  activeConversation.value?.kind === "direct"
+  && activePeer.value?.online
+  && activePeer.value?.supports_chat !== false,
+));
 const composerPlaceholder = computed(() => {
   if (canSendActive.value) return "输入消息";
   if (activeSelfMuted.value) return "你已被禁言，暂不能发言";
@@ -1245,11 +1289,13 @@ function scheduleAutomaticUpdateChecks() {
 async function installNativeUpdate(force = false) {
   if (nativeUpdateInstalling.value) return;
   nativeUpdateInstalling.value = true;
+  nativeUpdateProgress.value = { downloaded: 0, total: 0, phase: "downloading" };
   try {
     if (await api.isPortableRuntime()) {
       const url = updateInfo.value?.downloads.windowsPortable;
       const sha256 = updateInfo.value?.downloads.windowsPortableSha256;
       if (!url || !sha256) throw new Error("当前绿色版更新包尚未提供完整性校验信息");
+      nativeUpdateProgress.value = { downloaded: 0, total: 0, phase: "installing" };
       await api.installPortableUpdate(url, sha256);
       return;
     }
@@ -1258,13 +1304,28 @@ async function installNativeUpdate(force = false) {
       if (force) updateError.value = "已发现强制更新，但签名更新包尚未就绪，请从 Release 页面完成更新。";
       return;
     }
-    await update.downloadAndInstall();
+    let downloaded = 0;
+    let total = 0;
+    await update.download((event) => {
+      if (event.event === "Started") {
+        downloaded = 0;
+        total = event.data.contentLength ?? 0;
+      } else if (event.event === "Progress") {
+        downloaded += event.data.chunkLength;
+      } else if (event.event === "Finished") {
+        downloaded = total > 0 ? total : downloaded;
+      }
+      nativeUpdateProgress.value = { downloaded, total, phase: "downloading" };
+    });
+    nativeUpdateProgress.value = { downloaded, total, phase: "installing" };
+    await update.install();
     await api.quitApp();
   } catch (err) {
     updateError.value = `自动更新失败：${stringifyError(err)}`;
     if (force) updateReminderOpen.value = true;
   } finally {
     nativeUpdateInstalling.value = false;
+    nativeUpdateProgress.value = { downloaded: 0, total: 0, phase: "idle" };
   }
 }
 async function openPreferredUpdateUrl() {
@@ -1291,6 +1352,7 @@ onMounted(async () => {
   platformInfo.value = await api.getPlatformInfo().catch(() => null);
   appVersionInfo.value = await api.getAppVersionInfo().catch(() => null);
   await store.initialize();
+  await restoreSavedSuperAdminSession();
   previewMediaCacheInfo.value = await api.getPreviewMediaCacheInfo().catch(() => null);
   await desktopPetStore.initialize();
   if (desktopPetSettings.value) {
@@ -1324,6 +1386,10 @@ onMounted(async () => {
         if (target) {
           void feedbackPetAlert(target, event.payload.action === "feedback_real" ? "real" : "false");
         }
+      } else if (event.payload.action === "accept_call") {
+        if (incomingCallSignal.value?.call_id === event.payload.alert_id) void acceptIncomingCall();
+      } else if (event.payload.action === "reject_call") {
+        if (callSession.value?.callId === event.payload.alert_id) void rejectIncomingCall();
       }
     });
     unlistenDesktopPetStopHotkey = await listen("desktop_pet_stop_hotkey_received", () => {
@@ -1348,6 +1414,7 @@ onMounted(async () => {
   }
 });
 onUnmounted(() => {
+  clearCallSession();
   stopPaneResize();
   unlistenTrayOpenTarget?.();
   unlistenTrayOpenTarget = null;
@@ -1492,6 +1559,25 @@ watch(latestAdminDiscoMode, (mode) => {
 watch(latestAdminAlertMode, (mode) => {
   if (!mode || !petAlertEnabled.value) return;
   applyAdminAlertMode(mode);
+});
+watch(latestCallSignal, (signal) => {
+  if (signal) {
+    void handleCallSignal(signal).catch((err) => {
+      store.error = `通话信令处理失败：${stringifyError(err)}`;
+    });
+  }
+});
+watch(latestNudge, (nudge) => {
+  if (nudge) void handleIncomingNudge(nudge);
+});
+watch(latestAdminAlertPushPolicy, (policy: AdminAlertPushPolicy | null) => {
+  if (!policy || (policy.target_device_id !== "*" && !sameDeviceId(policy.target_device_id, profile.value?.device_id))) return;
+  adminAlertPushPolicyDraft.value = policy.min_credibility;
+  adminAlertPushPolicyLockAfterIssue.value = policy.min_credibility_locked;
+  void desktopPetStore.refreshSettings();
+});
+watch(callSession, () => {
+  void syncDesktopPetRuntime();
 });
 watch([petAlertEnabled, pendingAlertCount, activePetAlert, petAlertProbability, discoModeActive, latestPendingAlert], () => {
   void syncDesktopPetRuntime();
@@ -3538,7 +3624,10 @@ async function sendPetQuickAlert(mode: PetAlertMode = petAlertMode.value) {
   if (!petAlertEnabled.value) return;
   const now = Date.now();
   if (now - lastOwnAlertSentAt.value < ALERT_SEND_COOLDOWN_MS) return;
-  const alert = await store.sendQuickAlert(quickAlertDraft.value || "呱呱~呱~~", mode);
+  const credibility = profile.value
+    ? senderCredibility(alertRecords.value, profile.value.device_id, Date.now()) ?? 100
+    : 100;
+  const alert = await store.sendQuickAlert(quickAlertDraft.value || "呱呱~呱~~", mode, Math.round(credibility));
   if (alert) {
     applyQuickAlert(alert);
     lastOwnAlertSentAt.value = now;
@@ -3563,6 +3652,207 @@ async function sendAdminAlertModeToPeer() {
     applyAdminAlertMode(mode);
   }
 }
+async function sendAdminAlertPushPolicyToPeer() {
+  if (!superAdminEnabled.value || !adminAlertPushPolicyTargetId.value) return;
+  const policy = await store.sendAdminAlertPushPolicy(
+    adminAlertPushPolicyTargetId.value,
+    Math.max(0, Math.min(100, Math.round(adminAlertPushPolicyDraft.value))),
+    adminAlertPushPolicyLockAfterIssue.value,
+  );
+  if (policy && (policy.target_device_id === "*" || sameDeviceId(policy.target_device_id, profile.value?.device_id))) {
+    await desktopPetStore.refreshSettings();
+  }
+}
+
+function callSignalFrame(callId: string, kind: CallSignal["kind"], media: CallMedia, payload: unknown = {}) {
+  return {
+    call_id: callId,
+    sender_device_id: profile.value?.device_id ?? "",
+    sender_nickname: profile.value?.nickname ?? "LanChat",
+    kind,
+    media,
+    payload,
+    created_at: Date.now(),
+  } satisfies CallSignal;
+}
+async function attachCallStreams() {
+  await nextTick();
+  if (localCallVideo.value && callLocalStream) {
+    localCallVideo.value.srcObject = callLocalStream;
+  }
+}
+function createCallPeerConnection(session: CallSession) {
+  const peerConnection = new RTCPeerConnection({ iceServers: [] });
+  peerConnection.onicecandidate = (event) => {
+    if (!event.candidate) return;
+    void store.sendCallSignal(session.peerDeviceId, callSignalFrame(session.callId, "ice_candidate", session.media, event.candidate.toJSON())).catch(() => undefined);
+  };
+  peerConnection.ontrack = (event) => {
+    if (remoteCallVideo.value) remoteCallVideo.value.srcObject = event.streams[0] ?? new MediaStream([event.track]);
+  };
+  peerConnection.onconnectionstatechange = () => {
+    if (peerConnection.connectionState === "connected" && callSession.value) {
+      callSession.value = { ...callSession.value, status: "connected" };
+    }
+    if (["failed", "disconnected", "closed"].includes(peerConnection.connectionState)) {
+      clearCallSession();
+    }
+  };
+  callPeerConnection = peerConnection;
+  return peerConnection;
+}
+async function prepareLocalCallMedia(media: CallMedia) {
+  callLocalStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: media === "video" });
+  await attachCallStreams();
+  return callLocalStream;
+}
+async function queueOrAddCallCandidate(candidate: RTCIceCandidateInit) {
+  if (!callPeerConnection || !callPeerConnection.remoteDescription) {
+    queuedCallCandidates.push(candidate);
+    return;
+  }
+  await callPeerConnection.addIceCandidate(candidate);
+}
+async function flushQueuedCallCandidates() {
+  if (!callPeerConnection?.remoteDescription) return;
+  const candidates = queuedCallCandidates.splice(0);
+  for (const candidate of candidates) {
+    await callPeerConnection.addIceCandidate(candidate);
+  }
+}
+async function startPrivateCall(media: CallMedia) {
+  const peer = activePeer.value;
+  if (!peer || !canStartPrivateCall.value || callSession.value) return;
+  try {
+    const session: CallSession = {
+      callId: crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      peerDeviceId: peer.device_id,
+      peerNickname: peerDisplayName(peer),
+      media,
+      status: "outgoing",
+    };
+    callMuted.value = false;
+    callCameraOn.value = media === "video";
+    callSession.value = session;
+    const stream = await prepareLocalCallMedia(media);
+    const peerConnection = createCallPeerConnection(session);
+    stream.getTracks().forEach((track) => peerConnection.addTrack(track, stream));
+    const offer = await peerConnection.createOffer();
+    await peerConnection.setLocalDescription(offer);
+    await store.sendCallSignal(peer.device_id, callSignalFrame(session.callId, "offer", media, offer));
+  } catch (err) {
+    clearCallSession();
+    store.error = `无法发起通话：${stringifyError(err)}`;
+  }
+}
+async function sendPrivateNudge() {
+  const peer = activePeer.value;
+  if (!peer || !canStartPrivateCall.value) return;
+  await store.sendNudge(peer.device_id);
+}
+async function handleIncomingNudge(nudge: Nudge) {
+  activeSection.value = "chat";
+  let peer = peers.value.find((item) => sameDeviceId(item.device_id, nudge.sender_device_id));
+  if (!peer) {
+    await store.refreshPeers();
+    peer = peers.value.find((item) => sameDeviceId(item.device_id, nudge.sender_device_id));
+  }
+  if (peer) await store.openDirect(peer);
+  else await store.selectConversation(nudge.sender_device_id);
+  await store.addSystemNotice(nudge.sender_device_id, `${nudge.sender_nickname} 抖了一下你`);
+  await api.revealAndShakeMainWindow().catch(() => undefined);
+}
+async function acceptIncomingCall() {
+  const signal = incomingCallSignal.value;
+  const session = callSession.value;
+  if (!signal || !session || session.status !== "incoming") return;
+  try {
+    const stream = await prepareLocalCallMedia(session.media);
+    callMuted.value = false;
+    callCameraOn.value = session.media === "video";
+    const peerConnection = createCallPeerConnection(session);
+    stream.getTracks().forEach((track) => peerConnection.addTrack(track, stream));
+    await peerConnection.setRemoteDescription(signal.payload as RTCSessionDescriptionInit);
+    await flushQueuedCallCandidates();
+    const answer = await peerConnection.createAnswer();
+    await peerConnection.setLocalDescription(answer);
+    await store.sendCallSignal(session.peerDeviceId, callSignalFrame(session.callId, "answer", session.media, answer));
+    callSession.value = { ...session, status: "connected" };
+    incomingCallSignal.value = null;
+  } catch (err) {
+    store.error = `无法接听通话：${stringifyError(err)}`;
+    await endPrivateCall("reject");
+  }
+}
+async function rejectIncomingCall() {
+  await endPrivateCall("reject");
+}
+function clearCallSession() {
+  if (callSession.value) pendingCallCandidatesById.delete(callSession.value.callId);
+  callPeerConnection?.close();
+  callPeerConnection = null;
+  callLocalStream?.getTracks().forEach((track) => track.stop());
+  callLocalStream = null;
+  queuedCallCandidates = [];
+  if (localCallVideo.value) localCallVideo.value.srcObject = null;
+  if (remoteCallVideo.value) remoteCallVideo.value.srcObject = null;
+  callSession.value = null;
+  incomingCallSignal.value = null;
+  callMuted.value = false;
+  callCameraOn.value = true;
+}
+function toggleCallMuted() {
+  callLocalStream?.getAudioTracks().forEach((track) => {
+    track.enabled = !track.enabled;
+  });
+  callMuted.value = !callMuted.value;
+}
+function toggleCallCamera() {
+  callLocalStream?.getVideoTracks().forEach((track) => {
+    track.enabled = !track.enabled;
+  });
+  callCameraOn.value = !callCameraOn.value;
+}
+async function endPrivateCall(kind: "hangup" | "reject" = "hangup") {
+  const session = callSession.value;
+  if (session) {
+    await store.sendCallSignal(session.peerDeviceId, callSignalFrame(session.callId, kind, session.media)).catch(() => undefined);
+  }
+  clearCallSession();
+}
+async function handleCallSignal(signal: CallSignal) {
+  if (sameDeviceId(signal.sender_device_id, profile.value?.device_id)) return;
+  if (signal.kind === "offer") {
+    if (callSession.value) {
+      await store.sendCallSignal(signal.sender_device_id, callSignalFrame(signal.call_id, "reject", signal.media === "video" ? "video" : "audio")).catch(() => undefined);
+      return;
+    }
+    const media: CallMedia = signal.media === "video" ? "video" : "audio";
+    queuedCallCandidates = pendingCallCandidatesById.get(signal.call_id) ?? [];
+    pendingCallCandidatesById.delete(signal.call_id);
+    callSession.value = { callId: signal.call_id, peerDeviceId: signal.sender_device_id, peerNickname: signal.sender_nickname, media, status: "incoming" };
+    incomingCallSignal.value = signal;
+    return;
+  }
+  const session = callSession.value;
+  if (!session || session.callId !== signal.call_id || session.peerDeviceId !== signal.sender_device_id) {
+    if (signal.kind === "ice_candidate") {
+      const candidates = pendingCallCandidatesById.get(signal.call_id) ?? [];
+      candidates.push(signal.payload as RTCIceCandidateInit);
+      pendingCallCandidatesById.set(signal.call_id, candidates.slice(-32));
+    }
+    return;
+  }
+  if (signal.kind === "answer" && callPeerConnection) {
+    await callPeerConnection.setRemoteDescription(signal.payload as RTCSessionDescriptionInit);
+    await flushQueuedCallCandidates();
+    callSession.value = { ...session, status: "connected" };
+  } else if (signal.kind === "ice_candidate") {
+    await queueOrAddCallCandidate(signal.payload as RTCIceCandidateInit);
+  } else if (signal.kind === "hangup" || signal.kind === "reject") {
+    clearCallSession();
+  }
+}
 function stopPetAlertVisuals() {
   if (activePetAlert.value) {
     visuallyStoppedAlertIds.value = new Set([...visuallyStoppedAlertIds.value, activePetAlert.value.alertId]);
@@ -3584,6 +3874,9 @@ async function syncDesktopPetRuntime() {
     latest_sender_address: alert?.senderAddress ?? null,
     latest_content: alert ? `${alert.content}${simulationLabel(alert.simulation) ? ` · ${simulationLabel(alert.simulation)}` : ""}` : null,
     latest_created_at: alert?.createdAt ?? null,
+    incoming_call_id: petAlertEnabled.value && callSession.value?.status === "incoming" ? callSession.value.callId : null,
+    incoming_call_sender: petAlertEnabled.value && callSession.value?.status === "incoming" ? callSession.value.peerNickname : null,
+    incoming_call_media: petAlertEnabled.value && callSession.value?.status === "incoming" ? callSession.value.media : null,
     feedbackable: !!latestPendingAlert.value,
     flashing: !!alert,
     disco: discoModeActive.value && !!alert,
@@ -3676,6 +3969,7 @@ function openAdminNotificationModal() {
   adminNotificationDisplayMode.value = "dismissible";
   adminNotificationDeadline.value = "";
   adminNotificationTimeoutPolicy.value = "manual_review";
+  adminNotificationForceOpenMainWindow.value = false;
   adminNotificationModalOpen.value = true;
 }
 function triggerAdminNotificationImageSelect() {
@@ -3721,7 +4015,7 @@ async function submitAdminNotification() {
   }
   adminNotificationSending.value = true;
   try {
-    await store.sendAdminNotification(adminNotificationScope.value === "device" ? adminNotificationTargetId.value : null, adminNotificationScope.value, adminNotificationTitle.value, adminNotificationContent.value, adminNotificationTemplate.value, adminNotificationSupportUrl.value.trim() || null, adminNotificationDisplayMode.value, adminNotificationDeadlineAt(), adminNotificationTimeoutPolicy.value);
+    await store.sendAdminNotification(adminNotificationScope.value === "device" ? adminNotificationTargetId.value : null, adminNotificationScope.value, adminNotificationTitle.value, adminNotificationContent.value, adminNotificationTemplate.value, adminNotificationSupportUrl.value.trim() || null, adminNotificationDisplayMode.value, adminNotificationDeadlineAt(), adminNotificationTimeoutPolicy.value, adminNotificationForceOpenMainWindow.value);
     adminNotificationModalOpen.value = false;
   } finally { adminNotificationSending.value = false; }
 }
@@ -3890,6 +4184,7 @@ async function dissolveActivePrivateChannel() {
     await store.dissolvePrivateChannel(conversation.id, superAdminEnabled.value);
     await store.selectConversation(DEFAULT_GROUP_ID);
     activeSection.value = "chat";
+    showOperationSuccess(`已解散「${conversation.title}」`);
   } catch (err) {
     store.error = stringifyError(err);
   }
@@ -3903,9 +4198,17 @@ async function dissolveSelectedDeviceChannel() {
     selectedDeviceChannelId.value = "";
     await store.selectConversation(DEFAULT_GROUP_ID);
     activeSection.value = "chat";
+    showOperationSuccess(`已解散「${conversation.title}」`);
   } catch (err) {
     store.error = stringifyError(err);
   }
+}
+function showOperationSuccess(message: string) {
+  operationNotice.value = message;
+  if (operationNoticeTimer) clearTimeout(operationNoticeTimer);
+  operationNoticeTimer = setTimeout(() => {
+    operationNotice.value = "";
+  }, 3600);
 }
 async function startDirectChat(peer = selectedPeerDetail.value) {
   if (!peer) return;
@@ -4001,6 +4304,12 @@ function peerBuildTimeLabel(peer?: Peer | null) {
 function setSavedSuperAdminEnabled(enabled: boolean) {
   if (typeof window === "undefined") return;
   window.localStorage.setItem("lanchat-super-admin-enabled", enabled ? "true" : "false");
+}
+async function restoreSavedSuperAdminSession() {
+  if (typeof window === "undefined" || window.localStorage.getItem("lanchat-super-admin-enabled") !== "true") return;
+  const authenticated = await api.isSuperAdminAuthenticated().catch(() => false);
+  superAdminEnabled.value = authenticated;
+  if (!authenticated) setSavedSuperAdminEnabled(false);
 }
 function disableSuperAdmin() {
   superAdminEnabled.value = false;
@@ -4274,11 +4583,19 @@ function imagePreviewSource(message: Message) {
   return cachedPath ? convertFileSrc(cachedPath) : message.file_meta?.url ?? "";
 }
 async function openImagePreview(message: Message) {
+  imagePreviewScale.value = 1;
   imagePreviewMessage.value = message;
   await cacheImagePreview(message);
 }
 function closeImagePreview() {
   imagePreviewMessage.value = null;
+  imagePreviewScale.value = 1;
+}
+function changeImagePreviewScale(step: number) {
+  imagePreviewScale.value = Math.min(4, Math.max(0.25, Number((imagePreviewScale.value + step).toFixed(2))));
+}
+function handleImagePreviewWheel(event: WheelEvent) {
+  changeImagePreviewScale(event.deltaY < 0 ? 0.2 : -0.2);
 }
 async function cacheImagePreview(message: Message) {
   if (!isImageFile(message) || !message.file_meta?.url || previewMediaPaths.value[message.id]) return;
@@ -4439,6 +4756,10 @@ async function closeWindow() {
             <span>检查时间</span><strong>{{ formatDateTime(updateInfo?.checkedAt) }}</strong>
           </div>
           <pre class="update-notes">{{ updateNotesPreview(updateInfo?.notes) }}</pre>
+          <div v-if="nativeUpdateInstalling" class="update-progress-panel">
+            <NProgress type="line" :percentage="nativeUpdateProgressPercent" :height="10" processing />
+            <span>{{ nativeUpdateProgressLabel }}</span>
+          </div>
           <div class="force-update-actions">
             <NButton type="primary" size="large" :loading="nativeUpdateInstalling" @click="installNativeUpdate(false)">自动更新</NButton>
             <NButton secondary size="large" @click="openPreferredUpdateUrl">手动下载</NButton>
@@ -4449,6 +4770,42 @@ async function closeWindow() {
         </div>
       </NModal>
       <NModal
+        :show="!!callSession"
+        preset="card"
+        class="private-call-modal"
+        :style="{ width: callSession?.media === 'video' ? '520px' : '360px', maxWidth: 'calc(100vw - 32px)' }"
+        :mask-closable="false"
+        :closable="false"
+      >
+        <div v-if="callSession" class="private-call-panel">
+          <div class="private-call-title">
+            <strong>{{ callSession.status === 'incoming' ? `${callSession.peerNickname} 邀请${callSession.media === 'video' ? '视频' : '语音'}通话` : `${callSession.media === 'video' ? '视频' : '语音'}通话 · ${callSession.peerNickname}` }}</strong>
+            <span>{{ callSession.status === 'incoming' ? '等待接听' : callSession.status === 'outgoing' ? '正在呼叫' : '已连接' }}</span>
+          </div>
+          <div class="private-call-videos" :class="{ audio: callSession.media === 'audio' }">
+            <video v-if="callSession.media === 'video'" ref="remoteCallVideo" autoplay playsinline></video>
+            <video v-if="callSession.media === 'video'" ref="localCallVideo" autoplay muted playsinline></video>
+            <div v-else class="private-call-audio-profile">
+              <img v-if="avatarImage(peerAvatar(callSession.peerDeviceId))" :src="avatarImage(peerAvatar(callSession.peerDeviceId))" class="private-call-audio-avatar-image" alt="对方头像" />
+              <div v-else class="private-call-audio-avatar">{{ firstLetter(callSession.peerNickname) }}</div>
+              <strong>{{ callSession.peerNickname }}</strong>
+              <span>{{ callSession.status === 'connected' ? '语音通话中' : callSession.status === 'incoming' ? '邀请你进行语音通话' : '正在等待对方接听' }}</span>
+            </div>
+          </div>
+          <NSpace justify="center">
+            <template v-if="callSession.status === 'incoming'">
+              <NButton type="primary" @click="acceptIncomingCall">接听</NButton>
+              <NButton type="error" @click="rejectIncomingCall">拒绝</NButton>
+            </template>
+            <template v-else>
+              <NButton secondary @click="toggleCallMuted">{{ callMuted ? '取消静音' : '静音' }}</NButton>
+              <NButton v-if="callSession.media === 'video'" secondary @click="toggleCallCamera">{{ callCameraOn ? '关闭摄像头' : '打开摄像头' }}</NButton>
+              <NButton type="error" @click="() => endPrivateCall()">挂断</NButton>
+            </template>
+          </NSpace>
+        </div>
+      </NModal>
+      <NModal
         :show="imagePreviewMessage !== null"
         class="image-preview-modal"
         :mask-closable="true"
@@ -4456,7 +4813,19 @@ async function closeWindow() {
       >
         <div v-if="imagePreviewMessage" class="image-preview-dialog" @click.stop>
           <button class="image-preview-close" type="button" title="关闭预览" @click="closeImagePreview">×</button>
-          <img :src="imagePreviewSource(imagePreviewMessage)" :alt="imagePreviewMessage.file_meta?.name ?? '图片预览'" />
+          <div class="image-preview-toolbar">
+            <button type="button" title="缩小" :disabled="imagePreviewScale <= 0.25" @click="changeImagePreviewScale(-0.2)">−</button>
+            <span>{{ Math.round(imagePreviewScale * 100) }}%</span>
+            <button type="button" title="放大" :disabled="imagePreviewScale >= 4" @click="changeImagePreviewScale(0.2)">+</button>
+            <button type="button" title="还原" :disabled="imagePreviewScale === 1" @click="imagePreviewScale = 1">↺</button>
+          </div>
+          <div class="image-preview-viewport" @wheel.prevent="handleImagePreviewWheel">
+            <img
+              :src="imagePreviewSource(imagePreviewMessage)"
+              :alt="imagePreviewMessage.file_meta?.name ?? '图片预览'"
+              :style="{ transform: `scale(${imagePreviewScale})` }"
+            />
+          </div>
         </div>
       </NModal>
       <NModal v-model:show="simulationModalOpen" preset="card" title="超管模拟发送" class="simulation-modal" :mask-closable="!simulationSending">
@@ -4499,6 +4868,7 @@ async function closeWindow() {
           <NFormItem label="公告配图" :show-feedback="false"><div class="admin-notification-image-picker"><input ref="adminNotificationImageInput" class="hidden-file-input" type="file" accept="image/*" @change="handleAdminNotificationImageSelected" /><img v-if="adminNotificationSupportUrl.startsWith('data:image/')" :src="adminNotificationSupportUrl" alt="公告图片预览" /><NText v-else depth="3">可选择本地图片，最大 5MB。</NText><NSpace><NButton size="small" secondary @click="triggerAdminNotificationImageSelect">选择图片</NButton><NButton v-if="adminNotificationSupportUrl" size="small" quaternary @click="clearAdminNotificationImage">清除</NButton></NSpace></div></NFormItem>
           <NFormItem v-if="adminNotificationTemplate === 'support' && !adminNotificationSupportUrl.startsWith('data:image/')" label="赞赏页面地址" :show-feedback="false"><NInput v-model:value="adminNotificationSupportUrl" placeholder="可直接粘贴 https:// 图片或页面地址" /></NFormItem>
           <NFormItem label="处理方式" :show-feedback="false"><NRadioGroup v-model:value="adminNotificationDisplayMode"><NSpace><NRadioButton value="dismissible">可关闭</NRadioButton><NRadioButton value="requires_confirmation">必须确认</NRadioButton></NSpace></NRadioGroup></NFormItem>
+          <NCheckbox v-model:checked="adminNotificationForceOpenMainWindow">强制打开目标主窗口</NCheckbox>
           <template v-if="adminNotificationDisplayMode === 'requires_confirmation'"><NFormItem label="截至时间" :show-feedback="false"><NInput v-model:value="adminNotificationDeadline" placeholder="例如 2026-08-06 18:00，留空则不超时" /></NFormItem><NFormItem label="超时策略" :show-feedback="false"><NSelect v-model:value="adminNotificationTimeoutPolicy" :options="[{ label: '等待超管手动决定', value: 'manual_review' }, { label: '自动撤销并放行', value: 'auto_release' }, { label: '继续锁定', value: 'keep_locked' }]" /></NFormItem></template>
           <div class="simulation-actions"><NButton @click="adminNotificationModalOpen = false">取消</NButton><NButton type="warning" :loading="adminNotificationSending" @click="submitAdminNotification">下发</NButton></div>
         </div>
@@ -4507,8 +4877,8 @@ async function closeWindow() {
         <div v-if="adminNotificationDetail" class="admin-notification-lock-content">
           <div class="admin-notification-detail-device"><img v-if="avatarImage(adminNotificationTargetDetail(adminNotificationDetail)?.avatar)" class="avatar-image large-avatar" :src="avatarImage(adminNotificationTargetDetail(adminNotificationDetail)?.avatar)" alt="设备头像" /><NAvatar v-else :size="48" class="peer-avatar">{{ firstLetter(adminNotificationTargetDetail(adminNotificationDetail)?.nickname ?? '?') }}</NAvatar><div><strong>{{ adminNotificationTargetDetail(adminNotificationDetail)?.nickname ?? '未知设备' }}</strong><small>IP：{{ adminNotificationTargetDetail(adminNotificationDetail)?.address ?? '未知' }}</small><small>MAC：{{ adminNotificationDetail.target_device_id }}</small></div></div>
           <NTag :type="adminNotificationDetail.status === 'submitted' ? 'warning' : 'default'">{{ adminNotificationDetail.status }}</NTag><h2>{{ adminNotificationDetail.title }}</h2><p>{{ adminNotificationDetail.content }}</p><img v-if="adminNotificationDetail.support_url && /^(https?:|asset:|data:image)/.test(adminNotificationDetail.support_url)" :src="adminNotificationDetail.support_url" alt="通知配图" /><NText depth="3">下发时间：{{ formatTime(adminNotificationDetail.created_at) }}</NText>
-          <NSpace v-if="adminNotificationDetail.status === 'submitted'"><NButton type="success" @click="decideAdminNotificationFromDetail('approved')">通过</NButton><NButton type="error" @click="decideAdminNotificationFromDetail('rejected')">拒绝</NButton></NSpace>
-          <NButton v-else-if="['pending','rejected','expired_locked'].includes(adminNotificationDetail.status)" tertiary type="warning" @click="decideAdminNotificationFromDetail('revoked')">撤销并放行</NButton>
+          <NSpace v-if="adminNotificationDetail.display_mode === 'requires_confirmation' && adminNotificationDetail.status === 'submitted'"><NButton type="success" @click="decideAdminNotificationFromDetail('approved')">通过</NButton><NButton type="error" @click="decideAdminNotificationFromDetail('rejected')">拒绝</NButton></NSpace>
+          <NButton v-else-if="adminNotificationDetail.display_mode === 'requires_confirmation' && ['pending','rejected','expired_locked'].includes(adminNotificationDetail.status)" tertiary type="warning" @click="decideAdminNotificationFromDetail('revoked')">撤销并放行</NButton>
         </div>
       </NModal>
       <NModal :show="!!blockingAdminNotification" preset="card" class="admin-notification-lock" :mask-closable="false" :closable="false">
@@ -4797,12 +5167,12 @@ async function closeWindow() {
           <NLayout class="content-panel">
             <section v-if="activeSection === 'chat'" class="chat-view">
               <header class="chat-header" data-tauri-drag-region>
-                <div class="chat-title">
+                <div class="chat-title" :class="{ 'direct-chat-title': activeConversation?.kind === 'direct' }">
                   <h2>{{ activeConversation?.title ?? "局域网频道" }}</h2>
                   <p v-if="activeConversation?.kind === 'group'">{{ activeConversation?.is_private ? `${activePrivateChannelMembers.length} 名成员 · 私有加密频道` : `${onlinePeers.length} 台设备在线 · 频道广播` }}</p>
                   <p v-else class="peer-status-line">
-                    <NTag size="small" :bordered="false" :type="activePeerStatusType">{{ activePeerStatusLabel }}</NTag>
                     <span>{{ activePeer ? `${activePeer.address}:${activePeer.port}` : "点对点单聊" }}</span>
+                    <NTag size="small" :bordered="false" :type="activePeerStatusType">{{ activePeerStatusLabel }}</NTag>
                   </p>
                 </div>
               </header>
@@ -4920,6 +5290,21 @@ async function closeWindow() {
                 <div class="composer-tools">
                   <button class="composer-tool" title="发送文件" :disabled="!canSendActive" @click="chooseAndSendFile">📎</button>
                   <button class="composer-tool" :class="{ recording: isRecording }" :disabled="!canSendActive" :title="isRecording ? '停止录音' : '发送语音'" @click="toggleVoiceRecording">🎙</button>
+                  <template v-if="activeConversation?.kind === 'direct'">
+                    <span class="composer-tool-divider" aria-hidden="true"></span>
+                    <NTooltip>
+                      <template #trigger><button class="composer-tool call-composer-tool" type="button" title="语音通话" :disabled="!canStartPrivateCall || !!callSession" @click="startPrivateCall('audio')">☎</button></template>
+                      语音通话
+                    </NTooltip>
+                    <NTooltip>
+                      <template #trigger><button class="composer-tool call-composer-tool" type="button" title="视频通话" :disabled="!canStartPrivateCall || !!callSession" @click="startPrivateCall('video')">▣</button></template>
+                      视频通话
+                    </NTooltip>
+                    <NTooltip>
+                      <template #trigger><button class="composer-tool nudge-composer-tool" type="button" title="抖一抖" :disabled="!canStartPrivateCall" @click="sendPrivateNudge">〰</button></template>
+                      抖一抖
+                    </NTooltip>
+                  </template>
                   <div class="emoji-wrap">
                     <button class="composer-tool" title="表情" :disabled="!canSendActive" @click="chatEmojiOpen = !chatEmojiOpen">☺</button>
                     <div v-if="chatEmojiOpen" class="emoji-panel">
@@ -5700,6 +6085,10 @@ async function closeWindow() {
                       {{ updateInfo.title }}
                     </NAlert>
                     <pre v-if="updateInfo" class="update-notes compact">{{ updateNotesPreview(updateInfo.notes) }}</pre>
+                    <div v-if="nativeUpdateInstalling" class="update-progress-panel compact">
+                      <NProgress type="line" :percentage="nativeUpdateProgressPercent" :height="8" processing />
+                      <span>{{ nativeUpdateProgressLabel }}</span>
+                    </div>
                     <NSpace>
                       <NButton type="primary" :loading="updateChecking" @click="checkUpdates(true)">检查更新</NButton>
                       <NButton secondary :disabled="!preferredUpdateUrl" @click="openPreferredUpdateUrl">下载更新</NButton>
@@ -5716,10 +6105,10 @@ async function closeWindow() {
                 <NCard v-if="settingsCategory === 'admin' && superAdminEnabled" title="超管通知审核" size="small">
                   <div class="admin-notification-review-list">
                     <NEmpty v-if="adminNotifications.filter((item) => item.issued_by_device_id === profile?.device_id).length === 0" description="暂无本机下发的通知" />
-                    <div v-else class="admin-notification-review-actions"><NButton size="small" type="success" :loading="adminNotificationBulkProcessing" @click="decideAllSubmittedAdminNotifications('approved')">一键通过待审核</NButton><NButton size="small" type="error" secondary :loading="adminNotificationBulkProcessing" @click="decideAllSubmittedAdminNotifications('rejected')">一键拒绝待审核</NButton></div>
+                    <div v-else-if="adminNotifications.some((item) => item.issued_by_device_id === profile?.device_id && item.display_mode === 'requires_confirmation' && item.status === 'submitted')" class="admin-notification-review-actions"><NButton size="small" type="success" :loading="adminNotificationBulkProcessing" @click="decideAllSubmittedAdminNotifications('approved')">一键通过待审核</NButton><NButton size="small" type="error" secondary :loading="adminNotificationBulkProcessing" @click="decideAllSubmittedAdminNotifications('rejected')">一键拒绝待审核</NButton></div>
                     <div v-for="notification in adminNotifications.filter((item) => item.issued_by_device_id === profile?.device_id).slice(0, 20)" :key="notification.notification_id" class="admin-notification-review-row">
                       <div class="admin-notification-review-device"><img v-if="avatarImage(adminNotificationTargetDetail(notification)?.avatar)" class="avatar-image compact-avatar" :src="avatarImage(adminNotificationTargetDetail(notification)?.avatar)" alt="设备头像" /><NAvatar v-else :size="28" class="peer-avatar">{{ firstLetter(adminNotificationTargetDetail(notification)?.nickname ?? '?') }}</NAvatar><div><strong>{{ notification.title }}</strong><small>昵称：{{ adminNotificationTargetDetail(notification)?.nickname ?? '未知设备' }} · IP：{{ adminNotificationTargetDetail(notification)?.address ?? '未知' }} · MAC：{{ notification.target_device_id }} · {{ notification.status }}</small></div></div>
-                      <NSpace :size="6"><NButton size="small" quaternary @click="openAdminNotificationDetail(notification)">详情</NButton><template v-if="notification.status === 'submitted'"><NButton size="small" type="success" @click="decideAdminNotification(notification, 'approved')">通过</NButton><NButton size="small" type="error" secondary @click="decideAdminNotification(notification, 'rejected')">拒绝</NButton></template><NButton v-else-if="['pending','expired_locked','rejected'].includes(notification.status)" size="small" tertiary type="warning" @click="decideAdminNotification(notification, 'revoked')">撤销放行</NButton></NSpace>
+                      <NSpace :size="6"><NButton size="small" quaternary @click="openAdminNotificationDetail(notification)">详情</NButton><template v-if="notification.display_mode === 'requires_confirmation' && notification.status === 'submitted'"><NButton size="small" type="success" @click="decideAdminNotification(notification, 'approved')">通过</NButton><NButton size="small" type="error" secondary @click="decideAdminNotification(notification, 'rejected')">拒绝</NButton></template><NButton v-else-if="notification.display_mode === 'requires_confirmation' && ['pending','expired_locked','rejected'].includes(notification.status)" size="small" tertiary type="warning" @click="decideAdminNotification(notification, 'revoked')">撤销放行</NButton></NSpace>
                     </div>
                   </div>
                 </NCard>
@@ -5909,6 +6298,18 @@ async function closeWindow() {
                       <NButton size="small" secondary type="primary" @click="addExternalPushConfig('dingtalk')">添加钉钉群</NButton>
                     </NSpace>
                     <NText depth="3">这里只配置推送内容正文，来源固定追加在最后一行，格式为 昵称（WLAN IP）。正文为空时只推送来源。</NText>
+                    <NFormItem label="最低可信度" :show-feedback="false">
+                      <NInputNumber
+                        :value="desktopPetSettings?.externalPushMinCredibility ?? 50"
+                        :min="0"
+                        :max="100"
+                        style="width: 180px"
+                        :disabled="desktopPetSettings?.externalPushMinCredibilityLocked"
+                        @update:value="(value) => updateDesktopPetSettingsPatch({ externalPushMinCredibility: Number(value ?? 50) })"
+                      />
+                    </NFormItem>
+                    <NText depth="3">告警发送人的可信度低于该值时，不触发企业微信或钉钉群机器人推送；没有反馈历史的人员默认按 100 处理。</NText>
+                    <NAlert v-if="desktopPetSettings?.externalPushMinCredibilityLocked" type="warning" :show-icon="false">管理员已禁止本机修改告警可信度阈值。</NAlert>
                     <div v-if="desktopPetSettings?.externalPushConfigs?.length" class="external-push-list">
                       <div
                         v-for="config in desktopPetSettings.externalPushConfigs"
@@ -5993,6 +6394,20 @@ async function closeWindow() {
                     <NButton secondary type="warning" :disabled="!adminAlertModeTargetId" @click="sendAdminAlertModeToPeer">下发报警模式</NButton>
                   </NSpace>
                 </NCard>
+                <NCard v-if="settingsCategory === 'pet' && superAdminEnabled" title="狼来了推送阈值下发" size="small">
+                  <NSpace vertical>
+                    <NText depth="3">下发后，目标设备仅在告警发送者可信度达到阈值时才触发它自己配置的外部群机器人。</NText>
+                    <NSelect
+                      v-model:value="adminAlertPushPolicyTargetId"
+                      :options="[{ label: '所有在线设备', value: '*' }, ...adminDeviceOptions]"
+                      filterable
+                      placeholder="选择设备或所有在线设备"
+                    />
+                    <NInputNumber v-model:value="adminAlertPushPolicyDraft" :min="0" :max="100" style="width: 180px" />
+                    <NCheckbox v-model:checked="adminAlertPushPolicyLockAfterIssue">下发后禁止对方本地修改阈值</NCheckbox>
+                    <NButton secondary type="warning" :disabled="!adminAlertPushPolicyTargetId" @click="sendAdminAlertPushPolicyToPeer">下发推送阈值</NButton>
+                  </NSpace>
+                </NCard>
                 <NCard v-if="settingsCategory === 'basic'" title="LanChat Hub 演进" size="small">
                   <NSpace vertical>
                     <NText depth="3">当前仍使用局域网点对点 TCP 广播；桌宠告警、反馈和排行榜同步已经设计成独立事件帧，后续 Hub 只需要转发这些事件。</NText>
@@ -6040,6 +6455,9 @@ async function closeWindow() {
                 </NCard>
                 <NAlert v-if="error" type="error" title="操作失败">
                   {{ error }}
+                </NAlert>
+                <NAlert v-if="operationNotice" type="success" closable @close="operationNotice = ''">
+                  {{ operationNotice }}
                 </NAlert>
                   </div>
                 </div>
@@ -6093,9 +6511,9 @@ async function closeWindow() {
                     </div>
                   </div>
                 </section>
-                <div v-if="canManageActivePrivateChannel" class="group-inspector-actions">
+                <div v-if="canInviteActivePrivateChannel" class="group-inspector-actions">
                   <NButton size="small" secondary type="primary" @click="openRecipientPicker('privateChannelInvite')">邀请成员</NButton>
-                  <NButton size="small" secondary type="error" @click="dissolveActivePrivateChannel">解散频道</NButton>
+                  <NButton v-if="canManageActivePrivateChannel" size="small" secondary type="error" @click="dissolveActivePrivateChannel">解散频道</NButton>
                 </div>
               </div>
             </NScrollbar>
@@ -6261,6 +6679,23 @@ async function closeWindow() {
       </NMessageProvider>
   </NConfigProvider>
 </template>
+
+<style scoped>
+.chat-call-actions { margin-left: auto; padding-right: 8px; }
+.private-call-panel { width: 100%; padding: 2px; }
+.private-call-title { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+.private-call-title strong { color: #1f2937; font-size: 16px; }
+.private-call-title span { flex: 0 0 auto; color: #768397; font-size: 12px; }
+.private-call-videos { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 104px; gap: 9px; aspect-ratio: 4 / 3; min-height: 0; margin-bottom: 16px; padding: 9px; border: 1px solid #e5eaf1; border-radius: 8px; background: #f5f7fa; }
+.private-call-videos video { width: 100%; height: 100%; min-height: 0; border-radius: 7px; background: #202938; object-fit: cover; }
+.private-call-videos video:last-child { height: 88px; align-self: end; box-shadow: 0 4px 14px rgba(29, 42, 61, 0.2); }
+.private-call-videos.audio { display: flex; align-items: center; justify-content: center; min-height: 210px; aspect-ratio: auto; }
+.private-call-audio-profile { display: grid; justify-items: center; gap: 9px; text-align: center; }
+.private-call-audio-avatar { display: grid; place-items: center; width: 102px; height: 102px; border: 8px solid #e6f4ff; border-radius: 50%; background: #1677ff; color: #fff; font-size: 34px; box-shadow: 0 8px 20px rgba(22, 119, 255, 0.18); }
+.private-call-audio-avatar-image { width: 102px; height: 102px; border: 4px solid #e6f4ff; border-radius: 50%; object-fit: cover; box-shadow: 0 8px 20px rgba(22, 119, 255, 0.18); }
+.private-call-audio-profile strong { color: #1f2937; font-size: 17px; }
+.private-call-audio-profile span { color: #768397; font-size: 12px; }
+</style>
 
 
 
