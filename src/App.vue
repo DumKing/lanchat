@@ -419,17 +419,19 @@ const adminAlertPushPolicyTargetId = ref<string | null>("*");
 const adminAlertPushPolicyDraft = ref(50);
 const adminAlertPushPolicyLockAfterIssue = ref(false);
 type CallMedia = "audio" | "video";
-type CallSession = { callId: string; peerDeviceId: string; peerNickname: string; media: CallMedia; status: "incoming" | "outgoing" | "connected" };
+type CallSession = { callId: string; peerDeviceId: string; peerNickname: string; media: CallMedia; status: "incoming" | "outgoing" | "connected" | "failed"; error?: string };
 const callSession = ref<CallSession | null>(null);
 const incomingCallSignal = ref<CallSignal | null>(null);
 const localCallVideo = ref<HTMLVideoElement | null>(null);
 const remoteCallVideo = ref<HTMLVideoElement | null>(null);
 const callMuted = ref(false);
 const callCameraOn = ref(true);
+const callActionInProgress = ref(false);
 let callPeerConnection: RTCPeerConnection | null = null;
 let callLocalStream: MediaStream | null = null;
 let queuedCallCandidates: RTCIceCandidateInit[] = [];
 const pendingCallCandidatesById = new Map<string, RTCIceCandidateInit[]>();
+let callDisconnectTimer: ReturnType<typeof setTimeout> | undefined;
 const simulationModalOpen = ref(false);
 const simulationSending = ref(false);
 const simulationKind = ref<SimulationKind>("channel");
@@ -587,7 +589,7 @@ const themeOverrides = computed(() => ({
 const sortedConversations = computed(() => {
   const keyword = conversationSearch.value.trim().toLowerCase();
   return [...conversations.value]
-    .filter((conversation) => !keyword || conversation.title.toLowerCase().includes(keyword))
+    .filter((conversation) => !keyword || `${conversationDisplayName(conversation)} ${conversation.title}`.toLowerCase().includes(keyword))
     .sort((a, b) => {
       if (a.kind !== b.kind) return a.kind === "group" ? -1 : 1;
       return b.updated_at - a.updated_at;
@@ -1386,10 +1388,8 @@ onMounted(async () => {
         if (target) {
           void feedbackPetAlert(target, event.payload.action === "feedback_real" ? "real" : "false");
         }
-      } else if (event.payload.action === "accept_call") {
-        if (incomingCallSignal.value?.call_id === event.payload.alert_id) void acceptIncomingCall();
-      } else if (event.payload.action === "reject_call") {
-        if (callSession.value?.callId === event.payload.alert_id) void rejectIncomingCall();
+      } else if (event.payload.action === "accept_call" || event.payload.action === "reject_call") {
+        void handleDesktopPetCallAction(event.payload.action, event.payload.alert_id);
       }
     });
     unlistenDesktopPetStopHotkey = await listen("desktop_pet_stop_hotkey_received", () => {
@@ -3681,6 +3681,34 @@ async function attachCallStreams() {
     localCallVideo.value.srcObject = callLocalStream;
   }
 }
+function formatCallMediaPermissionError(error: unknown, media: CallMedia) {
+  const name = error instanceof DOMException ? error.name : "";
+  const deviceLabel = media === "video" ? "麦克风和摄像头" : "麦克风";
+  if (name === "NotAllowedError" || name === "SecurityError") {
+    return `未获得${deviceLabel}权限，请在系统或浏览器权限设置中允许后重试`;
+  }
+  if (name === "NotFoundError") {
+    return media === "video" ? "未检测到可用的麦克风或摄像头设备" : "未检测到可用的麦克风设备";
+  }
+  if (name === "NotReadableError") {
+    return `${deviceLabel}正被其他应用占用，请关闭占用后重试`;
+  }
+  return `无法启用${deviceLabel}：${stringifyError(error)}`;
+}
+function callFailureMessage(error: unknown, media: CallMedia) {
+  return error instanceof Error && error.message ? error.message : formatCallMediaPermissionError(error, media);
+}
+function releaseCallMedia() {
+  if (callDisconnectTimer) window.clearTimeout(callDisconnectTimer);
+  callDisconnectTimer = undefined;
+  callPeerConnection?.close();
+  callPeerConnection = null;
+  callLocalStream?.getTracks().forEach((track) => track.stop());
+  callLocalStream = null;
+  queuedCallCandidates = [];
+  if (localCallVideo.value) localCallVideo.value.srcObject = null;
+  if (remoteCallVideo.value) remoteCallVideo.value.srcObject = null;
+}
 function createCallPeerConnection(session: CallSession) {
   const peerConnection = new RTCPeerConnection({ iceServers: [] });
   peerConnection.onicecandidate = (event) => {
@@ -3691,18 +3719,37 @@ function createCallPeerConnection(session: CallSession) {
     if (remoteCallVideo.value) remoteCallVideo.value.srcObject = event.streams[0] ?? new MediaStream([event.track]);
   };
   peerConnection.onconnectionstatechange = () => {
-    if (peerConnection.connectionState === "connected" && callSession.value) {
-      callSession.value = { ...callSession.value, status: "connected" };
+    const current = callSession.value;
+    if (!current || current.callId !== session.callId) return;
+    if (peerConnection.connectionState === "connected") {
+      if (callDisconnectTimer) window.clearTimeout(callDisconnectTimer);
+      callDisconnectTimer = undefined;
+      callSession.value = { ...current, status: "connected", error: undefined };
+      return;
     }
-    if (["failed", "disconnected", "closed"].includes(peerConnection.connectionState)) {
-      clearCallSession();
+    if (peerConnection.connectionState === "disconnected") {
+      if (callDisconnectTimer) window.clearTimeout(callDisconnectTimer);
+      callDisconnectTimer = window.setTimeout(() => {
+        if (peerConnection.connectionState === "disconnected" && callSession.value?.callId === session.callId) {
+          callSession.value = { ...callSession.value, status: "failed", error: "通话网络连接已断开，请重试或挂断" };
+        }
+      }, 4_000);
+      return;
+    }
+    if (peerConnection.connectionState === "failed") {
+      callSession.value = { ...current, status: "failed", error: "通话网络连接失败，请重试或挂断" };
     }
   };
   callPeerConnection = peerConnection;
   return peerConnection;
 }
 async function prepareLocalCallMedia(media: CallMedia) {
-  callLocalStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: media === "video" });
+  if (!navigator.mediaDevices?.getUserMedia) throw new Error("当前环境不支持语音或视频通话");
+  try {
+    callLocalStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: media === "video" });
+  } catch (error) {
+    throw new Error(formatCallMediaPermissionError(error, media));
+  }
   await attachCallStreams();
   return callLocalStream;
 }
@@ -3723,14 +3770,14 @@ async function flushQueuedCallCandidates() {
 async function startPrivateCall(media: CallMedia) {
   const peer = activePeer.value;
   if (!peer || !canStartPrivateCall.value || callSession.value) return;
+  const session: CallSession = {
+    callId: crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    peerDeviceId: peer.device_id,
+    peerNickname: peerDisplayName(peer),
+    media,
+    status: "outgoing",
+  };
   try {
-    const session: CallSession = {
-      callId: crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-      peerDeviceId: peer.device_id,
-      peerNickname: peerDisplayName(peer),
-      media,
-      status: "outgoing",
-    };
     callMuted.value = false;
     callCameraOn.value = media === "video";
     callSession.value = session;
@@ -3741,14 +3788,17 @@ async function startPrivateCall(media: CallMedia) {
     await peerConnection.setLocalDescription(offer);
     await store.sendCallSignal(peer.device_id, callSignalFrame(session.callId, "offer", media, offer));
   } catch (err) {
-    clearCallSession();
-    store.error = `无法发起通话：${stringifyError(err)}`;
+    releaseCallMedia();
+    const message = callFailureMessage(err, media);
+    callSession.value = { ...session, status: "failed", error: message };
+    store.error = message;
   }
 }
 async function sendPrivateNudge() {
   const peer = activePeer.value;
   if (!peer || !canStartPrivateCall.value) return;
-  await store.sendNudge(peer.device_id);
+  const nudge = await store.sendNudge(peer.device_id);
+  if (nudge) await store.addSystemNotice(peer.device_id, `你抖了抖 ${peerDisplayName(peer)}`);
 }
 async function handleIncomingNudge(nudge: Nudge) {
   activeSection.value = "chat";
@@ -3780,24 +3830,71 @@ async function acceptIncomingCall() {
     callSession.value = { ...session, status: "connected" };
     incomingCallSignal.value = null;
   } catch (err) {
-    store.error = `无法接听通话：${stringifyError(err)}`;
-    await endPrivateCall("reject");
+    releaseCallMedia();
+    const message = callFailureMessage(err, session.media);
+    callSession.value = { ...session, status: "failed", error: message };
+    store.error = message;
   }
 }
 async function rejectIncomingCall() {
   await endPrivateCall("reject");
 }
+async function retryPrivateCall() {
+  const session = callSession.value;
+  if (!session || session.status !== "failed") return;
+  if (incomingCallSignal.value?.call_id === session.callId) {
+    callSession.value = { ...session, status: "incoming", error: undefined };
+    await acceptIncomingCall();
+    return;
+  }
+  const peer = peers.value.find((item) => sameDeviceId(item.device_id, session.peerDeviceId));
+  clearCallSession();
+  if (!peer || !peer.online) {
+    store.error = "对方已离线，无法重新发起通话";
+    return;
+  }
+  await store.openDirect(peer);
+  await startPrivateCall(session.media);
+}
+async function openCallConversation(session: CallSession) {
+  activeSection.value = "chat";
+  const peer = peers.value.find((item) => sameDeviceId(item.device_id, session.peerDeviceId));
+  if (peer) await store.openDirect(peer);
+  else await store.selectConversation(session.peerDeviceId);
+  await api.showFromTray().catch(() => undefined);
+}
+async function handleDesktopPetCallAction(action: "accept_call" | "reject_call", callId?: string | null) {
+  if (callActionInProgress.value) return;
+  const session = callSession.value;
+  const signal = incomingCallSignal.value;
+  if (!session || session.status !== "incoming" || !signal || signal.call_id !== session.callId || (callId && callId !== session.callId)) {
+    store.error = "通话邀请已失效，请从聊天界面重新发起通话";
+    await syncDesktopPetRuntime();
+    return;
+  }
+  callActionInProgress.value = true;
+  try {
+    await openCallConversation(session);
+    if (action === "accept_call") {
+      await acceptIncomingCall();
+      if (callSession.value?.status === "connected") {
+        await store.addSystemNotice(session.peerDeviceId, `已接听 ${session.peerNickname} 的${session.media === "video" ? "视频" : "语音"}通话`);
+      }
+    } else {
+      await rejectIncomingCall();
+      await store.addSystemNotice(session.peerDeviceId, `已拒绝 ${session.peerNickname} 的${session.media === "video" ? "视频" : "语音"}通话`);
+    }
+  } finally {
+    callActionInProgress.value = false;
+    await syncDesktopPetRuntime();
+  }
+}
 function clearCallSession() {
   if (callSession.value) pendingCallCandidatesById.delete(callSession.value.callId);
-  callPeerConnection?.close();
-  callPeerConnection = null;
-  callLocalStream?.getTracks().forEach((track) => track.stop());
-  callLocalStream = null;
-  queuedCallCandidates = [];
-  if (localCallVideo.value) localCallVideo.value.srcObject = null;
-  if (remoteCallVideo.value) remoteCallVideo.value.srcObject = null;
+  releaseCallMedia();
   callSession.value = null;
   incomingCallSignal.value = null;
+  callActionInProgress.value = false;
   callMuted.value = false;
   callCameraOn.value = true;
 }
@@ -3847,9 +3944,11 @@ async function handleCallSignal(signal: CallSignal) {
     await callPeerConnection.setRemoteDescription(signal.payload as RTCSessionDescriptionInit);
     await flushQueuedCallCandidates();
     callSession.value = { ...session, status: "connected" };
+    await store.addSystemNotice(session.peerDeviceId, `${signal.sender_nickname} 已接听${session.media === "video" ? "视频" : "语音"}通话`);
   } else if (signal.kind === "ice_candidate") {
     await queueOrAddCallCandidate(signal.payload as RTCIceCandidateInit);
   } else if (signal.kind === "hangup" || signal.kind === "reject") {
+    await store.addSystemNotice(session.peerDeviceId, `${signal.sender_nickname}${signal.kind === "reject" ? " 拒绝了" : " 结束了"}${session.media === "video" ? "视频" : "语音"}通话`);
     clearCallSession();
   }
 }
@@ -4176,6 +4275,23 @@ async function removeActivePrivateChannelMember(member: ChannelMember | Peer) {
   await store.removePrivateChannelMember(conversation.id, member.device_id, superAdminEnabled.value);
   await store.addSystemNotice(conversation.id, `${member.nickname} 已被移出群聊`);
 }
+async function leaveActivePrivateChannel() {
+  const conversation = activeConversation.value;
+  if (!conversation?.is_private) return;
+  if (sameDeviceId(conversation.owner_device_id, profile.value?.device_id)) {
+    store.error = "群主不能退出频道，请使用解散频道";
+    return;
+  }
+  if (typeof window !== "undefined" && !window.confirm(`确定退出「${conversation.title}」吗？`)) return;
+  try {
+    await store.leavePrivateChannel(conversation.id);
+    await store.selectConversation(DEFAULT_GROUP_ID);
+    activeSection.value = "chat";
+    showOperationSuccess(`已退出「${conversation.title}」`);
+  } catch (error) {
+    store.error = stringifyError(error);
+  }
+}
 async function dissolveActivePrivateChannel() {
   const conversation = activeConversation.value;
   if (!conversation?.is_private || !canManageActivePrivateChannel.value) return;
@@ -4412,7 +4528,13 @@ function senderName(message: Message) {
   if (message.sender_device_id === profile.value?.device_id) {
     return profile.value?.nickname || "我";
   }
-  return peers.value.find((peer) => peer.device_id === message.sender_device_id)?.nickname || "局域网用户";
+  const peer = peers.value.find((item) => sameDeviceId(item.device_id, message.sender_device_id));
+  return peer ? peerDisplayName(peer) : "局域网用户";
+}
+function conversationDisplayName(conversation: Conversation) {
+  if (conversation.kind === "group") return conversation.title;
+  const peer = conversationPeer(conversation);
+  return peer ? peerDisplayName(peer) : conversation.title;
 }
 function messageSenderTitle(message: Message) {
   if (message.message_type === "system") return "";
@@ -4625,6 +4747,19 @@ function isAudioFile(message: Message) {
 async function saveProfile() {
   await store.saveProfile(nicknameDraft.value, portDraft.value, avatarDraft.value);
 }
+async function requestCallDevicePermission(media: CallMedia) {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    store.error = "当前环境不支持麦克风或摄像头权限申请";
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: media === "video" });
+    stream.getTracks().forEach((track) => track.stop());
+    showOperationSuccess(media === "video" ? "麦克风和摄像头权限已授权" : "麦克风权限已授权");
+  } catch (error) {
+    store.error = formatCallMediaPermissionError(error, media);
+  }
+}
 async function chooseAndSendFile() {
   if (!canSendActive.value) return;
   const selected = await openFileDialog({ multiple: false, directory: false });
@@ -4780,7 +4915,7 @@ async function closeWindow() {
         <div v-if="callSession" class="private-call-panel">
           <div class="private-call-title">
             <strong>{{ callSession.status === 'incoming' ? `${callSession.peerNickname} 邀请${callSession.media === 'video' ? '视频' : '语音'}通话` : `${callSession.media === 'video' ? '视频' : '语音'}通话 · ${callSession.peerNickname}` }}</strong>
-            <span>{{ callSession.status === 'incoming' ? '等待接听' : callSession.status === 'outgoing' ? '正在呼叫' : '已连接' }}</span>
+            <span>{{ callSession.status === 'incoming' ? '等待接听' : callSession.status === 'outgoing' ? '正在呼叫' : callSession.status === 'failed' ? (callSession.error ?? '通话未建立') : '已连接' }}</span>
           </div>
           <div class="private-call-videos" :class="{ audio: callSession.media === 'audio' }">
             <video v-if="callSession.media === 'video'" ref="remoteCallVideo" autoplay playsinline></video>
@@ -4789,13 +4924,17 @@ async function closeWindow() {
               <img v-if="avatarImage(peerAvatar(callSession.peerDeviceId))" :src="avatarImage(peerAvatar(callSession.peerDeviceId))" class="private-call-audio-avatar-image" alt="对方头像" />
               <div v-else class="private-call-audio-avatar">{{ firstLetter(callSession.peerNickname) }}</div>
               <strong>{{ callSession.peerNickname }}</strong>
-              <span>{{ callSession.status === 'connected' ? '语音通话中' : callSession.status === 'incoming' ? '邀请你进行语音通话' : '正在等待对方接听' }}</span>
+              <span>{{ callSession.status === 'connected' ? '语音通话中' : callSession.status === 'incoming' ? '邀请你进行语音通话' : callSession.status === 'failed' ? (callSession.error ?? '通话未建立') : '正在等待对方接听' }}</span>
             </div>
           </div>
           <NSpace justify="center">
             <template v-if="callSession.status === 'incoming'">
               <NButton type="primary" @click="acceptIncomingCall">接听</NButton>
               <NButton type="error" @click="rejectIncomingCall">拒绝</NButton>
+            </template>
+            <template v-else-if="callSession.status === 'failed'">
+              <NButton type="primary" :loading="callActionInProgress" @click="retryPrivateCall">重新尝试</NButton>
+              <NButton type="error" @click="() => endPrivateCall()">关闭</NButton>
             </template>
             <template v-else>
               <NButton secondary @click="toggleCallMuted">{{ callMuted ? '取消静音' : '静音' }}</NButton>
@@ -5001,13 +5140,13 @@ async function closeWindow() {
                   :class="{ active: conversation.id === activeConversationId }"
                   @click="store.selectConversation(conversation.id)"
                 >
-                  <NThing :title="conversation.title">
+                  <NThing :title="conversationDisplayName(conversation)">
                     <template #avatar>
                       <NAvatar v-if="conversation.kind === 'group'" class="conversation-avatar">
                         {{ conversation.is_private ? "私" : "局" }}
                       </NAvatar>
                       <img v-else-if="avatarImage(conversationAvatar(conversation))" class="avatar-image conversation-avatar" :src="avatarImage(conversationAvatar(conversation))" alt="会话头像" />
-                      <NAvatar v-else class="conversation-avatar">{{ firstLetter(conversation.title) }}</NAvatar>
+                      <NAvatar v-else class="conversation-avatar">{{ firstLetter(conversationDisplayName(conversation)) }}</NAvatar>
                     </template>
                     <template #description>
                       <div class="conversation-desc">
@@ -5168,7 +5307,7 @@ async function closeWindow() {
             <section v-if="activeSection === 'chat'" class="chat-view">
               <header class="chat-header" data-tauri-drag-region>
                 <div class="chat-title" :class="{ 'direct-chat-title': activeConversation?.kind === 'direct' }">
-                  <h2>{{ activeConversation?.title ?? "局域网频道" }}</h2>
+                  <h2>{{ activeConversation ? conversationDisplayName(activeConversation) : "局域网频道" }}</h2>
                   <p v-if="activeConversation?.kind === 'group'">{{ activeConversation?.is_private ? `${activePrivateChannelMembers.length} 名成员 · 私有加密频道` : `${onlinePeers.length} 台设备在线 · 频道广播` }}</p>
                   <p v-else class="peer-status-line">
                     <span>{{ activePeer ? `${activePeer.address}:${activePeer.port}` : "点对点单聊" }}</span>
@@ -6055,6 +6194,15 @@ async function closeWindow() {
                     </NAlert>
                   </NSpace>
                 </NCard>
+                <NCard v-if="settingsCategory === 'basic'" title="通话权限" size="small">
+                  <NSpace vertical>
+                    <NText depth="3">首次发起或接听通话会自动申请权限；若此前拒绝，可在这里重新授权。</NText>
+                    <NSpace>
+                      <NButton secondary type="primary" @click="requestCallDevicePermission('audio')">重新授权麦克风</NButton>
+                      <NButton secondary type="primary" @click="requestCallDevicePermission('video')">重新授权摄像头</NButton>
+                    </NSpace>
+                  </NSpace>
+                </NCard>
                 <NCard v-if="settingsCategory === 'basic'" title="图片缓存" size="small">
                   <NSpace vertical>
                     <NText depth="3">带预览能力的图片会自动下载到本机缓存，聊天历史仍可在发送方离线后查看。</NText>
@@ -6513,6 +6661,7 @@ async function closeWindow() {
                 </section>
                 <div v-if="canInviteActivePrivateChannel" class="group-inspector-actions">
                   <NButton size="small" secondary type="primary" @click="openRecipientPicker('privateChannelInvite')">邀请成员</NButton>
+                  <NButton v-if="activeConversation?.is_private && !sameDeviceId(activeConversation.owner_device_id, profile?.device_id)" size="small" secondary @click="leaveActivePrivateChannel">退出群聊</NButton>
                   <NButton v-if="canManageActivePrivateChannel" size="small" secondary type="error" @click="dissolveActivePrivateChannel">解散频道</NButton>
                 </div>
               </div>

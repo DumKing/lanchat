@@ -357,6 +357,18 @@ export const useLanChatStore = defineStore("lanchat", () => {
     }
   }
 
+  async function leavePrivateChannel(conversationId: string) {
+    error.value = "";
+    try {
+      await api.leavePrivateChannel(conversationId);
+      delete channelMembersByConversation.value[conversationId];
+      await refreshConversations();
+    } catch (err) {
+      error.value = stringifyError(err);
+      throw err;
+    }
+  }
+
   async function setPrivateChannelMemberMuted(conversationId: string, memberDeviceId: string, muted: boolean, superAdmin = false) {
     error.value = "";
     try {
@@ -885,6 +897,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
     createPrivateChannel,
     invitePrivateChannelMembers,
     removePrivateChannelMember,
+    leavePrivateChannel,
     setPrivateChannelMemberMuted,
     dissolvePrivateChannel,
     adminMuteChannelMember,
