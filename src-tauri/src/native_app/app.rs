@@ -1,5 +1,7 @@
 slint::include_modules!();
 
+use crate::native_app::NativeAppServices;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativePage {
     Chat,
@@ -26,6 +28,7 @@ impl Default for NativePage {
 pub fn run() -> Result<(), String> {
     let _initial_page = NativePage::default();
     let _available_pages = NAVIGATION_PAGES;
+    let _sidebar = NativeAppServices::open_default()?.load_sidebar()?;
     let window = MainWindow::new().map_err(|error| format!("创建原生主窗口失败：{error}"))?;
     window
         .run()

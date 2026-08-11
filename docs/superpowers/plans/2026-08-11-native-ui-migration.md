@@ -36,10 +36,11 @@
 - Modify: `src-tauri/src/network.rs`
 - Test: `src-tauri/src/native_app/services.rs`
 
-- [ ] 先写失败测试：旧数据库 profile、会话和设备可映射为原生模型。
-- [ ] 提取 `NativeAppServices`，封装 profile、会话、peer、消息和频道操作。
-- [ ] 复用 MAC 标识、SQLite 路径和消息协议，不引入并行数据源。
-- [ ] 运行针对性测试与 `cargo test --lib`。
+- [x] 先写失败测试：旧数据库 profile、会话和设备可映射为原生模型。
+- [x] 提取 `NativeAppServices`，封装 profile、会话、peer 与消息读取操作。
+- [ ] 在后续设备/频道页面迁移中补齐频道写入与成员管理操作。
+- [x] 复用 MAC 标识、SQLite 路径和消息协议，不引入并行数据源。
+- [x] 运行针对性测试与 `cargo test --lib`。
 - [ ] 提交 `feat: bridge existing services to native UI`。
 
 ### Task 3: 原生聊天与分页媒体缓存
@@ -50,8 +51,8 @@
 - Modify: `src-tauri/src/storage.rs`
 - Test: `src-tauri/src/native_app/chat.rs`
 
-- [ ] 写失败测试：初始消息页仅返回最近 20 条。
-- [ ] 添加 `list_messages_page(conversation_id, before, limit)`，按时间倒序查询后正序呈现。
+- [x] 写失败测试：初始消息页仅返回最近 20 条。
+- [x] 添加 `list_messages_page(conversation_id, before, limit)`，按时间倒序查询后正序呈现。
 - [ ] 实现原生消息列表、向上加载、文本发送、状态图标和系统消息。
 - [ ] 实现缩略图索引、按需原图解码与 LRU 释放。
 - [ ] 运行消息分页与存储回归测试。

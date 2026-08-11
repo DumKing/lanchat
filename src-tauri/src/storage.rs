@@ -1100,6 +1100,62 @@ impl Storage {
             .map_err(|err| format!("解析消息失败：{err}"))
     }
 
+    pub fn list_messages_page(
+        &self,
+        conversation_id: &str,
+        before_created_at: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<Message>, String> {
+        let limit = i64::try_from(limit.clamp(1, 100)).expect("消息页大小在 i64 范围内");
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, conversation_id, sender_device_id, content, message_type, file_name, file_size, file_url, file_mime_type, file_duration_ms, status, simulation_operator_device_id, simulation_operator_nickname, simulation_display_label, simulation_created_at, created_at
+                 FROM (
+                    SELECT id, conversation_id, sender_device_id, content, message_type, file_name, file_size, file_url, file_mime_type, file_duration_ms, status, simulation_operator_device_id, simulation_operator_nickname, simulation_display_label, simulation_created_at, created_at
+                    FROM messages
+                    WHERE conversation_id = ?1 AND (?2 IS NULL OR created_at < ?2)
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT ?3
+                 )
+                 ORDER BY created_at ASC, id ASC",
+            )
+            .map_err(|err| format!("读取消息分页失败：{err}"))?;
+        let rows = stmt
+            .query_map(params![conversation_id, before_created_at, limit], |row| {
+                let message_type: String = row.get(4)?;
+                let status: String = row.get(10)?;
+                let file_name: Option<String> = row.get(5)?;
+                let file_size: Option<i64> = row.get(6)?;
+                let file_url: Option<String> = row.get(7)?;
+                let file_mime_type: Option<String> = row.get(8)?;
+                let file_duration_ms: Option<i64> = row.get(9)?;
+                Ok(Message {
+                    id: row.get(0)?,
+                    conversation_id: row.get(1)?,
+                    sender_device_id: row.get(2)?,
+                    content: row.get(3)?,
+                    message_type: MessageType::from_str(&message_type),
+                    file_meta: match (file_name, file_size, file_url) {
+                        (Some(name), Some(size), Some(url)) => Some(FileMeta {
+                            name,
+                            size: size as u64,
+                            url,
+                            mime_type: file_mime_type,
+                            duration_ms: file_duration_ms.map(|value| value as u64),
+                        }),
+                        _ => None,
+                    },
+                    status: MessageStatus::from_str(&status),
+                    simulation: simulation_meta_from_row(row, 11)?,
+                    created_at: row.get(15)?,
+                })
+            })
+            .map_err(|err| format!("读取消息分页失败：{err}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("解析消息分页失败：{err}"))
+    }
+
     pub fn get_conversation(&self, conversation_id: &str) -> Result<Option<Conversation>, String> {
         Ok(self
             .list_conversations()?
@@ -2106,5 +2162,35 @@ mod tests {
             .expect("conversations")
             .iter()
             .any(|conversation| conversation.id == "limited-1"));
+    }
+
+    #[test]
+    fn message_page_returns_latest_twenty_in_chronological_order() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage = Storage::open(temp.path().join("lanchat.sqlite3")).expect("storage");
+
+        for index in 1..=25 {
+            storage
+                .save_message(&Message {
+                    id: format!("msg-{index}"),
+                    conversation_id: DEFAULT_GROUP_ID.to_string(),
+                    sender_device_id: "peer-1".to_string(),
+                    content: format!("消息 {index}"),
+                    message_type: MessageType::Text,
+                    file_meta: None,
+                    status: MessageStatus::Delivered,
+                    simulation: None,
+                    created_at: index,
+                })
+                .expect("message saved");
+        }
+
+        let page = storage
+            .list_messages_page(DEFAULT_GROUP_ID, None, 20)
+            .expect("message page");
+
+        assert_eq!(20, page.len());
+        assert_eq!("消息 6", page.first().expect("first message").content);
+        assert_eq!("消息 25", page.last().expect("last message").content);
     }
 }
