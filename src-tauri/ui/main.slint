@@ -1,10 +1,17 @@
-import { Button, LineEdit } from "std-widgets.slint";
+import { Button, LineEdit, ScrollView } from "std-widgets.slint";
+
+export struct ChatMessage {
+    author: string,
+    content: string,
+    outgoing: bool,
+}
 
 export component MainWindow inherits Window {
     title: "LanChat 原生版";
     width: 1180px;
     height: 760px;
     background: #f4f7f9;
+    in property <[ChatMessage]> messages;
 
     HorizontalLayout {
         spacing: 0px;
@@ -42,7 +49,31 @@ export component MainWindow inherits Window {
             padding: 0px;
             spacing: 0px;
             Rectangle { height: 78px; background: white; border-width: 1px; border-color: #e1e8ed; VerticalLayout { padding-left: 24px; padding-top: 15px; Text { text: "局域网频道"; font-size: 20px; font-weight: 700; } Text { text: "原生 Slint 主窗口"; color: #718693; } } }
-            Rectangle { vertical-stretch: 1; background: white; Text { text: "欢迎来到 LanChat 原生版\n聊天、设备、设置与游戏将分阶段迁移。"; color: #718693; horizontal-alignment: center; vertical-alignment: center; font-size: 17px; } }
+            Rectangle {
+                vertical-stretch: 1;
+                background: white;
+                ScrollView {
+                    VerticalLayout {
+                        width: root.width - 342px;
+                        padding: 22px;
+                        spacing: 12px;
+                        for message in root.messages: HorizontalLayout {
+                            Rectangle {
+                                width: 360px;
+                                min-height: 46px;
+                                border-radius: 8px;
+                                background: message.outgoing ? #159e90 : #eef3f5;
+                                VerticalLayout {
+                                    padding: 10px;
+                                    spacing: 4px;
+                                    Text { text: message.author; color: message.outgoing ? #d9fbf5 : #647984; font-size: 12px; }
+                                    Text { text: message.content; color: message.outgoing ? white : #18313d; wrap: word-wrap; font-size: 15px; }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             Rectangle { height: 142px; background: #fafcfd; border-width: 1px; border-color: #e1e8ed; VerticalLayout { padding: 14px; spacing: 10px; Text { text: "☺   📎   🎙   @"; color: #607583; font-size: 18px; } LineEdit { placeholder-text: "输入消息"; } HorizontalLayout { Text { text: "Enter 发送 · Shift+Enter 换行"; color: #9aa9b5; } Button { text: "发送"; horizontal-stretch: 0; } } } }
         }
     }
