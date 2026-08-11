@@ -5,6 +5,7 @@ mod desktop_pet_runtime;
 mod file_server;
 mod identity;
 mod network;
+pub mod native_app;
 mod protocol;
 mod storage;
 
@@ -202,6 +203,10 @@ static LANCHAT_INSTANCE_LOCK: OnceLock<File> = OnceLock::new();
 
 pub fn run_desktop_pet_process() {
     desktop_pet_runtime::run_desktop_pet_process();
+}
+
+pub fn run_native_ui() -> Result<(), String> {
+    native_app::run()
 }
 
 fn push_unique_pet_root(

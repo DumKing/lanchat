@@ -1,5 +1,6 @@
 fn main() {
     println!("cargo:rerun-if-changed=build-timestamp.txt");
+    slint_build::compile("ui/main.slint").expect("编译原生 Slint 界面失败");
     let timestamp = std::fs::read_to_string("build-timestamp.txt")
         .ok()
         .map(|value| value.trim().to_string())
