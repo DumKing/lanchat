@@ -78,6 +78,40 @@ pub fn run() -> Result<(), String> {
         })
         .collect::<Vec<_>>();
     window.set_messages(ModelRc::new(VecModel::from(rows)));
+    let conversations = sidebar
+        .conversations
+        .iter()
+        .map(|conversation| Conversation {
+            id: SharedString::from(conversation.id.clone()),
+            title: SharedString::from(conversation.title.clone()),
+            unread_count: SharedString::from(
+                (conversation.unread_count > 0)
+                    .then(|| conversation.unread_count.to_string())
+                    .unwrap_or_default(),
+            ),
+            subtitle: SharedString::from(if conversation.is_group {
+                "频道"
+            } else {
+                "私聊"
+            }),
+        })
+        .collect::<Vec<_>>();
+    window.set_conversations(ModelRc::new(VecModel::from(conversations)));
+    let peers = sidebar
+        .peers
+        .iter()
+        .map(|peer| Device {
+            nickname: SharedString::from(peer.display_name.clone()),
+            address: SharedString::from(peer.address.clone()),
+            status: SharedString::from(if peer.online { "在线" } else { "离线" }),
+            capability: SharedString::from(if peer.supports_chat {
+                "可聊天"
+            } else {
+                "仅告警"
+            }),
+        })
+        .collect::<Vec<_>>();
+    window.set_peers(ModelRc::new(VecModel::from(peers)));
     window.set_page_title(SharedString::from(native_page_title(NativePage::Chat)));
     window.set_page(0);
     let notification_rows = services
@@ -102,6 +136,38 @@ pub fn run() -> Result<(), String> {
         let _ = weak_window.upgrade_in_event_loop(move |window| {
             window.set_page(page as i32);
             window.set_page_title(SharedString::from(native_page_title(page)));
+        });
+    });
+    let message_services = services.clone();
+    let message_sidebar = sidebar.clone();
+    let message_window = window.as_weak();
+    window.on_select_conversation(move |conversation_id| {
+        let conversation_id = conversation_id.to_string();
+        let Ok(messages) = message_services.load_messages(&conversation_id, None) else {
+            return;
+        };
+        let rows = messages
+            .into_iter()
+            .map(|message| ChatMessage {
+                author: SharedString::from(if message.outgoing {
+                    message_sidebar.profile.nickname.clone()
+                } else {
+                    message.sender_device_id
+                }),
+                content: SharedString::from(message.content),
+                outgoing: message.outgoing,
+            })
+            .collect::<Vec<_>>();
+        let title = message_sidebar
+            .conversations
+            .iter()
+            .find(|conversation| conversation.id == conversation_id)
+            .map(|conversation| conversation.title.clone())
+            .unwrap_or_else(|| native_page_title(NativePage::Chat).to_string());
+        let _ = message_window.upgrade_in_event_loop(move |window| {
+            window.set_messages(ModelRc::new(VecModel::from(rows)));
+            window.set_page(0);
+            window.set_page_title(SharedString::from(title));
         });
     });
     let pet_window = create_pet_window()?;

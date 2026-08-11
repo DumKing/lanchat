@@ -12,6 +12,20 @@ export struct AdminNotification {
     status: string,
 }
 
+export struct Conversation {
+    id: string,
+    title: string,
+    subtitle: string,
+    unread-count: string,
+}
+
+export struct Device {
+    nickname: string,
+    address: string,
+    status: string,
+    capability: string,
+}
+
 export component MainWindow inherits Window {
     in property <string> app-title;
     in property <string> nav-chat;
@@ -33,7 +47,10 @@ export component MainWindow inherits Window {
     background: #f4f7f9;
     in property <[ChatMessage]> messages;
     in property <[AdminNotification]> notifications;
+    in property <[Conversation]> conversations;
+    in property <[Device]> peers;
     callback select-page(int);
+    callback select-conversation(string);
 
     HorizontalLayout {
         spacing: 0px;
@@ -63,8 +80,28 @@ export component MainWindow inherits Window {
                 spacing: 12px;
                 HorizontalLayout { Text { text: root.nav-chat; font-size: 20px; font-weight: 700; } Text { text: "+"; horizontal-alignment: right; font-size: 22px; } }
                 LineEdit { placeholder-text: root.search-chats; }
-                Rectangle { height: 64px; border-radius: 7px; background: #e2f5f1; VerticalLayout { padding: 10px; Text { text: root.lan-channel; font-size: 16px; } Text { text: root.channel-broadcast; color: #6d8790; } } }
-                Rectangle { height: 64px; border-radius: 7px; VerticalLayout { padding: 10px; Text { text: "最近联系人"; font-size: 16px; } Text { text: "原生界面迁移中"; color: #8798a4; } } }
+                Rectangle { height: 64px; border-radius: 7px; background: #e2f5f1; VerticalLayout { padding: 10px; Text { text: root.lan-channel; font-size: 16px; } Text { text: root.channel-broadcast; color: #6d8790; } } TouchArea { clicked => { root.select-conversation("lan-room"); } } }
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        spacing: 6px;
+                        for conversation in root.conversations: Rectangle {
+                            height: 62px;
+                            border-radius: 7px;
+                            background: #ffffff;
+                            VerticalLayout {
+                                padding: 9px;
+                                spacing: 3px;
+                                HorizontalLayout {
+                                    Text { text: conversation.title; font-size: 15px; font-weight: 600; }
+                                    Text { text: conversation.unread-count; color: #e84d59; horizontal-alignment: right; }
+                                }
+                                Text { text: conversation.subtitle; color: #8798a4; font-size: 12px; }
+                            }
+                            TouchArea { clicked => { root.select-conversation(conversation.id); } }
+                        }
+                    }
+                }
             }
         }
 
@@ -96,7 +133,7 @@ export component MainWindow inherits Window {
                     }
                 }
             }
-            if root.page != 3 : Rectangle {
+            if root.page == 0 : Rectangle {
                 vertical-stretch: 1;
                 background: white;
                 ScrollView {
@@ -116,6 +153,30 @@ export component MainWindow inherits Window {
                                     Text { text: message.author; color: message.outgoing ? #d9fbf5 : #647984; font-size: 12px; }
                                     Text { text: message.content; color: message.outgoing ? white : #18313d; wrap: word-wrap; font-size: 15px; }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+            if root.page == 1 : Rectangle {
+                vertical-stretch: 1;
+                background: white;
+                ScrollView {
+                    VerticalLayout {
+                        padding: 24px;
+                        spacing: 10px;
+                        for peer in root.peers: Rectangle {
+                            height: 64px;
+                            border-radius: 7px;
+                            background: #f7fafb;
+                            border-width: 1px;
+                            border-color: #e1e8ed;
+                            HorizontalLayout {
+                                padding: 12px;
+                                spacing: 12px;
+                                Rectangle { width: 38px; height: 38px; border-radius: 19px; background: #d8f1ed; Text { text: "●"; color: #108c81; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; } }
+                                VerticalLayout { spacing: 3px; Text { text: peer.nickname; font-size: 16px; font-weight: 600; } Text { text: peer.address; color: #82949f; font-size: 12px; } }
+                                VerticalLayout { horizontal-stretch: 0; spacing: 3px; Text { text: peer.status; color: peer.status == "在线" ? #16a765 : #d8565f; horizontal-alignment: right; } Text { text: peer.capability; color: #82949f; font-size: 12px; horizontal-alignment: right; } }
                             }
                         }
                     }
