@@ -20,6 +20,7 @@ src-tauri/.keys/
 
 # Local preview, verification and packaging outputs
 .worktrees/
+.superpowers/
 .tmp/
 .tmp-*/
 .package/
