@@ -1,7 +1,11 @@
 use crate::native_app::models::{
-    NativeConversationRow, NativeMessageRow, NativePeerRow, NativeProfile, NativeSidebar,
+    NativeConversationRow, NativeMessageRow, NativeNotificationRow, NativePeerRow, NativeProfile,
+    NativeSidebar,
 };
-use crate::storage::{ConversationKind, Message, MessageStatus, MessageType, Peer, Profile, Storage};
+use crate::storage::{
+    AdminNotificationRecord, ConversationKind, Message, MessageStatus, MessageType, Peer, Profile,
+    Storage,
+};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -15,16 +19,20 @@ impl NativeAppServices {
     }
 
     pub fn open_default() -> Result<Self, String> {
-        let app_data = std::env::var_os("APPDATA")
+        let app_data = Self::default_app_data_dir();
+        let storage = Storage::open(Self::storage_path_for_app_data(app_data))?;
+        Ok(Self::new(Arc::new(storage)))
+    }
+
+    pub fn default_app_data_dir() -> PathBuf {
+        std::env::var_os("APPDATA")
             .map(PathBuf::from)
             .map(|path| path.join("com.lanchat.desktop"))
             .unwrap_or_else(|| {
                 std::env::current_dir()
                     .unwrap_or_else(|_| PathBuf::from(".lanchat"))
                     .join(".lanchat")
-            });
-        let storage = Storage::open(Self::storage_path_for_app_data(app_data))?;
-        Ok(Self::new(Arc::new(storage)))
+            })
     }
 
     pub fn storage_path_for_app_data(app_data_dir: impl AsRef<Path>) -> PathBuf {
@@ -54,6 +62,17 @@ impl NativeAppServices {
             .into_iter()
             .map(|message| Ok(map_message(message, &profile.device_id)))
             .collect()
+    }
+
+    pub fn load_local_notification_history(&self) -> Result<Vec<NativeNotificationRow>, String> {
+        let profile = self.storage.get_or_create_profile()?;
+        Ok(self
+            .storage
+            .list_admin_notifications()?
+            .into_iter()
+            .filter(|record| record.target_device_id.eq_ignore_ascii_case(&profile.device_id))
+            .map(map_notification)
+            .collect())
     }
 }
 
@@ -114,9 +133,21 @@ fn map_message(message: Message, local_device_id: &str) -> NativeMessageRow {
     }
 }
 
+fn map_notification(record: AdminNotificationRecord) -> NativeNotificationRow {
+    NativeNotificationRow {
+        id: record.notification_id,
+        title: record.title,
+        content: record.content,
+        issued_by_nickname: record.issued_by_nickname,
+        status: record.status,
+        created_at: record.created_at,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::NativeAppServices;
+    use crate::protocol::AdminNotificationFrame;
     use crate::storage::{Message, MessageStatus, MessageType, Peer, Storage, DEFAULT_GROUP_ID};
     use std::sync::Arc;
 
@@ -200,5 +231,41 @@ mod tests {
         assert_eq!(20, messages.len());
         assert_eq!("消息 4", messages.first().expect("first message").content);
         assert_eq!("消息 23", messages.last().expect("last message").content);
+    }
+
+    #[test]
+    fn loads_only_notifications_received_by_the_local_device() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage = Arc::new(Storage::open(temp.path().join("lanchat.sqlite3")).expect("storage"));
+        let profile = storage.get_or_create_profile().expect("profile");
+        for (id, target, title) in [
+            ("received", profile.device_id.as_str(), "本机公告"),
+            ("sent", "other-device", "其他设备公告"),
+        ] {
+            storage
+                .upsert_admin_notification(&AdminNotificationFrame {
+                    notification_id: id.to_string(),
+                    target_device_id: target.to_string(),
+                    title: title.to_string(),
+                    content: "通知内容".to_string(),
+                    template: "source".to_string(),
+                    support_url: None,
+                    display_mode: "dismissible".to_string(),
+                    deadline_at: None,
+                    timeout_policy: "manual_review".to_string(),
+                    force_open_main_window: false,
+                    issued_by_device_id: "admin".to_string(),
+                    issued_by_nickname: "管理员".to_string(),
+                    created_at: 10,
+                })
+                .expect("notification saved");
+        }
+
+        let history = NativeAppServices::new(storage)
+            .load_local_notification_history()
+            .expect("notification history");
+
+        assert_eq!(1, history.len());
+        assert_eq!("本机公告", history[0].title);
     }
 }

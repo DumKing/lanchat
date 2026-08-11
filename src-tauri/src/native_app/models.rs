@@ -38,6 +38,16 @@ pub struct NativeMessageRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeNotificationRow {
+    pub id: String,
+    pub title: String,
+    pub content: String,
+    pub issued_by_nickname: String,
+    pub status: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeSidebar {
     pub profile: NativeProfile,
     pub peers: Vec<NativePeerRow>,
