@@ -78,11 +78,13 @@
 **Files:**
 - Create: `src-tauri/src/native_app/alerts.rs`
 - Create: `src-tauri/ui/alerts.slint`
+- Create: `src-tauri/ui/pet.slint`
 - Modify: `src-tauri/src/desktop_pet_runtime.rs`
 - Test: `src-tauri/src/native_app/alerts.rs`
 
 - [ ] 迁移狼来了排行榜、可信度、反馈与管理员下发配置。
-- [ ] 通过单一服务状态同步桌宠角标、详情和来电提示。
+- [ ] 将桌宠窗口迁为 Slint 透明置顶窗口，复用现有资源包、状态机和动作随机规则。
+- [ ] 通过单一服务状态同步桌宠角标、详情、来电提示和主窗口语言/主题。
 - [ ] 验证反馈后的角标/详情立即清理，旧快照不能回写。
 - [ ] 提交 `feat: migrate alerts and desktop pet controls`。
 
