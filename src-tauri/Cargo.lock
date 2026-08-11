@@ -3133,7 +3133,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "lanchat"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "chrono",
  "eframe",
@@ -3161,6 +3161,7 @@ dependencies = [
  "tokio",
  "uuid",
  "winit",
+ "winreg",
 ]
 
 [[package]]

@@ -5,6 +5,7 @@ import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings,
 export const api = {
   getPlatformInfo: () => invoke<PlatformInfo>("get_platform_info"),
   getAppVersionInfo: () => invoke<AppVersionInfo>("get_app_version_info"),
+  refreshUpdateProxy: () => invoke<void>("refresh_update_proxy"),
   checkForUpdate: () => invoke<UpdateCheckResult>("check_for_update"),
   isPortableRuntime: () => invoke<boolean>("is_portable_runtime"),
   installPortableUpdate: (downloadUrl: string, sha256: string) => invoke<void>("install_portable_update", { downloadUrl, sha256 }),

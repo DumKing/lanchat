@@ -259,6 +259,7 @@ export type AdminNotification = {
 };
 
 export type DesktopPetRuntimeState = {
+  revision?: number;
   enabled: boolean;
   pending_count: number;
   temperature: number;
