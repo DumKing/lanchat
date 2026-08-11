@@ -2,6 +2,7 @@ mod app;
 mod i18n;
 mod models;
 mod pet;
+mod pet_ui;
 mod services;
 
 pub use app::run;
@@ -11,4 +12,5 @@ pub use models::{
     NativeSidebar,
 };
 pub use pet::initial_idle_frame;
+pub use pet_ui::PetWindow;
 pub use services::NativeAppServices;

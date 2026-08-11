@@ -1,0 +1,21 @@
+export component PetWindow inherits Window {
+    title: "LanChat Pet";
+    width: 180px;
+    height: 180px;
+    no-frame: true;
+    always-on-top: true;
+    background: transparent;
+    in property <image> pet-image;
+    callback clicked();
+
+    Image {
+        source: root.pet-image;
+        width: parent.width;
+        height: parent.height;
+        image-fit: contain;
+    }
+
+    TouchArea {
+        clicked => { root.clicked(); }
+    }
+}

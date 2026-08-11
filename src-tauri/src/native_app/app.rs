@@ -1,8 +1,13 @@
-slint::include_modules!();
+include!(concat!(env!("OUT_DIR"), "/native_main_ui.rs"));
 
-use crate::native_app::{NativeAppServices, NativeUiSettings, TextKey, Translator};
+use crate::native_app::{NativeAppServices, NativeUiSettings, PetWindow, TextKey, Translator};
 use crate::storage::DEFAULT_GROUP_ID;
-use slint::{ModelRc, SharedString, VecModel};
+use crate::{
+    desktop_pet::{DesktopPetManager, PetPackageSource, PetResourceRoot},
+    native_app::initial_idle_frame,
+};
+use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativePage {
@@ -63,9 +68,59 @@ pub fn run() -> Result<(), String> {
         })
         .collect::<Vec<_>>();
     window.set_messages(ModelRc::new(VecModel::from(rows)));
+    let pet_window = create_pet_window()?;
     window
-        .run()
-        .map_err(|error| format!("运行原生主窗口失败：{error}"))
+        .show()
+        .map_err(|error| format!("显示原生主窗口失败：{error}"))?;
+    if let Some(pet_window) = &pet_window {
+        pet_window
+            .show()
+            .map_err(|error| format!("显示原生桌宠窗口失败：{error}"))?;
+    }
+    slint::run_event_loop().map_err(|error| format!("运行原生界面事件循环失败：{error}"))
+}
+
+fn create_pet_window() -> Result<Option<PetWindow>, String> {
+    let app_data_dir = NativeAppServices::default_app_data_dir();
+    let manager = DesktopPetManager::new(
+        native_pet_resource_roots(&app_data_dir),
+        app_data_dir.join("desktop-pets"),
+        app_data_dir.join("desktop-pet-settings.json"),
+    );
+    if !manager.settings().enabled {
+        return Ok(None);
+    }
+    let Some(package) = manager.selected_package() else {
+        return Ok(None);
+    };
+    let Some(path) = initial_idle_frame(&package) else {
+        return Ok(None);
+    };
+    let image = slint::Image::load_from_path(&path)
+        .map_err(|error| format!("加载桌宠首帧失败：{error}"))?;
+    let pet_window = PetWindow::new().map_err(|error| format!("创建原生桌宠窗口失败：{error}"))?;
+    pet_window.set_pet_image(image);
+    Ok(Some(pet_window))
+}
+
+fn native_pet_resource_roots(app_data_dir: &Path) -> Vec<PetResourceRoot> {
+    let mut roots = vec![PetResourceRoot::new(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources").join("desktop-pets"),
+        PetPackageSource::BuiltIn,
+    )];
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(parent) = executable.parent() {
+            roots.push(PetResourceRoot::new(
+                parent.join("resources").join("desktop-pets"),
+                PetPackageSource::Portable,
+            ));
+        }
+    }
+    roots.push(PetResourceRoot::new(
+        app_data_dir.join("desktop-pets"),
+        PetPackageSource::User,
+    ));
+    roots
 }
 
 #[cfg(test)]
