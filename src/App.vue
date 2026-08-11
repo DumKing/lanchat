@@ -403,6 +403,7 @@ const imagePreviewMessage = ref<Message | null>(null);
 const imagePreviewScale = ref(1);
 const operationNotice = ref("");
 let operationNoticeTimer: ReturnType<typeof setTimeout> | undefined;
+let desktopPetRuntimeRevision = 0;
 const selectedDeviceChannelId = ref("");
 const adminNicknameDraft = ref("");
 const adminNicknameLockAfterIssue = ref(false);
@@ -420,7 +421,20 @@ const adminAlertPushPolicyDraft = ref(50);
 const adminAlertPushPolicyLockAfterIssue = ref(false);
 type CallMedia = "audio" | "video";
 type CallSession = { callId: string; peerDeviceId: string; peerNickname: string; media: CallMedia; status: "incoming" | "outgoing" | "connected" | "failed"; error?: string };
+type DetachedCallWindow = {
+  window: Window;
+  title: HTMLElement;
+  status: HTMLElement;
+  remoteVideo: HTMLVideoElement | null;
+  localVideo: HTMLVideoElement | null;
+};
 const callSession = ref<CallSession | null>(null);
+const callPanelExpanded = ref(false);
+const callPanelPosition = ref<{ left: number; top: number } | null>(null);
+let callPanelDrag: { offsetX: number; offsetY: number; width: number; height: number } | null = null;
+const callPanelStyle = computed(() => callPanelPosition.value
+  ? { left: `${callPanelPosition.value.left}px`, top: `${callPanelPosition.value.top}px`, right: "auto" }
+  : {});
 const incomingCallSignal = ref<CallSignal | null>(null);
 const localCallVideo = ref<HTMLVideoElement | null>(null);
 const remoteCallVideo = ref<HTMLVideoElement | null>(null);
@@ -429,6 +443,8 @@ const callCameraOn = ref(true);
 const callActionInProgress = ref(false);
 let callPeerConnection: RTCPeerConnection | null = null;
 let callLocalStream: MediaStream | null = null;
+let callRemoteStream: MediaStream | null = null;
+let detachedCallWindow: DetachedCallWindow | null = null;
 let queuedCallCandidates: RTCIceCandidateInit[] = [];
 const pendingCallCandidatesById = new Map<string, RTCIceCandidateInit[]>();
 let callDisconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1293,6 +1309,7 @@ async function installNativeUpdate(force = false) {
   nativeUpdateInstalling.value = true;
   nativeUpdateProgress.value = { downloaded: 0, total: 0, phase: "downloading" };
   try {
+    await api.refreshUpdateProxy().catch(() => undefined);
     if (await api.isPortableRuntime()) {
       const url = updateInfo.value?.downloads.windowsPortable;
       const sha256 = updateInfo.value?.downloads.windowsPortableSha256;
@@ -1415,6 +1432,7 @@ onMounted(async () => {
 });
 onUnmounted(() => {
   clearCallSession();
+  stopCallPanelDrag();
   stopPaneResize();
   unlistenTrayOpenTarget?.();
   unlistenTrayOpenTarget = null;
@@ -1576,8 +1594,15 @@ watch(latestAdminAlertPushPolicy, (policy: AdminAlertPushPolicy | null) => {
   adminAlertPushPolicyLockAfterIssue.value = policy.min_credibility_locked;
   void desktopPetStore.refreshSettings();
 });
-watch(callSession, () => {
+watch(callSession, (session, previous) => {
+  if (session?.callId !== previous?.callId) {
+    callPanelExpanded.value = false;
+  }
+  syncDetachedCallWindow();
   void syncDesktopPetRuntime();
+});
+watch(callPanelExpanded, (expanded) => {
+  if (expanded) void attachCallStreams();
 });
 watch([petAlertEnabled, pendingAlertCount, activePetAlert, petAlertProbability, discoModeActive, latestPendingAlert], () => {
   void syncDesktopPetRuntime();
@@ -3548,6 +3573,42 @@ function alertRecordFromFrame(alert: QuickAlert): AlertRecord {
     feedbacks: [],
   };
 }
+function startCallPanelDrag(event: MouseEvent) {
+  if (event.button !== 0 || typeof window === "undefined") return;
+  if ((event.target as HTMLElement | null)?.closest("button")) return;
+  const panel = (event.currentTarget as HTMLElement).closest<HTMLElement>(".private-call-float");
+  if (!panel) return;
+  const bounds = panel.getBoundingClientRect();
+  event.preventDefault();
+  callPanelDrag = {
+    offsetX: event.clientX - bounds.left,
+    offsetY: event.clientY - bounds.top,
+    width: bounds.width,
+    height: bounds.height,
+  };
+  window.addEventListener("mousemove", moveCallPanel);
+  window.addEventListener("mouseup", stopCallPanelDrag, { once: true });
+}
+function moveCallPanel(event: MouseEvent) {
+  if (!callPanelDrag || typeof window === "undefined") return;
+  const margin = 8;
+  const left = Math.min(
+    Math.max(margin, event.clientX - callPanelDrag.offsetX),
+    Math.max(margin, window.innerWidth - callPanelDrag.width - margin),
+  );
+  const top = Math.min(
+    Math.max(margin, event.clientY - callPanelDrag.offsetY),
+    Math.max(margin, window.innerHeight - callPanelDrag.height - margin),
+  );
+  callPanelPosition.value = { left, top };
+}
+function stopCallPanelDrag() {
+  if (typeof window !== "undefined") {
+    window.removeEventListener("mousemove", moveCallPanel);
+    window.removeEventListener("mouseup", stopCallPanelDrag);
+  }
+  callPanelDrag = null;
+}
 function resolveAlertSender(alert: Pick<QuickAlert, "sender_device_id" | "sender_nickname" | "sender_address">) {
   const peer = peers.value.find((item) => sameDeviceId(item.device_id, alert.sender_device_id));
   const isSelf = sameDeviceId(alert.sender_device_id, profile.value?.device_id);
@@ -3680,6 +3741,117 @@ async function attachCallStreams() {
   if (localCallVideo.value && callLocalStream) {
     localCallVideo.value.srcObject = callLocalStream;
   }
+  if (remoteCallVideo.value && callRemoteStream) {
+    remoteCallVideo.value.srcObject = callRemoteStream;
+  }
+  syncDetachedCallWindow();
+}
+function callStatusLabel(session: CallSession) {
+  return session.status === "incoming"
+    ? "等待接听"
+    : session.status === "outgoing"
+      ? "正在呼叫"
+      : session.status === "failed"
+        ? (session.error ?? "通话未建立")
+        : "通话中";
+}
+function closeDetachedCallWindow() {
+  const current = detachedCallWindow;
+  detachedCallWindow = null;
+  if (current && !current.window.closed) current.window.close();
+}
+function syncDetachedCallWindow() {
+  const current = detachedCallWindow;
+  const session = callSession.value;
+  if (!current) return;
+  if (current.window.closed || !session) {
+    detachedCallWindow = null;
+    return;
+  }
+  current.title.textContent = `${session.media === "video" ? "视频" : "语音"}通话 · ${session.peerNickname}`;
+  current.status.textContent = callStatusLabel(session);
+  if (current.localVideo && callLocalStream) current.localVideo.srcObject = callLocalStream;
+  if (current.remoteVideo && callRemoteStream) current.remoteVideo.srcObject = callRemoteStream;
+}
+async function openDetachedCallWindow() {
+  const session = callSession.value;
+  if (!session || typeof window === "undefined") return;
+  if (detachedCallWindow && !detachedCallWindow.window.closed) {
+    detachedCallWindow.window.focus();
+    syncDetachedCallWindow();
+    return;
+  }
+  type PictureInPictureApi = { requestWindow: (options: { width: number; height: number }) => Promise<Window> };
+  const pictureInPicture = (window as Window & { documentPictureInPicture?: PictureInPictureApi }).documentPictureInPicture;
+  if (!pictureInPicture) {
+    store.error = "当前系统运行环境不支持独立通话窗口，可使用通话条上的展开按钮查看画面";
+    return;
+  }
+  try {
+    const popup = await pictureInPicture.requestWindow({
+      width: session.media === "video" ? 420 : 320,
+      height: session.media === "video" ? 330 : 220,
+    });
+    const doc = popup.document;
+    doc.title = "LanChat 通话";
+    doc.documentElement.style.cssText = "width:100%;height:100%;background:#ffffff;";
+    doc.body.replaceChildren();
+    doc.body.style.cssText = "margin:0;width:100%;height:100%;min-width:100%;min-height:100%;overflow:hidden;background:#ffffff;color:#1f2937;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Microsoft YaHei',sans-serif;";
+    const shell = doc.createElement("main");
+    shell.style.cssText = "box-sizing:border-box;display:flex;flex-direction:column;width:100%;height:100%;padding:12px;background:#ffffff;";
+    const header = doc.createElement("header");
+    header.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;";
+    const title = doc.createElement("strong");
+    title.style.cssText = "min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;";
+    const status = doc.createElement("span");
+    status.style.cssText = "color:#7c8796;font-size:12px;white-space:nowrap;";
+    header.append(title, status);
+    shell.append(header);
+    let remoteVideo: HTMLVideoElement | null = null;
+    let localVideo: HTMLVideoElement | null = null;
+    if (session.media === "video") {
+      const videoStage = doc.createElement("section");
+      videoStage.style.cssText = "position:relative;flex:1;min-height:0;border-radius:8px;overflow:hidden;background:#1d2735;";
+      remoteVideo = doc.createElement("video");
+      remoteVideo.autoplay = true;
+      remoteVideo.playsInline = true;
+      remoteVideo.style.cssText = "display:block;width:100%;height:100%;background:#1d2735;object-fit:cover;";
+      localVideo = doc.createElement("video");
+      localVideo.autoplay = true;
+      localVideo.muted = true;
+      localVideo.playsInline = true;
+      localVideo.style.cssText = "position:absolute;right:10px;bottom:10px;width:96px;height:72px;border:2px solid #ffffff;border-radius:6px;background:#263241;object-fit:cover;box-shadow:0 4px 14px rgba(0,0,0,.28);";
+      videoStage.append(remoteVideo, localVideo);
+      shell.append(videoStage);
+    } else {
+      const audio = doc.createElement("div");
+      audio.style.cssText = "display:grid;place-items:center;align-content:center;gap:10px;flex:1;border-radius:8px;background:#f4f7fb;";
+      const avatar = doc.createElement("div");
+      avatar.textContent = firstLetter(session.peerNickname);
+      avatar.style.cssText = "display:grid;place-items:center;width:72px;height:72px;border-radius:50%;background:#1677ff;color:#fff;font-size:28px;font-weight:700;";
+      const name = doc.createElement("strong");
+      name.textContent = session.peerNickname;
+      audio.append(avatar, name);
+      shell.append(audio);
+    }
+    const controls = doc.createElement("footer");
+    controls.style.cssText = "display:flex;justify-content:center;gap:8px;margin-top:10px;";
+    const hangup = doc.createElement("button");
+    hangup.type = "button";
+    hangup.textContent = "挂断";
+    hangup.style.cssText = "border:0;border-radius:6px;padding:7px 18px;background:#e5484d;color:#fff;cursor:pointer;font:inherit;";
+    hangup.addEventListener("click", () => { void endPrivateCall(); });
+    controls.append(hangup);
+    shell.append(controls);
+    doc.body.append(shell);
+    detachedCallWindow = { window: popup, title, status, remoteVideo, localVideo };
+    popup.addEventListener("pagehide", () => {
+      if (detachedCallWindow?.window === popup) detachedCallWindow = null;
+    }, { once: true });
+    syncDetachedCallWindow();
+  } catch (error) {
+    store.error = `打开独立通话窗口失败：${stringifyError(error)}`;
+  }
 }
 function formatCallMediaPermissionError(error: unknown, media: CallMedia) {
   const name = error instanceof DOMException ? error.name : "";
@@ -3705,9 +3877,11 @@ function releaseCallMedia() {
   callPeerConnection = null;
   callLocalStream?.getTracks().forEach((track) => track.stop());
   callLocalStream = null;
+  callRemoteStream = null;
   queuedCallCandidates = [];
   if (localCallVideo.value) localCallVideo.value.srcObject = null;
   if (remoteCallVideo.value) remoteCallVideo.value.srcObject = null;
+  closeDetachedCallWindow();
 }
 function createCallPeerConnection(session: CallSession) {
   const peerConnection = new RTCPeerConnection({ iceServers: [] });
@@ -3716,7 +3890,8 @@ function createCallPeerConnection(session: CallSession) {
     void store.sendCallSignal(session.peerDeviceId, callSignalFrame(session.callId, "ice_candidate", session.media, event.candidate.toJSON())).catch(() => undefined);
   };
   peerConnection.ontrack = (event) => {
-    if (remoteCallVideo.value) remoteCallVideo.value.srcObject = event.streams[0] ?? new MediaStream([event.track]);
+    callRemoteStream = event.streams[0] ?? new MediaStream([event.track]);
+    void attachCallStreams();
   };
   peerConnection.onconnectionstatechange = () => {
     const current = callSession.value;
@@ -3781,6 +3956,7 @@ async function startPrivateCall(media: CallMedia) {
     callMuted.value = false;
     callCameraOn.value = media === "video";
     callSession.value = session;
+    void openDetachedCallWindow();
     const stream = await prepareLocalCallMedia(media);
     const peerConnection = createCallPeerConnection(session);
     stream.getTracks().forEach((track) => peerConnection.addTrack(track, stream));
@@ -3812,11 +3988,12 @@ async function handleIncomingNudge(nudge: Nudge) {
   await store.addSystemNotice(nudge.sender_device_id, `${nudge.sender_nickname} 抖了一下你`);
   await api.revealAndShakeMainWindow().catch(() => undefined);
 }
-async function acceptIncomingCall() {
+async function acceptIncomingCall(openIndependentWindow = true) {
   const signal = incomingCallSignal.value;
   const session = callSession.value;
   if (!signal || !session || session.status !== "incoming") return;
   try {
+    if (openIndependentWindow) void openDetachedCallWindow();
     const stream = await prepareLocalCallMedia(session.media);
     callMuted.value = false;
     callCameraOn.value = session.media === "video";
@@ -3874,9 +4051,8 @@ async function handleDesktopPetCallAction(action: "accept_call" | "reject_call",
   }
   callActionInProgress.value = true;
   try {
-    await openCallConversation(session);
     if (action === "accept_call") {
-      await acceptIncomingCall();
+      await acceptIncomingCall(false);
       if (callSession.value?.status === "connected") {
         await store.addSystemNotice(session.peerDeviceId, `已接听 ${session.peerNickname} 的${session.media === "video" ? "视频" : "语音"}通话`);
       }
@@ -3884,6 +4060,9 @@ async function handleDesktopPetCallAction(action: "accept_call" | "reject_call",
       await rejectIncomingCall();
       await store.addSystemNotice(session.peerDeviceId, `已拒绝 ${session.peerNickname} 的${session.media === "video" ? "视频" : "语音"}通话`);
     }
+    // Do not make the pet action wait for the main window animation. The
+    // answer/reject signal must leave first, then the chat can be revealed.
+    void openCallConversation(session);
   } finally {
     callActionInProgress.value = false;
     await syncDesktopPetRuntime();
@@ -3965,6 +4144,7 @@ function stopPetAlertVisuals() {
 async function syncDesktopPetRuntime() {
   const alert = activePetAlert.value;
   const runtimeState: DesktopPetRuntimeState = {
+    revision: ++desktopPetRuntimeRevision,
     enabled: petAlertEnabled.value,
     pending_count: pendingAlertCount.value,
     temperature: Number(petAlertProbability.value),
@@ -3991,6 +4171,9 @@ async function feedbackPetAlert(alert: AlertRecord | null, result: AlertFeedback
   alertRecords.value = alertRecords.value.map((item) =>
     item.alertId === alert.alertId ? { ...item, handled: true, localFeedback: result } : item,
   );
+  // Close the badge and detail panel immediately; the monotonic revision keeps
+  // an older queued runtime snapshot from bringing this alert back afterward.
+  await syncDesktopPetRuntime();
   const feedback = await store.sendQuickAlertFeedback(alert.alertId, alert.senderDeviceId, result);
   if (feedback) {
     applyQuickAlertFeedback(feedback);
@@ -4904,20 +5087,25 @@ async function closeWindow() {
           </div>
         </div>
       </NModal>
-      <NModal
-        :show="!!callSession"
-        preset="card"
-        class="private-call-modal"
-        :style="{ width: callSession?.media === 'video' ? '520px' : '360px', maxWidth: 'calc(100vw - 32px)' }"
-        :mask-closable="false"
-        :closable="false"
-      >
-        <div v-if="callSession" class="private-call-panel">
-          <div class="private-call-title">
-            <strong>{{ callSession.status === 'incoming' ? `${callSession.peerNickname} 邀请${callSession.media === 'video' ? '视频' : '语音'}通话` : `${callSession.media === 'video' ? '视频' : '语音'}通话 · ${callSession.peerNickname}` }}</strong>
-            <span>{{ callSession.status === 'incoming' ? '等待接听' : callSession.status === 'outgoing' ? '正在呼叫' : callSession.status === 'failed' ? (callSession.error ?? '通话未建立') : '已连接' }}</span>
-          </div>
-          <div class="private-call-videos" :class="{ audio: callSession.media === 'audio' }">
+      <Teleport to="body">
+        <aside
+          v-if="callSession"
+          class="private-call-float"
+          :class="{ video: callSession.media === 'video', expanded: callPanelExpanded }"
+          :style="callPanelStyle"
+          role="dialog"
+          aria-label="语音或视频通话"
+        >
+          <div v-if="callSession" class="private-call-panel">
+            <div class="private-call-title" @mousedown="startCallPanelDrag">
+              <div class="private-call-summary">
+                <strong>{{ callSession.status === 'incoming' ? `${callSession.peerNickname} 邀请${callSession.media === 'video' ? '视频' : '语音'}通话` : `${callSession.media === 'video' ? '视频' : '语音'}通话 · ${callSession.peerNickname}` }}</strong>
+                <span>{{ callSession.status === 'incoming' ? '等待接听' : callSession.status === 'outgoing' ? '正在呼叫' : callSession.status === 'failed' ? (callSession.error ?? '通话未建立') : '已连接' }}</span>
+              </div>
+              <button class="private-call-toggle" type="button" title="弹出独立通话窗口" @click="openDetachedCallWindow">▣</button>
+              <button class="private-call-toggle" type="button" :title="callPanelExpanded ? '收起画面' : '展开画面'" @click="callPanelExpanded = !callPanelExpanded">{{ callPanelExpanded ? '⌃' : '⌄' }}</button>
+            </div>
+          <div v-if="callPanelExpanded" class="private-call-videos" :class="{ audio: callSession.media === 'audio' }">
             <video v-if="callSession.media === 'video'" ref="remoteCallVideo" autoplay playsinline></video>
             <video v-if="callSession.media === 'video'" ref="localCallVideo" autoplay muted playsinline></video>
             <div v-else class="private-call-audio-profile">
@@ -4929,7 +5117,7 @@ async function closeWindow() {
           </div>
           <NSpace justify="center">
             <template v-if="callSession.status === 'incoming'">
-              <NButton type="primary" @click="acceptIncomingCall">接听</NButton>
+              <NButton type="primary" @click="() => acceptIncomingCall()">接听</NButton>
               <NButton type="error" @click="rejectIncomingCall">拒绝</NButton>
             </template>
             <template v-else-if="callSession.status === 'failed'">
@@ -4943,7 +5131,8 @@ async function closeWindow() {
             </template>
           </NSpace>
         </div>
-      </NModal>
+        </aside>
+      </Teleport>
       <NModal
         :show="imagePreviewMessage !== null"
         class="image-preview-modal"
@@ -6831,10 +7020,17 @@ async function closeWindow() {
 
 <style scoped>
 .chat-call-actions { margin-left: auto; padding-right: 8px; }
+.private-call-float { position: fixed; z-index: 2500; top: 64px; right: 16px; width: min(276px, calc(100vw - 32px)); padding: 9px 11px; border: 1px solid var(--panel-border); border-radius: 8px; background: var(--panel-bg, #ffffff); box-shadow: 0 10px 28px rgba(18, 36, 52, 0.16); }
+.private-call-float.expanded { width: min(360px, calc(100vw - 32px)); padding: 14px; }
+.private-call-float.video.expanded { width: min(440px, calc(100vw - 32px)); }
 .private-call-panel { width: 100%; padding: 2px; }
-.private-call-title { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+.private-call-title { display: flex; align-items: center; justify-content: space-between; gap: 9px; margin-bottom: 8px; cursor: move; user-select: none; }
+.private-call-float.expanded .private-call-title { margin-bottom: 14px; }
+.private-call-summary { display: grid; min-width: 0; gap: 2px; }
 .private-call-title strong { color: #1f2937; font-size: 16px; }
 .private-call-title span { flex: 0 0 auto; color: #768397; font-size: 12px; }
+.private-call-summary strong, .private-call-summary span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.private-call-toggle { flex: 0 0 auto; width: 26px; height: 26px; border: 0; border-radius: 5px; background: #edf2f5; color: #526274; cursor: pointer; font-size: 16px; line-height: 1; }
 .private-call-videos { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 104px; gap: 9px; aspect-ratio: 4 / 3; min-height: 0; margin-bottom: 16px; padding: 9px; border: 1px solid #e5eaf1; border-radius: 8px; background: #f5f7fa; }
 .private-call-videos video { width: 100%; height: 100%; min-height: 0; border-radius: 7px; background: #202938; object-fit: cover; }
 .private-call-videos video:last-child { height: 88px; align-self: end; box-shadow: 0 4px 14px rgba(29, 42, 61, 0.2); }

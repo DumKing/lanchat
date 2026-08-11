@@ -1,6 +1,6 @@
 [package]
 name = "lanchat"
-version = "0.4.1"
+version = "0.4.2"
 description = "A serverless LAN chat desktop app"
 authors = ["LanChat"]
 edition = "2021"
@@ -42,6 +42,9 @@ reqwest = { version = "0.13.4", default-features = false, features = ["json", "r
 fs2 = "0.4.3"
 md5 = "0.8.0"
 tauri-plugin-updater = "2.10.1"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
 
 [dev-dependencies]
 tempfile = "3.27.0"

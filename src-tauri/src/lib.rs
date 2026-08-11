@@ -51,6 +51,11 @@ use tauri::{
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use uuid::Uuid;
 
+#[cfg(target_os = "windows")]
+use winreg::enums::HKEY_CURRENT_USER;
+#[cfg(target_os = "windows")]
+use winreg::RegKey;
+
 const UPDATE_REPOSITORY: &str = "DumKing/lanchat";
 const UPDATE_API_URL: &str = "https://api.github.com/repos/DumKing/lanchat/releases/latest";
 const UPDATE_METADATA_ASSET: &str = "lanchat-update.json";
@@ -62,6 +67,111 @@ const LOCAL_BUILD_VERSION: &str = concat!(
 
 const PREVIEW_MEDIA_CACHE_MAX_BYTES: usize = 30 * 1024 * 1024;
 const SUPER_ADMIN_PASSWORD_MD5: &str = "D7B9AF919901FA1598BDC21465E3EB3F";
+static MANAGED_UPDATE_PROXY_ENV: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+fn normalize_update_proxy(value: &str) -> Option<String> {
+    let raw = value.trim();
+    if raw.is_empty() || raw.eq_ignore_ascii_case("direct") {
+        return None;
+    }
+    let mut fallback = None;
+    for item in raw.split(';').map(str::trim).filter(|item| !item.is_empty()) {
+        let (scheme, endpoint) = item
+            .split_once('=')
+            .map(|(scheme, endpoint)| (Some(scheme.trim().to_ascii_lowercase()), endpoint.trim()))
+            .unwrap_or((None, item));
+        if endpoint.is_empty() {
+            continue;
+        }
+        let normalized = if endpoint.contains("://") {
+            endpoint.to_string()
+        } else {
+            format!("http://{endpoint}")
+        };
+        match scheme.as_deref() {
+            Some("https") => return Some(normalized),
+            Some("http") | None => fallback.get_or_insert(normalized),
+            _ => fallback.get_or_insert(normalized),
+        };
+    }
+    fallback
+}
+
+fn environment_update_proxy() -> Option<String> {
+    ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
+        .into_iter()
+        .find_map(|key| std::env::var(key).ok())
+        .and_then(|value| normalize_update_proxy(&value))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_system_update_proxy() -> Option<String> {
+    let key = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings")
+        .ok()?;
+    let enabled = key.get_value::<u32, _>("ProxyEnable").unwrap_or(0);
+    if enabled == 0 {
+        return None;
+    }
+    key.get_value::<String, _>("ProxyServer")
+        .ok()
+        .and_then(|value| normalize_update_proxy(&value))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn windows_system_update_proxy() -> Option<String> {
+    None
+}
+
+fn current_update_proxy() -> Option<String> {
+    windows_system_update_proxy().or_else(environment_update_proxy)
+}
+
+fn configure_update_http_client(client: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    let client = client.tcp_nodelay(true).pool_max_idle_per_host(8);
+    match current_update_proxy().and_then(|proxy| reqwest::Proxy::all(proxy).ok()) {
+        Some(proxy) => client.proxy(proxy),
+        None => client,
+    }
+}
+
+fn update_http_client() -> reqwest::Client {
+    configure_update_http_client(reqwest::Client::builder())
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// Tauri updater creates a new reqwest client for every check/download. Refreshing
+/// these process-local variables immediately before that work lets it follow a
+/// proxy changed while LanChat is already running.
+#[tauri::command]
+fn refresh_update_proxy() -> Result<(), String> {
+    let managed = MANAGED_UPDATE_PROXY_ENV.get_or_init(|| Mutex::new(None));
+    let mut managed = managed
+        .lock()
+        .map_err(|_| "更新代理配置状态不可用".to_string())?;
+    let detected = windows_system_update_proxy();
+
+    match detected {
+        Some(proxy) => {
+            std::env::set_var("HTTPS_PROXY", &proxy);
+            std::env::set_var("https_proxy", &proxy);
+            std::env::set_var("HTTP_PROXY", &proxy);
+            std::env::set_var("http_proxy", &proxy);
+            *managed = Some(proxy);
+        }
+        None => {
+            if let Some(previous) = managed.take() {
+                for key in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
+                    if std::env::var(&key).ok().as_deref() == Some(previous.as_str()) {
+                        std::env::remove_var(key);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -493,7 +603,7 @@ fn asset_url(release: &GithubRelease, predicate: impl Fn(&str) -> bool) -> Optio
 }
 
 async fn build_update_result(release: GithubRelease) -> UpdateCheckResult {
-    let client = reqwest::Client::new();
+    let client = update_http_client();
     let metadata = fetch_release_metadata(&client, &release)
         .await
         .unwrap_or_default();
@@ -580,7 +690,7 @@ fn get_app_version_info() -> AppVersionInfo {
 
 #[tauri::command]
 async fn check_for_update() -> Result<UpdateCheckResult, String> {
-    let release = reqwest::Client::new()
+    let release = update_http_client()
         .get(UPDATE_API_URL)
         .header("User-Agent", "LanChat")
         .send()
@@ -646,7 +756,7 @@ async fn install_portable_update(
         if sha256.len() != 64 || !sha256.chars().all(|value| value.is_ascii_hexdigit()) {
             return Err("绿色版更新缺少有效的 SHA-256 校验值".to_string());
         }
-        let bytes = reqwest::Client::new()
+        let bytes = update_http_client()
             .get(&download_url)
             .header("User-Agent", "LanChat")
             .send()
@@ -712,6 +822,22 @@ try {{
 #[cfg(test)]
 mod platform_info_tests {
     use super::*;
+
+    #[test]
+    fn normalizes_windows_system_proxy_values_for_the_updater() {
+        assert_eq!(
+            normalize_update_proxy("http=127.0.0.1:7890;https=127.0.0.1:7891"),
+            Some("http://127.0.0.1:7891".to_string())
+        );
+        assert_eq!(
+            normalize_update_proxy("127.0.0.1:7890"),
+            Some("http://127.0.0.1:7890".to_string())
+        );
+        assert_eq!(
+            normalize_update_proxy("socks5://127.0.0.1:1080"),
+            Some("socks5://127.0.0.1:1080".to_string())
+        );
+    }
 
     #[test]
     fn platform_info_matches_compiled_target() {
@@ -3024,6 +3150,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_platform_info,
             get_app_version_info,
+            refresh_update_proxy,
             check_for_update,
             is_portable_runtime,
             install_portable_update,

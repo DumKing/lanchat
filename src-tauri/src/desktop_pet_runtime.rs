@@ -82,6 +82,8 @@ fn run_desktop_pet_window(
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DesktopPetRuntimeState {
+    #[serde(default)]
+    pub revision: u64,
     pub enabled: bool,
     pub pending_count: u32,
     pub temperature: u8,
@@ -129,6 +131,27 @@ fn merge_runtime_state(
     previous: &DesktopPetRuntimeState,
     mut incoming: DesktopPetRuntimeState,
 ) -> DesktopPetRuntimeState {
+    // Calls from the Vue renderer can complete out of order. A feedback action
+    // must not be overwritten by a stale snapshot that was queued before it.
+    if incoming.revision < previous.revision {
+        return previous.clone();
+    }
+    // A visual stop can temporarily clear the active alert in the frontend while
+    // pending_count remains positive. Keep the last complete snapshot so an open
+    // desktop-pet detail panel never degrades to "告警：未知 IP".
+    if incoming.latest_alert_id.is_none()
+        && incoming.pending_count > 0
+        && previous.pending_count > 0
+        && previous.latest_alert_id.is_some()
+    {
+        incoming.latest_alert_id = previous.latest_alert_id.clone();
+        incoming.latest_sender = previous.latest_sender.clone();
+        incoming.latest_sender_address = previous.latest_sender_address.clone();
+        incoming.latest_content = previous.latest_content.clone();
+        incoming.latest_created_at = previous.latest_created_at;
+        return incoming;
+    }
+
     if previous.latest_alert_id != incoming.latest_alert_id || incoming.latest_alert_id.is_none() {
         return incoming;
     }
@@ -243,6 +266,53 @@ mod desktop_pet_enable_tests {
         );
         assert_eq!(merged.latest_content.as_deref(), Some("呱呱~呱~~"));
         assert_eq!(merged.latest_created_at, Some(1_700_000_000_000));
+    }
+
+    #[test]
+    fn pending_alert_keeps_known_sender_details_when_snapshot_temporarily_clears_active_alert() {
+        let previous = DesktopPetRuntimeState {
+            latest_alert_id: Some("alert-1".to_string()),
+            latest_sender: Some("王二".to_string()),
+            latest_sender_address: Some("192.168.1.23".to_string()),
+            latest_content: Some("呱呱~呱~~".to_string()),
+            latest_created_at: Some(1_700_000_000_000),
+            pending_count: 1,
+            flashing: true,
+            ..Default::default()
+        };
+        let incoming = DesktopPetRuntimeState {
+            pending_count: 1,
+            flashing: false,
+            ..Default::default()
+        };
+
+        let merged = merge_runtime_state(&previous, incoming);
+
+        assert_eq!(merged.latest_alert_id.as_deref(), Some("alert-1"));
+        assert_eq!(merged.latest_sender.as_deref(), Some("王二"));
+        assert_eq!(merged.latest_sender_address.as_deref(), Some("192.168.1.23"));
+    }
+
+    #[test]
+    fn ignores_an_out_of_order_runtime_snapshot_after_feedback() {
+        let previous = DesktopPetRuntimeState {
+            revision: 9,
+            pending_count: 0,
+            latest_alert_id: None,
+            ..Default::default()
+        };
+        let incoming = DesktopPetRuntimeState {
+            revision: 8,
+            pending_count: 1,
+            latest_alert_id: Some("already-handled-alert".to_string()),
+            ..Default::default()
+        };
+
+        let merged = merge_runtime_state(&previous, incoming);
+
+        assert_eq!(merged.revision, 9);
+        assert_eq!(merged.pending_count, 0);
+        assert!(merged.latest_alert_id.is_none());
     }
 }
 
