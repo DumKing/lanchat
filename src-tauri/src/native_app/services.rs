@@ -9,6 +9,7 @@ use crate::storage::{
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[derive(Clone)]
 pub struct NativeAppServices {
     storage: Arc<Storage>,
 }

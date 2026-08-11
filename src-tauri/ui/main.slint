@@ -6,6 +6,12 @@ export struct ChatMessage {
     outgoing: bool,
 }
 
+export struct AdminNotification {
+    title: string,
+    content: string,
+    status: string,
+}
+
 export component MainWindow inherits Window {
     in property <string> app-title;
     in property <string> nav-chat;
@@ -19,11 +25,15 @@ export component MainWindow inherits Window {
     in property <string> input-message;
     in property <string> send-label;
     in property <string> input-hint;
+    in property <int> page;
+    in property <string> page-title;
     title: root.app-title;
     width: 1180px;
     height: 760px;
     background: #f4f7f9;
     in property <[ChatMessage]> messages;
+    in property <[AdminNotification]> notifications;
+    callback select-page(int);
 
     HorizontalLayout {
         spacing: 0px;
@@ -35,11 +45,11 @@ export component MainWindow inherits Window {
                 padding-top: 18px;
                 spacing: 14px;
                 Text { text: "L"; color: white; font-size: 24px; horizontal-alignment: center; }
-                Rectangle { height: 42px; border-radius: 8px; background: #159e90; Text { text: root.nav-chat; color: white; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; } }
-                Text { text: root.nav-devices; color: #b9d8d4; font-size: 18px; horizontal-alignment: center; }
-                Text { text: root.nav-games; color: #b9d8d4; font-size: 18px; horizontal-alignment: center; }
-                Text { text: root.nav-alerts; color: #b9d8d4; font-size: 18px; horizontal-alignment: center; }
-                Text { text: root.nav-settings; color: #b9d8d4; font-size: 18px; horizontal-alignment: center; }
+                Button { text: root.nav-chat; clicked => { root.select-page(0); } }
+                Button { text: root.nav-devices; clicked => { root.select-page(1); } }
+                Button { text: root.nav-games; clicked => { root.select-page(2); } }
+                Button { text: root.nav-alerts; clicked => { root.select-page(3); } }
+                Button { text: root.nav-settings; clicked => { root.select-page(4); } }
             }
         }
 
@@ -61,8 +71,32 @@ export component MainWindow inherits Window {
         VerticalLayout {
             padding: 0px;
             spacing: 0px;
-            Rectangle { height: 78px; background: white; border-width: 1px; border-color: #e1e8ed; VerticalLayout { padding-left: 24px; padding-top: 15px; Text { text: root.lan-channel; font-size: 20px; font-weight: 700; } Text { text: root.channel-broadcast; color: #718693; } } }
-            Rectangle {
+            Rectangle { height: 78px; background: white; border-width: 1px; border-color: #e1e8ed; VerticalLayout { padding-left: 24px; padding-top: 15px; Text { text: root.page-title; font-size: 20px; font-weight: 700; } Text { text: root.page == 3 ? "本机已收到的管理员公告" : root.channel-broadcast; color: #718693; } } }
+            if root.page == 3 : Rectangle {
+                vertical-stretch: 1;
+                background: white;
+                ScrollView {
+                    VerticalLayout {
+                        padding: 24px;
+                        spacing: 12px;
+                        for notification in root.notifications: Rectangle {
+                            min-height: 86px;
+                            border-radius: 8px;
+                            background: #f2f7f7;
+                            border-width: 1px;
+                            border-color: #dce8e7;
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 5px;
+                                Text { text: notification.title; color: #163d3a; font-size: 16px; font-weight: 700; }
+                                Text { text: notification.content; color: #536c70; wrap: word-wrap; }
+                                Text { text: notification.status; color: #879a9d; font-size: 12px; }
+                            }
+                        }
+                    }
+                }
+            }
+            if root.page != 3 : Rectangle {
                 vertical-stretch: 1;
                 background: white;
                 ScrollView {
@@ -87,7 +121,7 @@ export component MainWindow inherits Window {
                     }
                 }
             }
-            Rectangle { height: 142px; background: #fafcfd; border-width: 1px; border-color: #e1e8ed; VerticalLayout { padding: 14px; spacing: 10px; Text { text: "☺   📎   🎙   @"; color: #607583; font-size: 18px; } LineEdit { placeholder-text: root.input-message; } HorizontalLayout { Text { text: root.input-hint; color: #9aa9b5; } Button { text: root.send-label; horizontal-stretch: 0; } } } }
+            if root.page == 0 : Rectangle { height: 142px; background: #fafcfd; border-width: 1px; border-color: #e1e8ed; VerticalLayout { padding: 14px; spacing: 10px; Text { text: "☺   📎   🎙   @"; color: #607583; font-size: 18px; } LineEdit { placeholder-text: root.input-message; } HorizontalLayout { Text { text: root.input-hint; color: #9aa9b5; } Button { text: root.send-label; horizontal-stretch: 0; } } } }
         }
     }
 }

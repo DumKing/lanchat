@@ -1,5 +1,7 @@
 fn main() {
     println!("cargo:rerun-if-changed=build-timestamp.txt");
+    println!("cargo:rerun-if-changed=ui/main.slint");
+    println!("cargo:rerun-if-changed=ui/pet.slint");
     let config = slint_build::CompilerConfiguration::new().with_style("fluent".to_string());
     let manifest_dir = std::path::PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("缺少 CARGO_MANIFEST_DIR"),

@@ -26,6 +26,16 @@ const NAVIGATION_PAGES: [NativePage; 5] = [
     NativePage::Settings,
 ];
 
+fn native_page_title(page: NativePage) -> &'static str {
+    match page {
+        NativePage::Chat => "局域网频道",
+        NativePage::Devices => "设备通讯录",
+        NativePage::Games => "内置游戏",
+        NativePage::Alerts => "告警与通知",
+        NativePage::Settings => "设置",
+    }
+}
+
 impl Default for NativePage {
     fn default() -> Self {
         Self::Chat
@@ -68,6 +78,32 @@ pub fn run() -> Result<(), String> {
         })
         .collect::<Vec<_>>();
     window.set_messages(ModelRc::new(VecModel::from(rows)));
+    window.set_page_title(SharedString::from(native_page_title(NativePage::Chat)));
+    window.set_page(0);
+    let notification_rows = services
+        .load_local_notification_history()?
+        .into_iter()
+        .map(|notification| AdminNotification {
+            title: SharedString::from(notification.title),
+            content: SharedString::from(notification.content),
+            status: SharedString::from(notification.status),
+        })
+        .collect::<Vec<_>>();
+    window.set_notifications(ModelRc::new(VecModel::from(notification_rows)));
+    let weak_window = window.as_weak();
+    window.on_select_page(move |page| {
+        let page = match page {
+            1 => NativePage::Devices,
+            2 => NativePage::Games,
+            3 => NativePage::Alerts,
+            4 => NativePage::Settings,
+            _ => NativePage::Chat,
+        };
+        let _ = weak_window.upgrade_in_event_loop(move |window| {
+            window.set_page(page as i32);
+            window.set_page_title(SharedString::from(native_page_title(page)));
+        });
+    });
     let pet_window = create_pet_window()?;
     window
         .show()
@@ -125,10 +161,15 @@ fn native_pet_resource_roots(app_data_dir: &Path) -> Vec<PetResourceRoot> {
 
 #[cfg(test)]
 mod tests {
-    use super::NativePage;
+    use super::{native_page_title, NativePage};
 
     #[test]
     fn native_shell_opens_on_chat_page() {
         assert_eq!(NativePage::default(), NativePage::Chat);
+    }
+
+    #[test]
+    fn notification_page_has_a_localized_title() {
+        assert_eq!(native_page_title(NativePage::Alerts), "告警与通知");
     }
 }
