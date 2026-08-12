@@ -724,6 +724,20 @@ fn start_native_network_refresh(
             .map(|window| window.get_active_conversation_id().to_string())
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_GROUP_ID.to_string());
+        let active_conversation = sidebar
+            .conversations
+            .iter()
+            .find(|conversation| conversation.id == conversation_id);
+        let active_title = active_conversation
+            .map(|conversation| conversation.title.clone())
+            .unwrap_or_else(|| native_page_title(NativePage::Chat).to_string());
+        let active_is_group = conversation_id == DEFAULT_GROUP_ID
+            || active_conversation.is_some_and(|conversation| conversation.is_group);
+        let members = channel_member_rows(
+            services
+                .load_channel_members(&conversation_id)
+                .unwrap_or_default(),
+        );
         let Ok(messages) = services.load_messages(&conversation_id, None) else {
             return;
         };
@@ -743,6 +757,9 @@ fn start_native_network_refresh(
             window.set_conversations(ModelRc::new(VecModel::from(conversations)));
             window.set_peers(ModelRc::new(VecModel::from(peers)));
             window.set_messages(ModelRc::new(VecModel::from(rows)));
+            window.set_page_title(SharedString::from(active_title));
+            window.set_active_conversation_is_group(active_is_group);
+            window.set_channel_members(ModelRc::new(VecModel::from(members)));
             if !alerts.is_empty() {
                 window.set_alerts(ModelRc::new(VecModel::from(alerts)));
             }
