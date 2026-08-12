@@ -297,8 +297,8 @@ export component MainWindow inherits Window {
             }
         }
 
-        // Contact and channel list.
-        Rectangle {
+        // Contact and channel list only belongs to the chat workspace.
+        if root.page == 0 : Rectangle {
             width: 300px;
             background: root.theme.surface;
             border-width: 1px;
