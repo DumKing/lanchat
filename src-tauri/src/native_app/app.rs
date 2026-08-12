@@ -3,11 +3,14 @@ include!(concat!(env!("OUT_DIR"), "/native_main_ui.rs"));
 use crate::native_app::{NativeAppServices, NativeUiSettings, PetWindow, TextKey, Translator};
 use crate::storage::DEFAULT_GROUP_ID;
 use crate::{
-    desktop_pet::{DesktopPetManager, PetPackageSource, PetResourceRoot},
+    desktop_pet::{DesktopPetManager, DesktopPetPackage, PetPackageSource, PetResourceRoot, PetStateKind},
     native_app::initial_idle_frame,
 };
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativePage {
@@ -202,7 +205,39 @@ fn create_pet_window() -> Result<Option<PetWindow>, String> {
         .map_err(|error| format!("加载桌宠首帧失败：{error}"))?;
     let pet_window = PetWindow::new().map_err(|error| format!("创建原生桌宠窗口失败：{error}"))?;
     pet_window.set_pet_image(image);
+    start_native_pet_animation(&pet_window, package);
     Ok(Some(pet_window))
+}
+
+fn start_native_pet_animation(pet_window: &PetWindow, package: DesktopPetPackage) {
+    let window = pet_window.as_weak();
+    let clip_index = Rc::new(Cell::new(0usize));
+    let elapsed_seconds = Rc::new(Cell::new(0.0f32));
+    let timer = Box::leak(Box::new(Timer::default()));
+    timer.start(TimerMode::Repeated, Duration::from_millis(80), move || {
+        let candidates = package.clip_candidates(PetStateKind::Idle, None);
+        if candidates.is_empty() {
+            return;
+        }
+        let current_index = clip_index.get() % candidates.len();
+        let clip = candidates[current_index];
+        let elapsed = elapsed_seconds.get() + 0.08;
+        if elapsed >= DesktopPetPackage::clip_cycle_seconds(clip) {
+            clip_index.set((current_index + 1 + fastrand::usize(..candidates.len())) % candidates.len());
+            elapsed_seconds.set(0.0);
+            return;
+        }
+        elapsed_seconds.set(elapsed);
+        let Some(frame) = DesktopPetPackage::frame_in_clip(clip, elapsed) else {
+            return;
+        };
+        let Ok(image) = slint::Image::load_from_path(&frame.path) else {
+            return;
+        };
+        if let Some(window) = window.upgrade() {
+            window.set_pet_image(image);
+        }
+    });
 }
 
 fn native_pet_resource_roots(app_data_dir: &Path) -> Vec<PetResourceRoot> {
