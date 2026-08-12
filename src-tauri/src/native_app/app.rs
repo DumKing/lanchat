@@ -544,7 +544,7 @@ pub fn run() -> Result<(), String> {
         sidebar.profile.device_id.clone(),
         room_store,
         pet_state,
-        pet_controller.borrow().clone(),
+        pet_controller,
     );
     window
         .show()
@@ -590,7 +590,7 @@ fn start_native_network_refresh(
     local_device_id: String,
     room_store: Rc<RefCell<NativeGameRoomStore>>,
     pet_state: Rc<RefCell<PetStateMachine>>,
-    pet_controller: Option<DesktopPetController>,
+    pet_controller: Rc<RefCell<Option<DesktopPetController>>>,
 ) {
     let window = window.as_weak();
     let alert_frames = Rc::new(RefCell::new(HashMap::new()));
@@ -620,7 +620,8 @@ fn start_native_network_refresh(
             .collect::<Vec<_>>();
         if !alerts.is_empty() {
             pet_state.borrow_mut().handle(PetEvent::AlertRaised);
-            if let (Some(controller), Some(alert)) = (pet_controller.as_ref(), quick_alerts.last())
+            if let (Some(controller), Some(alert)) =
+                (pet_controller.borrow().as_ref(), quick_alerts.last())
             {
                 controller.update(DesktopPetRuntimeState {
                     enabled: true,
@@ -655,7 +656,7 @@ fn start_native_network_refresh(
                 &network,
                 &event_bus,
                 &alert_frames,
-                pet_controller.as_ref(),
+                &pet_controller,
             );
         }
         for room in events
@@ -778,7 +779,7 @@ fn handle_native_pet_action(
     network: &Network,
     events: &NativeEventBus,
     alerts: &Rc<RefCell<HashMap<String, crate::protocol::QuickAlertFrame>>>,
-    pet_controller: Option<&DesktopPetController>,
+    pet_controller: &Rc<RefCell<Option<DesktopPetController>>>,
 ) {
     match action.action.as_str() {
         "open_main_window" => {
@@ -787,7 +788,7 @@ fn handle_native_pet_action(
             });
         }
         "stop_visuals" => {
-            if let Some(controller) = pet_controller {
+            if let Some(controller) = pet_controller.borrow().as_ref() {
                 controller.update(DesktopPetRuntimeState {
                     enabled: true,
                     ..Default::default()
@@ -847,7 +848,7 @@ fn handle_native_pet_action(
                     created_at: chrono::Utc::now().timestamp_millis(),
                 },
             ));
-            if let Some(controller) = pet_controller {
+            if let Some(controller) = pet_controller.borrow().as_ref() {
                 controller.update(DesktopPetRuntimeState {
                     enabled: true,
                     ..Default::default()
