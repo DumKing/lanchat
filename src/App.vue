@@ -409,6 +409,7 @@ const imagePreviewScale = ref(1);
 const VISIBLE_MESSAGE_WINDOW = 60;
 const visibleMessageEnd = ref(0);
 const hasMoreEarlierMessages = ref(true);
+const messagePaneFollowingLatest = ref(true);
 const memoryDiagnostic = ref({
   jsHeapBytes: null as number | null,
   jsHeapLimitBytes: null as number | null,
@@ -1365,6 +1366,11 @@ function scheduleAutomaticUpdateChecks() {
     void checkUpdates(false);
   }, UPDATE_CHECK_INTERVAL_MS);
 }
+function isMessagePaneAtBottom() {
+  const pane = messagePane.value;
+  if (!pane) return true;
+  return pane.scrollHeight - pane.scrollTop - pane.clientHeight < 32;
+}
 
 async function saveUpdateGithubToken() {
   const token = updateGithubTokenDraft.value.trim();
@@ -1399,7 +1405,7 @@ async function loadEarlierMessages() {
     hasMoreEarlierMessages.value = false;
     return;
   }
-  visibleMessageEnd.value = loaded;
+  visibleMessageEnd.value = Math.min(activeMessages.value.length, visibleMessageEnd.value + loaded);
   await nextTick();
   if (messagePane.value) messagePane.value.scrollTop = messagePane.value.scrollHeight;
 }
@@ -1408,6 +1414,7 @@ async function jumpToLatestMessages() {
   await scrollActiveChatToBottom();
 }
 function handleMessagePaneScroll() {
+  messagePaneFollowingLatest.value = isMessagePaneAtBottom();
   if (messagePane.value?.scrollTop !== undefined && messagePane.value.scrollTop < 24) {
     void loadEarlierMessages();
   }
@@ -1606,13 +1613,14 @@ watch([peers, profile], () => {
   if (changed) alertRecords.value = next;
 }, { deep: true });
 watch(activeMessages, (messages) => {
-  if (!hasLaterMessages.value) {
+  if (messagePaneFollowingLatest.value) {
     visibleMessageEnd.value = messages.length;
     void scrollActiveChatToBottom();
   }
 });
 watch(() => activeConversationId.value, () => {
   hasMoreEarlierMessages.value = true;
+  messagePaneFollowingLatest.value = true;
   visibleMessageEnd.value = activeMessages.value.length;
   void scrollActiveChatToBottom();
 });

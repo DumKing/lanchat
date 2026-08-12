@@ -575,9 +575,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
     error.value = "";
     try {
       const message = await api.sendMessage(conversationId, content);
-      if (conversationId === activeConversationId.value) {
-        appendOrUpdateMessage(message);
-      }
+      appendOrUpdateMessage(message);
       await refreshConversations();
       return message;
     } catch (err) {
