@@ -1054,19 +1054,24 @@ impl Storage {
         .map_err(|err| format!("读取撤回消息失败：{err}"))
     }
 
-    pub fn list_messages(&self, conversation_id: &str) -> Result<Vec<Message>, String> {
-        const MESSAGE_PAGE_LIMIT: i64 = 500;
+    pub fn list_messages_page(
+        &self,
+        conversation_id: &str,
+        before_created_at: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<Message>, String> {
+        let limit = limit.clamp(1, 100);
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, conversation_id, sender_device_id, content, message_type, file_name, file_size, file_url, file_mime_type, file_duration_ms, status, simulation_operator_device_id, simulation_operator_nickname, simulation_display_label, simulation_created_at, created_at
                  FROM (SELECT id, conversation_id, sender_device_id, content, message_type, file_name, file_size, file_url, file_mime_type, file_duration_ms, status, simulation_operator_device_id, simulation_operator_nickname, simulation_display_label, simulation_created_at, created_at
-                       FROM messages WHERE conversation_id = ?1 ORDER BY created_at DESC LIMIT ?2)
+                       FROM messages WHERE conversation_id = ?1 AND (?2 IS NULL OR created_at < ?2) ORDER BY created_at DESC LIMIT ?3)
                  ORDER BY created_at ASC",
             )
             .map_err(|err| format!("读取消息失败：{err}"))?;
         let rows = stmt
-            .query_map(params![conversation_id, MESSAGE_PAGE_LIMIT], |row| {
+            .query_map(params![conversation_id, before_created_at, limit], |row| {
                 let message_type: String = row.get(4)?;
                 let status: String = row.get(10)?;
                 let file_name: Option<String> = row.get(5)?;
@@ -1098,6 +1103,11 @@ impl Storage {
             .map_err(|err| format!("读取消息失败：{err}"))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|err| format!("解析消息失败：{err}"))
+    }
+
+    #[cfg(test)]
+    pub fn list_messages(&self, conversation_id: &str) -> Result<Vec<Message>, String> {
+        self.list_messages_page(conversation_id, None, 500)
     }
 
     pub fn get_conversation(&self, conversation_id: &str) -> Result<Option<Conversation>, String> {

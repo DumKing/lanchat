@@ -8,6 +8,7 @@ import { sameDeviceId, sortPeersForDisplay } from "../utils/peerPresentation";
 export const DEFAULT_GROUP_ID = "lan-room";
 const MAX_MESSAGES_PER_CONVERSATION = 500;
 const MAX_CACHED_CONVERSATIONS = 12;
+const MAX_ADMIN_NOTIFICATIONS = 120;
 
 export const useLanChatStore = defineStore("lanchat", () => {
   const profile = ref<Profile | null>(null);
@@ -42,6 +43,8 @@ export const useLanChatStore = defineStore("lanchat", () => {
   let peerRefreshTimer: number | null = null;
   let peerRefreshRevision = 0;
   let conversationRefreshRevision = 0;
+  let stopLanChatEvents: (() => void) | null = null;
+  let runtimeStarted = false;
   const messageCacheTouchedAt = new Map<string, number>();
 
   const activeConversation = computed(() =>
@@ -79,6 +82,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
   });
 
   async function initialize() {
+    if (runtimeStarted) return;
     loading.value = true;
     error.value = "";
     try {
@@ -86,7 +90,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
       await Promise.all([refreshPeers(), refreshConversations(), refreshAdminNotifications()]);
       await Promise.all([loadMessages(activeConversationId.value), refreshChannelMute(activeConversationId.value)]);
       startPeerRefreshTimer();
-      await registerLanChatEvents({
+      stopLanChatEvents = await registerLanChatEvents({
         onPeerOnline(peer) {
           pushDebugLog({ ts: Date.now(), level: "info", scope: "frontend", message: "收到 peer_online 事件", detail: `${peer.nickname} ${peer.address}:${peer.port}` });
           const previous = peers.value.find((item) => sameDeviceId(item.device_id, peer.device_id));
@@ -200,6 +204,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
           upsertAdminNotification(notification);
         },
       });
+      runtimeStarted = true;
     } catch (err) {
       error.value = stringifyError(err);
     } finally {
@@ -210,15 +215,29 @@ export const useLanChatStore = defineStore("lanchat", () => {
   function startPeerRefreshTimer() {
     if (peerRefreshTimer !== null || typeof window === "undefined") return;
     peerRefreshTimer = window.setInterval(() => {
+      if (document.visibilityState === "hidden") return;
       refreshPeers().catch(() => undefined);
     }, 10_000);
   }
+
+  function stopRuntime() {
+    runtimeStarted = false;
+    if (peerRefreshTimer !== null && typeof window !== "undefined") {
+      window.clearInterval(peerRefreshTimer);
+      peerRefreshTimer = null;
+    }
+    stopLanChatEvents?.();
+    stopLanChatEvents = null;
+  }
+
   async function refreshPeers() {
     const revision = ++peerRefreshRevision;
     const next = await api.listPeers();
     if (revision !== peerRefreshRevision) return;
-    peers.value = sortPeersForDisplay(dedupePeers(next));
-    pushDebugLog({ ts: Date.now(), level: "info", scope: "frontend", message: "刷新设备列表", detail: `${peers.value.filter((peer) => peer.online).length}/${peers.value.length} 在线` });
+    const normalized = sortPeersForDisplay(dedupePeers(next));
+    if (samePeerSnapshot(peers.value, normalized)) return;
+    peers.value = normalized;
+    pushDebugLog({ ts: Date.now(), level: "info", scope: "frontend", message: "刷新设备列表", detail: `${normalized.filter((peer) => peer.online).length}/${normalized.length} 在线` });
   }
 
   async function refreshConversations() {
@@ -243,6 +262,16 @@ export const useLanChatStore = defineStore("lanchat", () => {
 
   async function loadMessages(conversationId: string) {
     cacheMessages(conversationId, await api.listMessages(conversationId));
+  }
+
+  async function loadEarlierMessages(conversationId: string) {
+    const current = messagesByConversation.value[conversationId] ?? [];
+    const beforeCreatedAt = current[0]?.created_at;
+    if (!beforeCreatedAt) return 0;
+    const page = await api.listMessages(conversationId, beforeCreatedAt);
+    if (page.length === 0) return 0;
+    cacheMessages(conversationId, [...page, ...current]);
+    return page.length;
   }
 
   async function loadChannelMembers(conversationId: string) {
@@ -287,7 +316,9 @@ export const useLanChatStore = defineStore("lanchat", () => {
   }
 
   async function refreshAdminNotifications() {
-    adminNotifications.value = await api.listAdminNotifications();
+    adminNotifications.value = (await api.listAdminNotifications())
+      .sort((a, b) => b.created_at - a.created_at)
+      .slice(0, MAX_ADMIN_NOTIFICATIONS);
   }
 
   function upsertAdminNotification(notification: AdminNotification) {
@@ -295,7 +326,9 @@ export const useLanChatStore = defineStore("lanchat", () => {
     const next = [...adminNotifications.value];
     if (index >= 0) next[index] = notification;
     else next.unshift(notification);
-    adminNotifications.value = next.sort((a, b) => b.created_at - a.created_at);
+    adminNotifications.value = next
+      .sort((a, b) => b.created_at - a.created_at)
+      .slice(0, MAX_ADMIN_NOTIFICATIONS);
   }
 
   async function sendAdminNotification(targetDeviceId: string | null, targetScope: "device" | "all_online", title: string, content: string, template: string, supportUrl: string | null, displayMode: string, deadlineAt: number | null, timeoutPolicy: string, forceOpenMainWindow: boolean) {
@@ -809,6 +842,27 @@ export const useLanChatStore = defineStore("lanchat", () => {
     cacheMessages(message.conversation_id, next);
   }
 
+  // 在线探测会持续更新 last_seen_at。这个字段不影响界面，避免它驱动整列列表重绘。
+  function samePeerSnapshot(left: Peer[], right: Peer[]) {
+    if (left.length !== right.length) return false;
+    return left.every((peer, index) => {
+      const next = right[index];
+      return next !== undefined
+        && peer.device_id === next.device_id
+        && peer.nickname === next.nickname
+        && peer.note === next.note
+        && peer.avatar === next.avatar
+        && peer.address === next.address
+        && peer.port === next.port
+        && peer.online === next.online
+        && peer.client_kind === next.client_kind
+        && peer.supports_chat === next.supports_chat
+        && peer.nickname_locked === next.nickname_locked
+        && peer.build_version === next.build_version
+        && peer.build_timestamp === next.build_timestamp;
+    });
+  }
+
   function cacheMessages(conversationId: string, messages: Message[]) {
     messageCacheTouchedAt.set(conversationId, Date.now());
     const next = {
@@ -887,10 +941,12 @@ export const useLanChatStore = defineStore("lanchat", () => {
     latestAdminAlertPushPolicy,
     adminNotifications,
     initialize,
+    stopRuntime,
     refreshPeers,
     refreshConversations,
     refreshAdminNotifications,
     loadMessages,
+    loadEarlierMessages,
     loadChannelMembers,
     refreshChannelMute,
     selectConversation,

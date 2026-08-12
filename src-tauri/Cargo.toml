@@ -1,6 +1,6 @@
 [package]
 name = "lanchat"
-version = "0.4.2"
+version = "0.4.3"
 description = "A serverless LAN chat desktop app"
 authors = ["LanChat"]
 edition = "2021"
@@ -36,12 +36,13 @@ hex = "0.4.3"
 if-addrs = "0.15.0"
 eframe = "0.28"
 winit = "0.29.15"
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 fastrand = "2.4.1"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 fs2 = "0.4.3"
 md5 = "0.8.0"
 tauri-plugin-updater = "2.10.1"
+keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

@@ -42,6 +42,7 @@ use storage::{
     Peer, Profile, SimulationAudit, Storage, DEFAULT_GROUP_ID,
 };
 use tauri::image::Image;
+use tokio::io::AsyncWriteExt;
 use tauri::menu::{Menu, MenuItemBuilder, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
@@ -59,6 +60,8 @@ use winreg::RegKey;
 const UPDATE_REPOSITORY: &str = "DumKing/lanchat";
 const UPDATE_API_URL: &str = "https://api.github.com/repos/DumKing/lanchat/releases/latest";
 const UPDATE_METADATA_ASSET: &str = "lanchat-update.json";
+const UPDATE_GITHUB_TOKEN_SERVICE: &str = "com.lanchat.desktop.update";
+const UPDATE_GITHUB_TOKEN_ACCOUNT: &str = "github-token";
 const LOCAL_BUILD_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
     "+",
@@ -66,6 +69,7 @@ const LOCAL_BUILD_VERSION: &str = concat!(
 );
 
 const PREVIEW_MEDIA_CACHE_MAX_BYTES: usize = 30 * 1024 * 1024;
+const PREVIEW_MEDIA_CACHE_TOTAL_LIMIT_BYTES: u64 = 300 * 1024 * 1024;
 const SUPER_ADMIN_PASSWORD_MD5: &str = "D7B9AF919901FA1598BDC21465E3EB3F";
 static MANAGED_UPDATE_PROXY_ENV: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
@@ -139,6 +143,44 @@ fn update_http_client() -> reqwest::Client {
     configure_update_http_client(reqwest::Client::builder())
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+fn update_github_token_entry() -> Result<keyring::Entry, String> {
+    keyring::Entry::new(UPDATE_GITHUB_TOKEN_SERVICE, UPDATE_GITHUB_TOKEN_ACCOUNT)
+        .map_err(|error| format!("访问系统凭据库失败：{error}"))
+}
+
+fn read_update_github_token() -> Option<String> {
+    let token = update_github_token_entry().ok()?.get_password().ok()?;
+    let token = token.trim().to_string();
+    (!token.is_empty()).then_some(token)
+}
+
+fn authorized_update_request(client: &reqwest::Client, url: &str) -> reqwest::RequestBuilder {
+    let request = client.get(url).header("User-Agent", "LanChat");
+    match read_update_github_token() {
+        Some(token) => request.bearer_auth(token),
+        None => request,
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateGithubTokenInfo {
+    configured: bool,
+    masked_value: Option<String>,
+}
+
+fn update_github_token_info() -> UpdateGithubTokenInfo {
+    let token = read_update_github_token();
+    let masked_value = token.as_ref().map(|value| {
+        let suffix = value.chars().rev().take(4).collect::<String>().chars().rev().collect::<String>();
+        format!("已配置（末四位：{suffix}）")
+    });
+    UpdateGithubTokenInfo {
+        configured: token.is_some(),
+        masked_value,
+    }
 }
 
 /// Tauri updater creates a new reqwest client for every check/download. Refreshing
@@ -586,9 +628,7 @@ async fn fetch_release_metadata(
     release: &GithubRelease,
 ) -> Option<ReleaseUpdateMetadata> {
     let asset = find_release_asset(release, |name| name == UPDATE_METADATA_ASSET)?;
-    let response = client
-        .get(&asset.browser_download_url)
-        .header("User-Agent", "LanChat")
+    let response = authorized_update_request(client, &asset.browser_download_url)
         .send()
         .await
         .ok()?;
@@ -690,9 +730,8 @@ fn get_app_version_info() -> AppVersionInfo {
 
 #[tauri::command]
 async fn check_for_update() -> Result<UpdateCheckResult, String> {
-    let release = update_http_client()
-        .get(UPDATE_API_URL)
-        .header("User-Agent", "LanChat")
+    let client = update_http_client();
+    let release = authorized_update_request(&client, UPDATE_API_URL)
         .send()
         .await
         .map_err(|err| format!("检查更新失败：{err}"))?
@@ -702,6 +741,32 @@ async fn check_for_update() -> Result<UpdateCheckResult, String> {
         .await
         .map_err(|err| format!("解析更新信息失败：{err}"))?;
     Ok(build_update_result(release).await)
+}
+
+#[tauri::command]
+fn get_update_github_token_info() -> UpdateGithubTokenInfo {
+    update_github_token_info()
+}
+
+#[tauri::command]
+fn save_update_github_token(token: String) -> Result<UpdateGithubTokenInfo, String> {
+    let token = token.trim();
+    if token.len() < 20 || token.chars().any(char::is_whitespace) {
+        return Err("GitHub Token 格式不正确，请粘贴有效的 Personal Access Token".to_string());
+    }
+    update_github_token_entry()?
+        .set_password(token)
+        .map_err(|error| format!("保存 GitHub Token 失败：{error}"))?;
+    Ok(update_github_token_info())
+}
+
+#[tauri::command]
+fn clear_update_github_token() -> Result<UpdateGithubTokenInfo, String> {
+    let entry = update_github_token_entry()?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(update_github_token_info()),
+        Err(error) => Err(format!("清除 GitHub Token 失败：{error}")),
+    }
 }
 
 #[tauri::command]
@@ -1354,9 +1419,11 @@ async fn broadcast_channel_notice(
 fn list_messages(
     state: State<'_, AppState>,
     conversation_id: String,
+    before_created_at: Option<i64>,
+    limit: Option<i64>,
 ) -> Result<Vec<Message>, String> {
     ensure_full_client(&state, "聊天记录")?;
-    state.storage.list_messages(&conversation_id)
+    state.storage.list_messages_page(&conversation_id, before_created_at, limit.unwrap_or(60))
 }
 
 #[tauri::command]
@@ -1682,6 +1749,41 @@ fn preview_media_cache_info(app: &tauri::AppHandle) -> Result<PreviewMediaCacheI
     })
 }
 
+fn enforce_preview_media_cache_limit(directory: &Path) -> Result<(), String> {
+    let mut files = Vec::new();
+    let mut total_bytes = 0_u64;
+    if !directory.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(directory).map_err(|err| format!("读取图片缓存失败：{err}"))? {
+        let entry = entry.map_err(|err| format!("读取图片缓存项失败：{err}"))?;
+        let metadata = entry.metadata().map_err(|err| format!("读取图片缓存信息失败：{err}"))?;
+        if metadata.is_file() {
+            total_bytes += metadata.len();
+            files.push((
+                metadata.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+                metadata.len(),
+                entry.path(),
+            ));
+        }
+    }
+    files.sort_by_key(|(modified, _, _)| *modified);
+    for (_, size, path) in files {
+        if total_bytes <= PREVIEW_MEDIA_CACHE_TOTAL_LIMIT_BYTES {
+            break;
+        }
+        std::fs::remove_file(&path).map_err(|err| format!("清理过期图片缓存失败：{err}"))?;
+        total_bytes = total_bytes.saturating_sub(size);
+    }
+    Ok(())
+}
+
+fn touch_preview_media_cache_file(path: &Path) {
+    if let Ok(file) = OpenOptions::new().write(true).open(path) {
+        let _ = file.set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now()));
+    }
+}
+
 #[tauri::command]
 async fn cache_preview_media(
     app: tauri::AppHandle,
@@ -1697,6 +1799,7 @@ async fn cache_preview_media(
     std::fs::create_dir_all(&directory).map_err(|err| format!("创建图片缓存目录失败：{err}"))?;
     let target = directory.join(preview_cache_file_name(&message_id, &file_name));
     if target.is_file() {
+        touch_preview_media_cache_file(&target);
         return Ok(target.to_string_lossy().to_string());
     }
     let response = reqwest::get(url)
@@ -1708,16 +1811,33 @@ async fn cache_preview_media(
     if response.content_length().unwrap_or(0) > PREVIEW_MEDIA_CACHE_MAX_BYTES as u64 {
         return Err("图片预览超过 30MB，未缓存到本机".to_string());
     }
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|err| format!("读取图片预览失败：{err}"))?;
-    if bytes.len() > PREVIEW_MEDIA_CACHE_MAX_BYTES {
-        return Err("图片预览超过 30MB，未缓存到本机".to_string());
-    }
     let temporary = target.with_extension("downloading");
-    std::fs::write(&temporary, &bytes).map_err(|err| format!("写入图片缓存失败：{err}"))?;
+    let mut file = tokio::fs::File::create(&temporary)
+        .await
+        .map_err(|err| format!("创建图片缓存失败：{err}"))?;
+    let mut downloaded = 0usize;
+    let mut response = response;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|err| format!("读取图片预览失败：{err}"))?
+    {
+        downloaded = downloaded.saturating_add(chunk.len());
+        if downloaded > PREVIEW_MEDIA_CACHE_MAX_BYTES {
+            drop(file);
+            let _ = tokio::fs::remove_file(&temporary).await;
+            return Err("图片预览超过 30MB，未缓存到本机".to_string());
+        }
+        file.write_all(&chunk)
+            .await
+            .map_err(|err| format!("写入图片缓存失败：{err}"))?;
+    }
+    file.flush()
+        .await
+        .map_err(|err| format!("完成图片缓存失败：{err}"))?;
+    drop(file);
     std::fs::rename(&temporary, &target).map_err(|err| format!("完成图片缓存失败：{err}"))?;
+    enforce_preview_media_cache_limit(&directory)?;
     Ok(target.to_string_lossy().to_string())
 }
 
@@ -3152,6 +3272,9 @@ pub fn run() {
             get_app_version_info,
             refresh_update_proxy,
             check_for_update,
+            get_update_github_token_info,
+            save_update_github_token,
+            clear_update_github_token,
             is_portable_runtime,
             install_portable_update,
             authenticate_super_admin,

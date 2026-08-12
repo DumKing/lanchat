@@ -46,7 +46,7 @@ import ChatComposerInput from "./components/ChatComposerInput.vue";
 import { DEFAULT_GROUP_ID, useLanChatStore } from "./stores/lanchat";
 import { useDesktopPetStore } from "./stores/desktopPet";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, ExternalPushConfig, ExternalPushKind, PetPackageSource, PetStateKind, PetStatePlaybackConfig } from "./types/desktop-pet";
-import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AppVersionInfo, CallSignal, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Nudge, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, SimulationMeta, TrayAttentionItem, UpdateCheckResult } from "./types/lanchat";
+import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AppVersionInfo, CallSignal, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Nudge, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, SimulationMeta, TrayAttentionItem, UpdateCheckResult, UpdateGithubTokenInfo } from "./types/lanchat";
 import { DDZ_TURN_TIMEOUT_MS, canBeat, dealHands, evaluatePlay, isTurnTimedOut, playLabel, sortCards, turnRemainingSeconds, type DdzCard, type DdzPhase, type DdzPlay } from "./games/doudizhu";
 import { GOMOKU_TURN_TIMEOUT_MS, chooseAutoGomokuPoint, cloneGomokuBoard, createGomokuBoard, gomokuStoneLabel, gomokuTurnRemainingSeconds, isGomokuTurnTimedOut, placeGomokuStone, type GomokuBoard, type GomokuPhase, type GomokuPoint, type GomokuStone } from "./games/gomoku";
 import { cloneXiangqiBoard, createXiangqiBoard, createXiangqiDisplayGrid, isLegalXiangqiMove, moveXiangqiPiece, otherXiangqiSide, resignXiangqiSide, undoXiangqiMove, xiangqiPieceLabel, xiangqiSideLabel, type XiangqiBoard, type XiangqiPhase, type XiangqiPiece, type XiangqiPoint, type XiangqiSide } from "./games/xiangqi";
@@ -343,6 +343,7 @@ const portDraft = ref(18145);
 const avatarDraft = ref("");
 const profileAvatarInput = ref<HTMLInputElement | null>(null);
 const adminNotificationImageInput = ref<HTMLInputElement | null>(null);
+const adminNotificationHistoryOpen = ref(false);
 const AVATAR_MAX_BYTES = 5 * 1024 * 1024;
 const canRepairWindowsNetwork = computed(() => platformInfo.value?.windowsFirewallRepairSupported ?? true);
 const networkRepairDescription = computed(() => {
@@ -397,10 +398,42 @@ const deviceSearch = ref("");
 const selectedPeerId = ref("");
 const peerNoteDraft = ref("");
 const previewMediaPaths = ref<Record<string, string>>({});
+const avatarBlobUrls = ref<Record<string, string>>({});
+const avatarBlobUrlOrder = new Map<string, number>();
+const avatarBlobUrlPending = new Set<string>();
+const imagePreviewBlobUrls = new Map<string, string>();
 const previewMediaCacheInfo = ref<PreviewMediaCacheInfo | null>(null);
 const previewMediaCacheClearing = ref(false);
 const imagePreviewMessage = ref<Message | null>(null);
 const imagePreviewScale = ref(1);
+const VISIBLE_MESSAGE_WINDOW = 60;
+const visibleMessageEnd = ref(0);
+const hasMoreEarlierMessages = ref(true);
+const memoryDiagnostic = ref({
+  jsHeapBytes: null as number | null,
+  jsHeapLimitBytes: null as number | null,
+  cachedConversations: 0,
+  cachedMessages: 0,
+  visibleMessages: 0,
+  avatarBytes: 0,
+  previewCacheBytes: 0,
+});
+const memoryDiagnosticConversationRows = computed(() => Object.entries(messagesByConversation.value)
+  .map(([conversationId, items]) => ({
+    conversationId,
+    title: conversations.value.find((conversation) => conversation.id === conversationId)?.title ?? conversationId,
+    count: items.length,
+  }))
+  .sort((left, right) => right.count - left.count)
+  .slice(0, 5));
+const memoryDiagnosticAvatarRows = computed(() => [
+  ...(profile.value ? [{ name: profile.value.nickname || "本机", avatar: profile.value.avatar }] : []),
+  ...peers.value.map((peer) => ({ name: peerDisplayName(peer), avatar: peer.avatar })),
+]
+  .map((entry) => ({ name: entry.name, bytes: base64ByteLength(entry.avatar) }))
+  .filter((entry) => entry.bytes > 0)
+  .sort((left, right) => right.bytes - left.bytes)
+  .slice(0, 5));
 const operationNotice = ref("");
 let operationNoticeTimer: ReturnType<typeof setTimeout> | undefined;
 let desktopPetRuntimeRevision = 0;
@@ -427,6 +460,7 @@ type DetachedCallWindow = {
   status: HTMLElement;
   remoteVideo: HTMLVideoElement | null;
   localVideo: HTMLVideoElement | null;
+  remoteAudio: HTMLAudioElement | null;
 };
 const callSession = ref<CallSession | null>(null);
 const callPanelExpanded = ref(false);
@@ -438,6 +472,7 @@ const callPanelStyle = computed(() => callPanelPosition.value
 const incomingCallSignal = ref<CallSignal | null>(null);
 const localCallVideo = ref<HTMLVideoElement | null>(null);
 const remoteCallVideo = ref<HTMLVideoElement | null>(null);
+const remoteCallAudio = ref<HTMLAudioElement | null>(null);
 const callMuted = ref(false);
 const callCameraOn = ref(true);
 const callActionInProgress = ref(false);
@@ -474,10 +509,18 @@ const appVersionInfo = ref<AppVersionInfo | null>(null);
 const updateInfo = ref<UpdateCheckResult | null>(readSavedUpdateInfo());
 const updateChecking = ref(false);
 const updateError = ref("");
+const updateGithubTokenInfo = ref<UpdateGithubTokenInfo | null>(null);
+const updateGithubTokenDraft = ref("");
+const updateGithubTokenSaving = ref(false);
 const updateReminderOpen = ref(false);
 const nativeUpdateInstalling = ref(false);
 const nativeUpdateProgress = ref({ downloaded: 0, total: 0, phase: "idle" as "idle" | "downloading" | "installing" });
 const forceUpdateRequired = computed(() => updateInfo.value?.forceRequired === true);
+const visibleMessages = computed(() => {
+  const end = visibleMessageEnd.value || activeMessages.value.length;
+  return activeMessages.value.slice(Math.max(0, end - VISIBLE_MESSAGE_WINDOW), end);
+});
+const hasLaterMessages = computed(() => (visibleMessageEnd.value || activeMessages.value.length) < activeMessages.value.length);
 const nativeUpdateProgressPercent = computed(() => {
   if (nativeUpdateProgress.value.total <= 0) return nativeUpdateInstalling.value ? 0 : 100;
   return Math.min(100, Math.round((nativeUpdateProgress.value.downloaded / nativeUpdateProgress.value.total) * 100));
@@ -498,6 +541,24 @@ const visibleAdminAnnouncement = computed(() => {
   const deviceId = profile.value?.device_id;
   if (!deviceId) return null;
   return adminNotifications.value.find((item) => item.target_device_id === deviceId && item.display_mode === "dismissible" && !dismissedAdminNotificationIds.value.includes(item.notification_id)) ?? null;
+});
+const pendingAdminNotificationCount = computed(() => {
+  const deviceId = profile.value?.device_id;
+  if (!deviceId) return 0;
+  return adminNotifications.value.filter((item) => {
+    if (item.target_device_id !== deviceId) return false;
+    if (item.display_mode === "requires_confirmation") {
+      return ["pending", "rejected", "expired_locked"].includes(item.status);
+    }
+    return item.display_mode === "dismissible" && !dismissedAdminNotificationIds.value.includes(item.notification_id);
+  }).length;
+});
+const recipientAdminNotifications = computed(() => {
+  const deviceId = profile.value?.device_id;
+  if (!deviceId) return [];
+  return adminNotifications.value
+    .filter((item) => item.target_device_id === deviceId)
+    .sort((left, right) => right.created_at - left.created_at);
 });
 const adminNotificationTargetOptions = computed(() => onlinePeers.value.map((peer) => ({
   label: `${peerDisplayName(peer)} · ${peer.address} · ${peer.device_id}`,
@@ -1304,6 +1365,53 @@ function scheduleAutomaticUpdateChecks() {
     void checkUpdates(false);
   }, UPDATE_CHECK_INTERVAL_MS);
 }
+
+async function saveUpdateGithubToken() {
+  const token = updateGithubTokenDraft.value.trim();
+  if (!token) return;
+  updateGithubTokenSaving.value = true;
+  try {
+    updateGithubTokenInfo.value = await api.saveUpdateGithubToken(token);
+    updateGithubTokenDraft.value = "";
+    updateError.value = "";
+  } catch (err) {
+    updateError.value = `保存 GitHub Token 失败：${stringifyError(err)}`;
+  } finally {
+    updateGithubTokenSaving.value = false;
+  }
+}
+
+async function clearUpdateGithubToken() {
+  updateGithubTokenSaving.value = true;
+  try {
+    updateGithubTokenInfo.value = await api.clearUpdateGithubToken();
+    updateError.value = "";
+  } catch (err) {
+    updateError.value = `清除 GitHub Token 失败：${stringifyError(err)}`;
+  } finally {
+    updateGithubTokenSaving.value = false;
+  }
+}
+async function loadEarlierMessages() {
+  if (!hasMoreEarlierMessages.value) return;
+  const loaded = await store.loadEarlierMessages(activeConversationId.value);
+  if (loaded === 0) {
+    hasMoreEarlierMessages.value = false;
+    return;
+  }
+  visibleMessageEnd.value = loaded;
+  await nextTick();
+  if (messagePane.value) messagePane.value.scrollTop = messagePane.value.scrollHeight;
+}
+async function jumpToLatestMessages() {
+  visibleMessageEnd.value = activeMessages.value.length;
+  await scrollActiveChatToBottom();
+}
+function handleMessagePaneScroll() {
+  if (messagePane.value?.scrollTop !== undefined && messagePane.value.scrollTop < 24) {
+    void loadEarlierMessages();
+  }
+}
 async function installNativeUpdate(force = false) {
   if (nativeUpdateInstalling.value) return;
   nativeUpdateInstalling.value = true;
@@ -1370,9 +1478,11 @@ async function openReleasePage() {
 onMounted(async () => {
   platformInfo.value = await api.getPlatformInfo().catch(() => null);
   appVersionInfo.value = await api.getAppVersionInfo().catch(() => null);
+  updateGithubTokenInfo.value = await api.getUpdateGithubTokenInfo().catch(() => null);
   await store.initialize();
   await restoreSavedSuperAdminSession();
   previewMediaCacheInfo.value = await api.getPreviewMediaCacheInfo().catch(() => null);
+  await refreshMemoryDiagnostic();
   await desktopPetStore.initialize();
   if (desktopPetSettings.value) {
     petAlertEnabled.value = desktopPetSettings.value.enabled;
@@ -1431,6 +1541,10 @@ onMounted(async () => {
   }
 });
 onUnmounted(() => {
+  store.stopRuntime();
+  Object.values(avatarBlobUrls.value).forEach((url) => URL.revokeObjectURL(url));
+  imagePreviewBlobUrls.forEach((url) => URL.revokeObjectURL(url));
+  imagePreviewBlobUrls.clear();
   clearCallSession();
   stopCallPanelDrag();
   stopPaneResize();
@@ -1492,12 +1606,14 @@ watch([peers, profile], () => {
   if (changed) alertRecords.value = next;
 }, { deep: true });
 watch(activeMessages, (messages) => {
-  void scrollActiveChatToBottom();
-  for (const message of messages) {
-    void cacheImagePreview(message);
+  if (!hasLaterMessages.value) {
+    visibleMessageEnd.value = messages.length;
+    void scrollActiveChatToBottom();
   }
 });
 watch(() => activeConversationId.value, () => {
+  hasMoreEarlierMessages.value = true;
+  visibleMessageEnd.value = activeMessages.value.length;
   void scrollActiveChatToBottom();
 });
 watch(activeSection, (section) => {
@@ -3736,6 +3852,15 @@ function callSignalFrame(callId: string, kind: CallSignal["kind"], media: CallMe
     created_at: Date.now(),
   } satisfies CallSignal;
 }
+async function ensureCallMediaPlaying(element: HTMLMediaElement | null, role: "远端音频" | "远端视频") {
+  if (!element) return;
+  try {
+    await element.play();
+  } catch (error) {
+    // 某些 WebView 会在流切换时暂时拒绝自动播放。下一次用户操作或流更新会再次尝试。
+    console.debug(`${role}等待用户播放许可`, error);
+  }
+}
 async function attachCallStreams() {
   await nextTick();
   if (localCallVideo.value && callLocalStream) {
@@ -3743,6 +3868,11 @@ async function attachCallStreams() {
   }
   if (remoteCallVideo.value && callRemoteStream) {
     remoteCallVideo.value.srcObject = callRemoteStream;
+    void ensureCallMediaPlaying(remoteCallVideo.value, "远端视频");
+  }
+  if (remoteCallAudio.value && callRemoteStream) {
+    remoteCallAudio.value.srcObject = callRemoteStream;
+    void ensureCallMediaPlaying(remoteCallAudio.value, "远端音频");
   }
   syncDetachedCallWindow();
 }
@@ -3771,7 +3901,14 @@ function syncDetachedCallWindow() {
   current.title.textContent = `${session.media === "video" ? "视频" : "语音"}通话 · ${session.peerNickname}`;
   current.status.textContent = callStatusLabel(session);
   if (current.localVideo && callLocalStream) current.localVideo.srcObject = callLocalStream;
-  if (current.remoteVideo && callRemoteStream) current.remoteVideo.srcObject = callRemoteStream;
+  if (current.remoteVideo && callRemoteStream) {
+    current.remoteVideo.srcObject = callRemoteStream;
+    void ensureCallMediaPlaying(current.remoteVideo, "远端视频");
+  }
+  if (current.remoteAudio && callRemoteStream) {
+    current.remoteAudio.srcObject = callRemoteStream;
+    void ensureCallMediaPlaying(current.remoteAudio, "远端音频");
+  }
 }
 async function openDetachedCallWindow() {
   const session = callSession.value;
@@ -3809,11 +3946,18 @@ async function openDetachedCallWindow() {
     shell.append(header);
     let remoteVideo: HTMLVideoElement | null = null;
     let localVideo: HTMLVideoElement | null = null;
+    let remoteAudio: HTMLAudioElement | null = null;
+    remoteAudio = doc.createElement("audio");
+    remoteAudio.autoplay = true;
+    remoteAudio.controls = false;
+    remoteAudio.style.cssText = "position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;";
+    shell.append(remoteAudio);
     if (session.media === "video") {
       const videoStage = doc.createElement("section");
       videoStage.style.cssText = "position:relative;flex:1;min-height:0;border-radius:8px;overflow:hidden;background:#1d2735;";
       remoteVideo = doc.createElement("video");
       remoteVideo.autoplay = true;
+      remoteVideo.muted = true;
       remoteVideo.playsInline = true;
       remoteVideo.style.cssText = "display:block;width:100%;height:100%;background:#1d2735;object-fit:cover;";
       localVideo = doc.createElement("video");
@@ -3844,7 +3988,7 @@ async function openDetachedCallWindow() {
     controls.append(hangup);
     shell.append(controls);
     doc.body.append(shell);
-    detachedCallWindow = { window: popup, title, status, remoteVideo, localVideo };
+    detachedCallWindow = { window: popup, title, status, remoteVideo, localVideo, remoteAudio };
     popup.addEventListener("pagehide", () => {
       if (detachedCallWindow?.window === popup) detachedCallWindow = null;
     }, { once: true });
@@ -3877,10 +4021,12 @@ function releaseCallMedia() {
   callPeerConnection = null;
   callLocalStream?.getTracks().forEach((track) => track.stop());
   callLocalStream = null;
+  callRemoteStream?.getTracks().forEach((track) => track.stop());
   callRemoteStream = null;
   queuedCallCandidates = [];
   if (localCallVideo.value) localCallVideo.value.srcObject = null;
   if (remoteCallVideo.value) remoteCallVideo.value.srcObject = null;
+  if (remoteCallAudio.value) remoteCallAudio.value.srcObject = null;
   closeDetachedCallWindow();
 }
 function createCallPeerConnection(session: CallSession) {
@@ -4309,6 +4455,10 @@ function dismissAdminAnnouncement(notification: AdminNotification) {
   dismissedAdminNotificationIds.value = [...dismissedAdminNotificationIds.value, notification.notification_id].slice(-200);
   window.localStorage.setItem("lanchat-dismissed-admin-notifications", JSON.stringify(dismissedAdminNotificationIds.value));
 }
+async function openAdminNotificationHistory() {
+  await store.refreshAdminNotifications();
+  adminNotificationHistoryOpen.value = true;
+}
 async function decideAdminNotification(notification: AdminNotification, decision: "approved" | "rejected" | "revoked") {
   try { await store.decideAdminNotification(notification.notification_id, decision); } catch (err) { store.error = String(err); }
 }
@@ -4318,6 +4468,22 @@ function adminNotificationTargetDetail(notification: AdminNotification) {
 function openAdminNotificationDetail(notification: AdminNotification) {
   adminNotificationDetail.value = notification;
   adminNotificationDetailOpen.value = true;
+}
+function isAdminNotificationIssuer(notification: AdminNotification) {
+  return notification.issued_by_device_id === profile.value?.device_id;
+}
+function isAdminNotificationRecipient(notification: AdminNotification) {
+  return notification.target_device_id === profile.value?.device_id;
+}
+async function submitAdminNotificationFromDetail() {
+  if (!adminNotificationDetail.value) return;
+  await submitBlockingAdminNotification(adminNotificationDetail.value);
+  adminNotificationDetailOpen.value = false;
+}
+function dismissAdminNotificationFromDetail() {
+  if (!adminNotificationDetail.value) return;
+  dismissAdminAnnouncement(adminNotificationDetail.value);
+  adminNotificationDetailOpen.value = false;
 }
 async function decideAdminNotificationFromDetail(decision: "approved" | "rejected" | "revoked") {
   if (!adminNotificationDetail.value) return;
@@ -4813,8 +4979,12 @@ function avatarLabel(value: string | undefined | null, fallback?: string) {
 function avatarImage(value: string | undefined | null) {
   const trimmed = value?.trim() ?? "";
   if (!trimmed) return undefined;
-  if (trimmed.startsWith("data:image/") || trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://") || trimmed.startsWith("blob:")) {
     return trimmed;
+  }
+  if (trimmed.startsWith("data:image/")) {
+    void cacheAvatarBlobUrl(trimmed);
+    return avatarBlobUrls.value[trimmed] ?? undefined;
   }
   const payload = trimmed.includes(",") ? trimmed.split(",").pop()?.trim() ?? "" : trimmed;
   if (!payload || !/^[A-Za-z0-9+/=_-]+$/.test(payload)) return undefined;
@@ -4825,7 +4995,67 @@ function avatarImage(value: string | undefined | null) {
       : payload.startsWith("UklGR")
         ? "image/webp"
         : "image/png";
-  return `data:${mime};base64,${payload}`;
+  const dataUrl = `data:${mime};base64,${payload}`;
+  void cacheAvatarBlobUrl(dataUrl);
+  return avatarBlobUrls.value[dataUrl] ?? undefined;
+}
+
+async function cacheAvatarBlobUrl(dataUrl: string) {
+  if (avatarBlobUrls.value[dataUrl] || avatarBlobUrlPending.has(dataUrl)) return;
+  avatarBlobUrlPending.add(dataUrl);
+  try {
+    const response = await fetch(dataUrl);
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const next = { ...avatarBlobUrls.value, [dataUrl]: url };
+    avatarBlobUrlOrder.set(dataUrl, Date.now());
+    while (Object.keys(next).length > 80) {
+      const oldest = [...avatarBlobUrlOrder.entries()].sort((a, b) => a[1] - b[1])[0]?.[0];
+      if (!oldest) break;
+      const oldUrl = next[oldest];
+      if (oldUrl) URL.revokeObjectURL(oldUrl);
+      delete next[oldest];
+      avatarBlobUrlOrder.delete(oldest);
+    }
+    avatarBlobUrls.value = next;
+  } catch {
+    // 无法转成 Blob URL 时回退为首字母头像，避免重复解码大 Base64。
+  } finally {
+    avatarBlobUrlPending.delete(dataUrl);
+  }
+}
+
+async function compressAvatarImage(file: File) {
+  const sourceUrl = URL.createObjectURL(file);
+  try {
+    const source = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("无法解码头像图片"));
+      image.src = sourceUrl;
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = 256;
+    canvas.height = 256;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("当前环境不支持头像压缩");
+    const scale = Math.max(256 / source.naturalWidth, 256 / source.naturalHeight);
+    const width = source.naturalWidth * scale;
+    const height = source.naturalHeight * scale;
+    context.drawImage(source, (256 - width) / 2, (256 - height) / 2, width, height);
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((result) => result ? resolve(result) : reject(new Error("头像压缩失败")), "image/webp", 0.82);
+    });
+    if (blob.size > 160 * 1024) throw new Error("头像压缩后仍然过大，请换一张更简单的图片");
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => typeof reader.result === "string" ? resolve(reader.result) : reject(new Error("读取压缩头像失败"));
+      reader.onerror = () => reject(new Error("读取压缩头像失败"));
+      reader.readAsDataURL(blob);
+    });
+  } finally {
+    URL.revokeObjectURL(sourceUrl);
+  }
 }
 function peerAvatar(deviceId: string | undefined | null) {
   if (!deviceId) return undefined;
@@ -4846,7 +5076,7 @@ function clearProfileAvatar() {
   avatarDraft.value = "";
   if (profileAvatarInput.value) profileAvatarInput.value.value = "";
 }
-function handleProfileAvatarSelected(event: Event) {
+async function handleProfileAvatarSelected(event: Event) {
   const input = event.target as HTMLInputElement | null;
   const file = input?.files?.[0];
   if (!file) return;
@@ -4860,20 +5090,38 @@ function handleProfileAvatarSelected(event: Event) {
     input.value = "";
     return;
   }
-  const reader = new FileReader();
-  reader.onload = () => {
-    avatarDraft.value = typeof reader.result === "string" ? reader.result : "";
-  };
-  reader.onerror = () => {
-    store.error = "读取头像图片失败";
-  };
-  reader.readAsDataURL(file);
+  try {
+    avatarDraft.value = await compressAvatarImage(file);
+  } catch (err) {
+    store.error = stringifyError(err);
+  } finally {
+    input.value = "";
+  }
 }
 function formatFileSize(size?: number | null) {
   if (!size) return "0 B";
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+function base64ByteLength(value: string | null | undefined) {
+  const payload = value?.split(",").pop()?.replace(/\s/g, "") ?? "";
+  if (!payload) return 0;
+  return Math.max(0, Math.floor((payload.length * 3) / 4) - (payload.endsWith("==") ? 2 : payload.endsWith("=") ? 1 : 0));
+}
+async function refreshMemoryDiagnostic() {
+  previewMediaCacheInfo.value = await api.getPreviewMediaCacheInfo().catch(() => previewMediaCacheInfo.value);
+  const performanceWithMemory = performance as Performance & { memory?: { usedJSHeapSize: number; jsHeapSizeLimit: number } };
+  const messages = Object.values(messagesByConversation.value);
+  memoryDiagnostic.value = {
+    jsHeapBytes: performanceWithMemory.memory?.usedJSHeapSize ?? null,
+    jsHeapLimitBytes: performanceWithMemory.memory?.jsHeapSizeLimit ?? null,
+    cachedConversations: messages.length,
+    cachedMessages: messages.reduce((sum, items) => sum + items.length, 0),
+    visibleMessages: visibleMessages.value.length,
+    avatarBytes: [profile.value?.avatar, ...peers.value.map((peer) => peer.avatar)].reduce((sum, avatar) => sum + base64ByteLength(avatar), 0),
+    previewCacheBytes: previewMediaCacheInfo.value?.totalBytes ?? 0,
+  };
 }
 function fileExtension(name?: string) {
   return name?.split(".").pop()?.toLowerCase() ?? "";
@@ -4885,7 +5133,16 @@ function isImageFile(message: Message) {
 }
 function imagePreviewSource(message: Message) {
   const cachedPath = previewMediaPaths.value[message.id];
-  return cachedPath ? convertFileSrc(cachedPath) : message.file_meta?.url ?? "";
+  if (!cachedPath) return message.file_meta?.url ?? "";
+  const cachedUrl = imagePreviewBlobUrls.get(message.id);
+  if (cachedUrl) return cachedUrl;
+  const url = convertFileSrc(cachedPath);
+  imagePreviewBlobUrls.set(message.id, url);
+  return url;
+}
+function imageThumbnailSource(message: Message) {
+  const url = message.file_meta?.url ?? "";
+  return url ? `${url}${url.includes("?") ? "&" : "?"}thumbnail=1` : "";
 }
 async function openImagePreview(message: Message) {
   imagePreviewScale.value = 1;
@@ -4907,6 +5164,7 @@ async function cacheImagePreview(message: Message) {
   try {
     const path = await api.cachePreviewMedia(message.id, message.file_meta.url, message.file_meta.name);
     previewMediaPaths.value = { ...previewMediaPaths.value, [message.id]: path };
+    previewMediaCacheInfo.value = await api.getPreviewMediaCacheInfo().catch(() => previewMediaCacheInfo.value);
   } catch {
     // 预览缓存失败时继续使用发送方的临时文件服务地址。
   }
@@ -4915,6 +5173,8 @@ async function clearImagePreviewCache() {
   previewMediaCacheClearing.value = true;
   try {
     previewMediaCacheInfo.value = await api.clearPreviewMediaCache();
+    imagePreviewBlobUrls.forEach((url) => URL.revokeObjectURL(url));
+    imagePreviewBlobUrls.clear();
     previewMediaPaths.value = {};
   } catch (err) {
     store.error = stringifyError(err);
@@ -5097,6 +5357,7 @@ async function closeWindow() {
           aria-label="语音或视频通话"
         >
           <div v-if="callSession" class="private-call-panel">
+            <audio ref="remoteCallAudio" class="remote-call-audio" autoplay></audio>
             <div class="private-call-title" @mousedown="startCallPanelDrag">
               <div class="private-call-summary">
                 <strong>{{ callSession.status === 'incoming' ? `${callSession.peerNickname} 邀请${callSession.media === 'video' ? '视频' : '语音'}通话` : `${callSession.media === 'video' ? '视频' : '语音'}通话 · ${callSession.peerNickname}` }}</strong>
@@ -5106,7 +5367,7 @@ async function closeWindow() {
               <button class="private-call-toggle" type="button" :title="callPanelExpanded ? '收起画面' : '展开画面'" @click="callPanelExpanded = !callPanelExpanded">{{ callPanelExpanded ? '⌃' : '⌄' }}</button>
             </div>
           <div v-if="callPanelExpanded" class="private-call-videos" :class="{ audio: callSession.media === 'audio' }">
-            <video v-if="callSession.media === 'video'" ref="remoteCallVideo" autoplay playsinline></video>
+            <video v-if="callSession.media === 'video'" ref="remoteCallVideo" autoplay muted playsinline></video>
             <video v-if="callSession.media === 'video'" ref="localCallVideo" autoplay muted playsinline></video>
             <div v-else class="private-call-audio-profile">
               <img v-if="avatarImage(peerAvatar(callSession.peerDeviceId))" :src="avatarImage(peerAvatar(callSession.peerDeviceId))" class="private-call-audio-avatar-image" alt="对方头像" />
@@ -5201,12 +5462,14 @@ async function closeWindow() {
           <div class="simulation-actions"><NButton @click="adminNotificationModalOpen = false">取消</NButton><NButton type="warning" :loading="adminNotificationSending" @click="submitAdminNotification">下发</NButton></div>
         </div>
       </NModal>
-      <NModal v-model:show="adminNotificationDetailOpen" preset="card" title="通知审核详情" class="admin-notification-announcement">
+      <NModal v-model:show="adminNotificationDetailOpen" preset="card" :title="adminNotificationDetail && isAdminNotificationIssuer(adminNotificationDetail) ? '通知审核详情' : '公告通知详情'" class="admin-notification-announcement">
         <div v-if="adminNotificationDetail" class="admin-notification-lock-content">
           <div class="admin-notification-detail-device"><img v-if="avatarImage(adminNotificationTargetDetail(adminNotificationDetail)?.avatar)" class="avatar-image large-avatar" :src="avatarImage(adminNotificationTargetDetail(adminNotificationDetail)?.avatar)" alt="设备头像" /><NAvatar v-else :size="48" class="peer-avatar">{{ firstLetter(adminNotificationTargetDetail(adminNotificationDetail)?.nickname ?? '?') }}</NAvatar><div><strong>{{ adminNotificationTargetDetail(adminNotificationDetail)?.nickname ?? '未知设备' }}</strong><small>IP：{{ adminNotificationTargetDetail(adminNotificationDetail)?.address ?? '未知' }}</small><small>MAC：{{ adminNotificationDetail.target_device_id }}</small></div></div>
           <NTag :type="adminNotificationDetail.status === 'submitted' ? 'warning' : 'default'">{{ adminNotificationDetail.status }}</NTag><h2>{{ adminNotificationDetail.title }}</h2><p>{{ adminNotificationDetail.content }}</p><img v-if="adminNotificationDetail.support_url && /^(https?:|asset:|data:image)/.test(adminNotificationDetail.support_url)" :src="adminNotificationDetail.support_url" alt="通知配图" /><NText depth="3">下发时间：{{ formatTime(adminNotificationDetail.created_at) }}</NText>
-          <NSpace v-if="adminNotificationDetail.display_mode === 'requires_confirmation' && adminNotificationDetail.status === 'submitted'"><NButton type="success" @click="decideAdminNotificationFromDetail('approved')">通过</NButton><NButton type="error" @click="decideAdminNotificationFromDetail('rejected')">拒绝</NButton></NSpace>
-          <NButton v-else-if="adminNotificationDetail.display_mode === 'requires_confirmation' && ['pending','rejected','expired_locked'].includes(adminNotificationDetail.status)" tertiary type="warning" @click="decideAdminNotificationFromDetail('revoked')">撤销并放行</NButton>
+          <NSpace v-if="isAdminNotificationIssuer(adminNotificationDetail) && adminNotificationDetail.display_mode === 'requires_confirmation' && adminNotificationDetail.status === 'submitted'"><NButton type="success" @click="decideAdminNotificationFromDetail('approved')">通过</NButton><NButton type="error" @click="decideAdminNotificationFromDetail('rejected')">拒绝</NButton></NSpace>
+          <NButton v-else-if="isAdminNotificationIssuer(adminNotificationDetail) && adminNotificationDetail.display_mode === 'requires_confirmation' && ['pending','rejected','expired_locked'].includes(adminNotificationDetail.status)" tertiary type="warning" @click="decideAdminNotificationFromDetail('revoked')">撤销并放行</NButton>
+          <NButton v-else-if="isAdminNotificationRecipient(adminNotificationDetail) && adminNotificationDetail.display_mode === 'requires_confirmation' && ['pending','rejected'].includes(adminNotificationDetail.status)" type="primary" @click="submitAdminNotificationFromDetail">重新提交确认</NButton>
+          <NButton v-else-if="isAdminNotificationRecipient(adminNotificationDetail) && adminNotificationDetail.display_mode === 'dismissible' && !dismissedAdminNotificationIds.includes(adminNotificationDetail.notification_id)" type="primary" @click="dismissAdminNotificationFromDetail">我知道了</NButton>
         </div>
       </NModal>
       <NModal :show="!!blockingAdminNotification" preset="card" class="admin-notification-lock" :mask-closable="false" :closable="false">
@@ -5214,6 +5477,21 @@ async function closeWindow() {
       </NModal>
       <NModal :show="!!visibleAdminAnnouncement" preset="card" class="admin-notification-announcement" :mask-closable="true" @update:show="(visible) => { if (!visible && visibleAdminAnnouncement) dismissAdminAnnouncement(visibleAdminAnnouncement); }">
         <div v-if="visibleAdminAnnouncement" class="admin-notification-lock-content"><NTag type="info">超管公告</NTag><h2>{{ visibleAdminAnnouncement.title }}</h2><p>{{ visibleAdminAnnouncement.content }}</p><img v-if="visibleAdminAnnouncement.support_url && /^(https?:|asset:|data:image)/.test(visibleAdminAnnouncement.support_url)" :src="visibleAdminAnnouncement.support_url" alt="公告图片" /><NText depth="3">{{ visibleAdminAnnouncement.issued_by_nickname }} · {{ formatTime(visibleAdminAnnouncement.created_at) }}</NText><NButton type="primary" @click="dismissAdminAnnouncement(visibleAdminAnnouncement)">我知道了</NButton></div>
+      </NModal>
+      <NModal v-model:show="adminNotificationHistoryOpen" preset="card" title="历史公告" class="admin-notification-history-modal">
+        <div class="admin-notification-history-list">
+          <NEmpty v-if="recipientAdminNotifications.length === 0" description="暂无收到的公告通知" />
+          <article v-for="notification in recipientAdminNotifications" :key="notification.notification_id" class="admin-notification-history-item" role="button" tabindex="0" @click="openAdminNotificationDetail(notification)" @keydown.enter="openAdminNotificationDetail(notification)">
+            <header>
+              <strong>{{ notification.title }}</strong>
+              <NTag size="small" :bordered="false" :type="notification.display_mode === 'requires_confirmation' ? 'warning' : 'info'">
+                {{ notification.display_mode === 'requires_confirmation' ? '需确认' : '公告' }}
+              </NTag>
+            </header>
+            <p>{{ notification.content }}</p>
+            <footer>{{ notification.issued_by_nickname }} · {{ formatTime(notification.created_at) }} · {{ notification.status }}</footer>
+          </article>
+        </div>
       </NModal>
       <div class="desktop-frame">
         <header class="app-titlebar" @mousedown="startWindowDrag">
@@ -5283,6 +5561,16 @@ async function closeWindow() {
                 <span v-if="navExpanded" class="nav-label">添加设备</span>
               </button>
               <div class="rail-spacer"></div>
+              <NTooltip trigger="hover" placement="right">
+                <template #trigger>
+                  <button class="rail-action rail-notification-bell" title="历史公告" @click="openAdminNotificationHistory">
+                    <span class="nav-icon nav-bell-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M18 10a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 22h4" /></svg></span>
+                    <span v-if="navExpanded" class="nav-label">公告通知</span>
+                    <span v-if="pendingAdminNotificationCount > 0" class="nav-notification-dot"></span>
+                  </button>
+                </template>
+                历史公告
+              </NTooltip>
               <NTooltip trigger="hover" placement="right">
                 <template #trigger>
                   <button
@@ -5504,15 +5792,17 @@ async function closeWindow() {
                   </p>
                 </div>
               </header>
-              <div ref="messagePane" class="messages-pane">
+              <div ref="messagePane" class="messages-pane" @scroll.passive="handleMessagePaneScroll">
                 <NSpin :show="loading">
+                  <button v-if="hasMoreEarlierMessages" class="message-history-loader" type="button" @click="loadEarlierMessages">加载更早消息</button>
+                  <button v-if="hasLaterMessages" class="message-history-loader latest" type="button" @click="jumpToLatestMessages">回到最新消息</button>
                   <NEmpty v-if="!loading && activeMessages.length === 0" description="还没有消息" class="empty-state">
                     <template #extra>
                       <span>选择在线设备单聊，或在局域网频道里发第一句。</span>
                     </template>
                   </NEmpty>
                   <article
-                    v-for="message in activeMessages"
+                    v-for="message in visibleMessages"
                     :key="message.id"
                     :id="`message-${message.id}`"
                     class="message-row"
@@ -5571,7 +5861,7 @@ async function closeWindow() {
                             </p>
                           </template>
                           <div v-else-if="message.file_meta" class="file-message">
-                            <img v-if="isImageFile(message)" class="file-preview-image" :src="imagePreviewSource(message)" :alt="message.file_meta.name" title="点击放大查看" @click="openImagePreview(message)" @load="cacheImagePreview(message)" />
+                            <img v-if="isImageFile(message)" class="file-preview-image" :src="imageThumbnailSource(message)" :alt="message.file_meta.name" title="点击放大查看" loading="lazy" decoding="async" @click="openImagePreview(message)" />
                             <audio v-else-if="isAudioFile(message)" class="voice-player" controls :src="message.file_meta.url"></audio>
                             <a v-else class="file-info file-link" :href="message.file_meta.url">
                               <strong>{{ message.file_meta.name }}</strong>
@@ -6339,8 +6629,10 @@ async function closeWindow() {
                   </button>
                 </nav>
                 <div class="settings-content">
-                  <div class="workspace-header">
-                    <h2 class="settings-title">设置<button class="settings-secret-trigger" type="button" aria-label="设置" @click="handleSuperAdminTap">✦</button></h2>
+                  <div class="workspace-header settings-header">
+                    <div class="settings-heading-row">
+                      <h2 class="settings-title">设置<button class="settings-secret-trigger" type="button" aria-label="设置" @click="handleSuperAdminTap">✦</button></h2>
+                    </div>
                     <p>{{ settingsCategory === 'basic' ? '管理本机资料、网络、主题和语言。' : settingsCategory === 'pet' ? '管理桌宠资源、行为与告警能力。' : '下发公告并审核设备提交的确认。' }}</p>
                   </div>
                   <div class="settings-grid">
@@ -6430,6 +6722,19 @@ async function closeWindow() {
                       <NButton type="primary" :loading="updateChecking" @click="checkUpdates(true)">检查更新</NButton>
                       <NButton secondary :disabled="!preferredUpdateUrl" @click="openPreferredUpdateUrl">下载更新</NButton>
                       <NButton quaternary :disabled="!updateInfo" @click="openReleasePage">Release 页面</NButton>
+                    </NSpace>
+                  </NSpace>
+                </NCard>
+                <NCard v-if="settingsCategory === 'basic'" title="GitHub API Token" size="small">
+                  <NSpace vertical>
+                    <NText depth="3">配置仅用于读取 LanChat 的 GitHub Release，减少匿名 API 限流。Token 会保存在系统凭据库，不会同步到局域网设备。</NText>
+                    <NAlert v-if="updateGithubTokenInfo?.configured" type="success" :show-icon="false">
+                      {{ updateGithubTokenInfo.maskedValue || 'GitHub Token 已配置' }}
+                    </NAlert>
+                    <NInput v-model:value="updateGithubTokenDraft" type="password" show-password-on="click" placeholder="粘贴 GitHub Fine-grained Token（仅需 Contents: Read）" @keyup.enter="saveUpdateGithubToken" />
+                    <NSpace>
+                      <NButton type="primary" :disabled="!updateGithubTokenDraft.trim()" :loading="updateGithubTokenSaving" @click="saveUpdateGithubToken">保存 Token</NButton>
+                      <NButton v-if="updateGithubTokenInfo?.configured" secondary type="error" :loading="updateGithubTokenSaving" @click="clearUpdateGithubToken">清除 Token</NButton>
                     </NSpace>
                   </NSpace>
                 </NCard>
@@ -6774,6 +7079,27 @@ async function closeWindow() {
                         <small v-if="log.detail">{{ log.detail }}</small>
                       </div>
                     </div>
+                  </NSpace>
+                </NCard>
+                <NCard v-if="settingsCategory === 'basic'" title="内存诊断" size="small">
+                  <NSpace vertical>
+                    <NText depth="3">用于定位消息、头像或图片缓存导致的内存上升。JS 堆数据仅在 WebView2 支持时显示。</NText>
+                    <div class="update-info-grid">
+                      <span>JS 堆</span><strong>{{ memoryDiagnostic.jsHeapBytes === null ? '当前环境未提供' : `${formatFileSize(memoryDiagnostic.jsHeapBytes)} / ${formatFileSize(memoryDiagnostic.jsHeapLimitBytes)}` }}</strong>
+                      <span>消息缓存</span><strong>{{ memoryDiagnostic.cachedConversations }} 个会话 · {{ memoryDiagnostic.cachedMessages }} 条</strong>
+                      <span>当前消息节点</span><strong>{{ memoryDiagnostic.visibleMessages }} 条</strong>
+                      <span>头像 Base64</span><strong>{{ formatFileSize(memoryDiagnostic.avatarBytes) }}</strong>
+                      <span>图片缓存</span><strong>{{ formatFileSize(memoryDiagnostic.previewCacheBytes) }}</strong>
+                    </div>
+                    <div v-if="memoryDiagnosticConversationRows.length" class="memory-diagnostic-rows">
+                      <span>消息最多</span>
+                      <strong v-for="row in memoryDiagnosticConversationRows" :key="row.conversationId">{{ row.title }} · {{ row.count }} 条</strong>
+                    </div>
+                    <div v-if="memoryDiagnosticAvatarRows.length" class="memory-diagnostic-rows">
+                      <span>头像最大</span>
+                      <strong v-for="row in memoryDiagnosticAvatarRows" :key="row.name">{{ row.name }} · {{ formatFileSize(row.bytes) }}</strong>
+                    </div>
+                    <NButton secondary type="primary" @click="refreshMemoryDiagnostic">刷新诊断</NButton>
                   </NSpace>
                 </NCard>
                 <NCard v-if="settingsCategory === 'basic'" title="外观" size="small">

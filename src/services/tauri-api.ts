@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AppVersionInfo, CallSignal, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Nudge, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem, UpdateCheckResult } from "../types/lanchat";
+import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AppVersionInfo, CallSignal, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Nudge, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem, UpdateCheckResult, UpdateGithubTokenInfo } from "../types/lanchat";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, PetStatePlaybackConfig } from "../types/desktop-pet";
 
 export const api = {
@@ -7,6 +7,9 @@ export const api = {
   getAppVersionInfo: () => invoke<AppVersionInfo>("get_app_version_info"),
   refreshUpdateProxy: () => invoke<void>("refresh_update_proxy"),
   checkForUpdate: () => invoke<UpdateCheckResult>("check_for_update"),
+  getUpdateGithubTokenInfo: () => invoke<UpdateGithubTokenInfo>("get_update_github_token_info"),
+  saveUpdateGithubToken: (token: string) => invoke<UpdateGithubTokenInfo>("save_update_github_token", { token }),
+  clearUpdateGithubToken: () => invoke<UpdateGithubTokenInfo>("clear_update_github_token"),
   isPortableRuntime: () => invoke<boolean>("is_portable_runtime"),
   installPortableUpdate: (downloadUrl: string, sha256: string) => invoke<void>("install_portable_update", { downloadUrl, sha256 }),
   authenticateSuperAdmin: (password: string) => invoke<boolean>("authenticate_super_admin", { password }),
@@ -48,8 +51,8 @@ export const api = {
     invoke<Conversation>("accept_private_channel_invite", { invite }),
   broadcastChannelNotice: (conversationId: string, notice: string) =>
     invoke<void>("broadcast_channel_notice", { conversationId, notice }),
-  listMessages: (conversationId: string) =>
-    invoke<Message[]>("list_messages", { conversationId }),
+  listMessages: (conversationId: string, beforeCreatedAt?: number, limit = 60) =>
+    invoke<Message[]>("list_messages", { conversationId, beforeCreatedAt, limit }),
   sendMessage: (conversationId: string, content: string) =>
     invoke<Message>("send_message", { conversationId, content }),
   simulateMessage: (simulatedDeviceId: string, conversationId: string, content: string, displaySimulationLabel: boolean) =>

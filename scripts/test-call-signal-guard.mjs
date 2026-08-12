@@ -23,5 +23,8 @@ if (!source.includes('connectionState === "failed"')) {
 if (!source.includes("handleDesktopPetCallAction")) {
   throw new Error("桌宠接听和拒绝应通过带兜底的通话动作处理器执行");
 }
+if (!source.includes("remoteCallAudio") || !source.includes("ensureCallMediaPlaying")) {
+  throw new Error("语音通话必须挂载远端音频流并主动恢复播放");
+}
 
 console.log("call signal guard checks passed");

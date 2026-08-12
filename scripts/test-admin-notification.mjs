@@ -21,6 +21,11 @@ for (const [name, source, needle] of [
   ["recipient lock", app, "blockingAdminNotification"],
   ["recipient submit", app, "提交已完成"],
   ["admin review", app, "超管通知审核"],
+  ["history entry", app, "历史公告"],
+  ["history modal", app, "adminNotificationHistoryOpen"],
+  ["history bell", app, "rail-notification-bell"],
+  ["history unread badge", app, "pendingAdminNotificationCount"],
+  ["recipient history filter", app, "recipientAdminNotifications"],
 ]) {
   if (!source.includes(needle)) throw new Error(`${name} missing: ${needle}`);
 }

@@ -43,6 +43,11 @@ export type UpdateCheckResult = {
   checkedAt: number;
 };
 
+export type UpdateGithubTokenInfo = {
+  configured: boolean;
+  maskedValue?: string | null;
+};
+
 export type Peer = {
   device_id: string;
   nickname: string;
