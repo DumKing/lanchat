@@ -16,6 +16,17 @@ pub struct NativePeerRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativePeerDetail {
+    pub device_id: String,
+    pub nickname: String,
+    pub address: String,
+    pub online: bool,
+    pub supports_chat: bool,
+    pub client_kind: String,
+    pub build_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeConversationRow {
     pub id: String,
     pub title: String,

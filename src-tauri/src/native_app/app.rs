@@ -122,6 +122,7 @@ pub fn run() -> Result<(), String> {
         .peers
         .iter()
         .map(|peer| Device {
+            id: SharedString::from(peer.device_id.clone()),
             nickname: SharedString::from(peer.display_name.clone()),
             address: SharedString::from(peer.address.clone()),
             status: SharedString::from(if peer.online { "在线" } else { "离线" }),
@@ -133,6 +134,7 @@ pub fn run() -> Result<(), String> {
         })
         .collect::<Vec<_>>();
     window.set_peers(ModelRc::new(VecModel::from(peers)));
+    window.set_selected_device(DeviceDetail::default());
     window.set_page_title(SharedString::from(native_page_title(NativePage::Chat)));
     window.set_page(0);
     let notification_rows = services
@@ -212,6 +214,24 @@ pub fn run() -> Result<(), String> {
             window.set_channel_members(ModelRc::new(VecModel::from(members)));
             window.set_page(0);
             window.set_page_title(SharedString::from(title));
+        });
+    });
+    let device_services = services.clone();
+    let device_window = window.as_weak();
+    window.on_select_device(move |device_id| {
+        let detail = device_services.load_peer_detail(&device_id).ok().flatten();
+        let _ = device_window.upgrade_in_event_loop(move |window| {
+            if let Some(detail) = detail {
+                window.set_selected_device(DeviceDetail {
+                    nickname: SharedString::from(detail.nickname),
+                    device_id: SharedString::from(detail.device_id),
+                    address: SharedString::from(detail.address),
+                    status: SharedString::from(if detail.online { "在线" } else { "离线" }),
+                    capability: SharedString::from(if detail.supports_chat { "可聊天" } else { "仅告警" }),
+                    client_kind: SharedString::from(detail.client_kind),
+                    build_version: SharedString::from(detail.build_version),
+                });
+            }
         });
     });
     let profile_services = services.clone();
@@ -535,6 +555,7 @@ fn start_native_network_refresh(
             .peers
             .iter()
             .map(|peer| Device {
+                id: SharedString::from(peer.device_id.clone()),
                 nickname: SharedString::from(peer.display_name.clone()),
                 address: SharedString::from(peer.address.clone()),
                 status: SharedString::from(if peer.online { "在线" } else { "离线" }),

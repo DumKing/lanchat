@@ -1,6 +1,6 @@
 use crate::native_app::models::{
     NativeConversationRow, NativeMessageRow, NativeNotificationRow, NativePeerRow, NativeProfile,
-    NativeChannelMemberRow, NativePetRow, NativeSidebar,
+    NativeChannelMemberRow, NativePetRow, NativePeerDetail, NativeSidebar,
 };
 use crate::desktop_pet::{DesktopPetManager, PetPackageSource, PetResourceRoot};
 use crate::storage::{
@@ -55,6 +55,19 @@ impl NativeAppServices {
 
     pub fn storage(&self) -> Arc<Storage> {
         self.storage.clone()
+    }
+
+    pub fn load_peer_detail(&self, device_id: &str) -> Result<Option<NativePeerDetail>, String> {
+        let detail = self.storage.get_peer(device_id)?.map(|peer| NativePeerDetail {
+            device_id: peer.device_id,
+            nickname: peer.note.unwrap_or(peer.nickname),
+            address: format!("{}:{}", peer.address, peer.port),
+            online: peer.online,
+            supports_chat: peer.supports_chat,
+            client_kind: peer.client_kind,
+            build_version: peer.build_version,
+        });
+        Ok(detail)
     }
 
     pub fn load_messages(
@@ -393,5 +406,36 @@ mod tests {
 
         assert_eq!(profile.nickname, "原生版昵称");
         assert!(services.update_profile_nickname("   ").is_err());
+    }
+
+    #[test]
+    fn exposes_peer_detail_by_mac_identity() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage = Arc::new(Storage::open(temp.path().join("lanchat.sqlite3")).expect("storage"));
+        storage
+            .upsert_peer(&Peer {
+                device_id: "AA-BB-CC-DD-EE-FF".to_string(),
+                nickname: "开发同事".to_string(),
+                note: None,
+                avatar: None,
+                address: "192.168.1.20".to_string(),
+                port: 18145,
+                online: true,
+                last_seen_at: 100,
+                client_kind: "full".to_string(),
+                supports_chat: true,
+                nickname_locked: false,
+                build_version: "0.4.2".to_string(),
+                build_timestamp: 100,
+            })
+            .expect("peer saved");
+
+        let detail = NativeAppServices::new(storage)
+            .load_peer_detail("AA-BB-CC-DD-EE-FF")
+            .expect("detail")
+            .expect("peer exists");
+
+        assert_eq!(detail.device_id, "AA-BB-CC-DD-EE-FF");
+        assert_eq!(detail.address, "192.168.1.20:18145");
     }
 }

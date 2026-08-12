@@ -20,10 +20,21 @@ export struct Conversation {
 }
 
 export struct Device {
+    id: string,
     nickname: string,
     address: string,
     status: string,
     capability: string,
+}
+
+export struct DeviceDetail {
+    nickname: string,
+    device-id: string,
+    address: string,
+    status: string,
+    capability: string,
+    client-kind: string,
+    build-version: string,
 }
 
 export struct PetOption {
@@ -90,6 +101,7 @@ export component MainWindow inherits Window {
     in property <[AdminNotification]> notifications;
     in property <[Conversation]> conversations;
     in property <[Device]> peers;
+    in property <DeviceDetail> selected-device;
     in property <[PetOption]> pets;
     in property <[ChannelMember]> channel-members;
     in property <[AlertItem]> alerts;
@@ -108,6 +120,7 @@ export component MainWindow inherits Window {
     callback feedback-alert(string, string, string);
     callback create-game-room(string);
     callback join-game-room(string, string);
+    callback select-device(string);
 
     HorizontalLayout {
         spacing: 0px;
@@ -258,6 +271,7 @@ export component MainWindow inherits Window {
                                 VerticalLayout { spacing: 3px; Text { text: peer.nickname; font-size: 16px; font-weight: 600; } Text { text: peer.address; color: #82949f; font-size: 12px; } }
                                 VerticalLayout { horizontal-stretch: 0; spacing: 3px; Text { text: peer.status; color: peer.status == "在线" ? #16a765 : #d8565f; horizontal-alignment: right; } Text { text: peer.capability; color: #82949f; font-size: 12px; horizontal-alignment: right; } }
                             }
+                            TouchArea { clicked => { root.select-device(peer.id); } }
                         }
                     }
                 }
@@ -322,6 +336,25 @@ export component MainWindow inherits Window {
                 }
             }
             if root.page == 0 : Rectangle { height: 142px; background: #fafcfd; border-width: 1px; border-color: #e1e8ed; VerticalLayout { padding: 14px; spacing: 10px; Text { text: "☺   📎   🎙   @"; color: #607583; font-size: 18px; } LineEdit { text <=> root.message-input; placeholder-text: root.input-message; } HorizontalLayout { Text { text: root.send-feedback == "" ? root.input-hint : root.send-feedback; color: #159e90; } Button { text: root.send-label; horizontal-stretch: 0; clicked => { root.send-message(root.message-input); } } } } }
+        }
+        if root.page == 1 : Rectangle {
+            width: 250px;
+            background: #f8fbfc;
+            border-width: 1px;
+            border-color: #e1e8ed;
+            VerticalLayout {
+                padding: 18px;
+                spacing: 9px;
+                Text { text: "设备详情"; font-size: 17px; font-weight: 700; color: #24474a; }
+                Text { text: root.selected-device.nickname; font-size: 16px; font-weight: 700; }
+                Rectangle { height: 1px; background: #dfe8ea; }
+                Text { text: "MAC"; color: #82949f; font-size: 11px; }
+                Text { text: root.selected-device.device-id; wrap: word-wrap; font-size: 12px; }
+                Text { text: "地址"; color: #82949f; font-size: 11px; }
+                Text { text: root.selected-device.address; wrap: word-wrap; font-size: 12px; }
+                Text { text: root.selected-device.status + " · " + root.selected-device.capability; color: #159e90; font-size: 13px; }
+                Text { text: root.selected-device.client-kind + " · " + root.selected-device.build-version; color: #82949f; font-size: 12px; wrap: word-wrap; }
+            }
         }
         if root.page == 0 : Rectangle {
             width: 202px;

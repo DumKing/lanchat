@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use super::{game_room_from_frame, native_game_catalog, NativeGameRoomStore};
+    use super::{game_room_from_frame, native_game_catalog, NativeGameRoomRow, NativeGameRoomStore};
     use crate::protocol::GameFrame;
 
     #[test]
