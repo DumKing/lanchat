@@ -48,6 +48,13 @@ pub struct NativeNotificationRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativePetRow {
+    pub id: String,
+    pub name: String,
+    pub selected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeSidebar {
     pub profile: NativeProfile,
     pub peers: Vec<NativePeerRow>,

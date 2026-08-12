@@ -81,6 +81,17 @@ pub fn run() -> Result<(), String> {
         })
         .collect::<Vec<_>>();
     window.set_messages(ModelRc::new(VecModel::from(rows)));
+    window.set_profile_nickname(SharedString::from(sidebar.profile.nickname.clone()));
+    let pets = services
+        .list_desktop_pets()
+        .into_iter()
+        .map(|pet| PetOption {
+            id: SharedString::from(pet.id),
+            name: SharedString::from(pet.name),
+            selected: pet.selected,
+        })
+        .collect::<Vec<_>>();
+    window.set_pets(ModelRc::new(VecModel::from(pets)));
     let conversations = sidebar
         .conversations
         .iter()
@@ -171,6 +182,40 @@ pub fn run() -> Result<(), String> {
             window.set_messages(ModelRc::new(VecModel::from(rows)));
             window.set_page(0);
             window.set_page_title(SharedString::from(title));
+        });
+    });
+    let profile_services = services.clone();
+    let profile_window = window.as_weak();
+    window.on_save_profile(move |nickname| {
+        let result = profile_services.update_profile_nickname(&nickname);
+        let _ = profile_window.upgrade_in_event_loop(move |window| match result {
+            Ok(profile) => {
+                window.set_profile_nickname(SharedString::from(profile.nickname));
+                window.set_settings_feedback(SharedString::from("昵称已保存"));
+            }
+            Err(error) => window.set_settings_feedback(SharedString::from(error)),
+        });
+    });
+    let pet_services = services.clone();
+    let pet_window = window.as_weak();
+    window.on_select_pet(move |pet_id| {
+        let result = pet_services.select_desktop_pet(&pet_id);
+        let pets = pet_services
+            .list_desktop_pets()
+            .into_iter()
+            .map(|pet| PetOption {
+                id: SharedString::from(pet.id),
+                name: SharedString::from(pet.name),
+                selected: pet.selected,
+            })
+            .collect::<Vec<_>>();
+        let _ = pet_window.upgrade_in_event_loop(move |window| {
+            window.set_pets(ModelRc::new(VecModel::from(pets)));
+            let feedback = match result {
+                Ok(()) => "桌宠已切换，将在下次启动原生桌宠时生效".to_string(),
+                Err(error) => error,
+            };
+            window.set_settings_feedback(SharedString::from(feedback));
         });
     });
     let pet_window = create_pet_window()?;

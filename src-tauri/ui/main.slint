@@ -26,6 +26,12 @@ export struct Device {
     capability: string,
 }
 
+export struct PetOption {
+    id: string,
+    name: string,
+    selected: bool,
+}
+
 export component MainWindow inherits Window {
     in property <string> app-title;
     in property <string> nav-chat;
@@ -49,8 +55,13 @@ export component MainWindow inherits Window {
     in property <[AdminNotification]> notifications;
     in property <[Conversation]> conversations;
     in property <[Device]> peers;
+    in property <[PetOption]> pets;
+    in-out property <string> profile-nickname;
+    in property <string> settings-feedback;
     callback select-page(int);
     callback select-conversation(string);
+    callback save-profile(string);
+    callback select-pet(string);
 
     HorizontalLayout {
         spacing: 0px;
@@ -180,6 +191,23 @@ export component MainWindow inherits Window {
                             }
                         }
                     }
+                }
+            }
+            if root.page == 4 : Rectangle {
+                vertical-stretch: 1;
+                background: white;
+                VerticalLayout {
+                    padding: 28px;
+                    spacing: 16px;
+                    Text { text: "基础设置"; font-size: 18px; font-weight: 700; color: #173f3d; }
+                    Text { text: "本机资料"; color: #5b7377; font-size: 14px; }
+                    LineEdit { text <=> root.profile-nickname; placeholder-text: "输入昵称"; }
+                    Button { text: "保存昵称"; clicked => { root.save-profile(root.profile-nickname); } }
+                    Text { text: root.settings-feedback; color: #159e90; font-size: 13px; }
+                    Rectangle { height: 1px; background: #e5edef; }
+                    Text { text: "桌宠设置"; font-size: 18px; font-weight: 700; color: #173f3d; }
+                    Text { text: "已导入桌宠"; color: #5b7377; font-size: 14px; }
+                    for pet in root.pets: Button { text: pet.selected ? ("✓  " + pet.name) : pet.name; clicked => { root.select-pet(pet.id); } }
                 }
             }
             if root.page == 0 : Rectangle { height: 142px; background: #fafcfd; border-width: 1px; border-color: #e1e8ed; VerticalLayout { padding: 14px; spacing: 10px; Text { text: "☺   📎   🎙   @"; color: #607583; font-size: 18px; } LineEdit { placeholder-text: root.input-message; } HorizontalLayout { Text { text: root.input-hint; color: #9aa9b5; } Button { text: root.send-label; horizontal-stretch: 0; } } } }

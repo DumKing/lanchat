@@ -10,8 +10,8 @@ pub use app::run;
 pub use events::{NativeEventBus, NativeNetworkEvent};
 pub use i18n::{Locale, NativeUiSettings, TextKey, ThemePreference, Translator};
 pub use models::{
-    NativeConversationRow, NativeMessageRow, NativeNotificationRow, NativePeerRow, NativeProfile,
-    NativeSidebar,
+    NativeConversationRow, NativeMessageRow, NativeNotificationRow, NativePeerRow, NativePetRow,
+    NativeProfile, NativeSidebar,
 };
 pub use pet::initial_idle_frame;
 pub use pet_ui::PetWindow;

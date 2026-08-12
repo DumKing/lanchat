@@ -1,7 +1,8 @@
 use crate::native_app::models::{
     NativeConversationRow, NativeMessageRow, NativeNotificationRow, NativePeerRow, NativeProfile,
-    NativeSidebar,
+    NativePetRow, NativeSidebar,
 };
+use crate::desktop_pet::{DesktopPetManager, PetPackageSource, PetResourceRoot};
 use crate::storage::{
     AdminNotificationRecord, ConversationKind, Message, MessageStatus, MessageType, Peer, Profile,
     Storage,
@@ -74,6 +75,68 @@ impl NativeAppServices {
             .filter(|record| record.target_device_id.eq_ignore_ascii_case(&profile.device_id))
             .map(map_notification)
             .collect())
+    }
+
+    pub fn update_profile_nickname(&self, nickname: &str) -> Result<NativeProfile, String> {
+        let profile = self.storage.get_or_create_profile()?;
+        let nickname = nickname.trim();
+        if nickname.is_empty() {
+            return Err("昵称不能为空".to_string());
+        }
+        self.storage
+            .update_profile(nickname, profile.listen_port, profile.avatar)?;
+        self.storage
+            .get_or_create_profile()
+            .map(map_profile)
+    }
+
+    pub fn list_desktop_pets(&self) -> Vec<NativePetRow> {
+        let manager = self.desktop_pet_manager();
+        let selected_id = manager.settings().selected_pet_id;
+        manager
+            .snapshot()
+            .packages
+            .into_iter()
+            .map(|package| {
+                let id = package.id().to_string();
+                NativePetRow {
+                    selected: selected_id.as_deref() == Some(id.as_str()),
+                    name: package.manifest.name,
+                    id,
+                }
+            })
+            .collect()
+    }
+
+    pub fn select_desktop_pet(&self, id: &str) -> Result<(), String> {
+        self.desktop_pet_manager().select(id).map(|_| ())
+    }
+
+    fn desktop_pet_manager(&self) -> DesktopPetManager {
+        let app_data_dir = Self::default_app_data_dir();
+        let mut roots = vec![PetResourceRoot::new(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("resources")
+                .join("desktop-pets"),
+            PetPackageSource::BuiltIn,
+        )];
+        if let Ok(executable) = std::env::current_exe() {
+            if let Some(parent) = executable.parent() {
+                roots.push(PetResourceRoot::new(
+                    parent.join("desktop-pets"),
+                    PetPackageSource::Portable,
+                ));
+                roots.push(PetResourceRoot::new(
+                    parent.join("resources").join("desktop-pets"),
+                    PetPackageSource::Portable,
+                ));
+            }
+        }
+        DesktopPetManager::new(
+            roots,
+            app_data_dir.join("desktop-pets"),
+            app_data_dir.join("desktop-pet-settings.json"),
+        )
     }
 }
 
@@ -268,5 +331,19 @@ mod tests {
 
         assert_eq!(1, history.len());
         assert_eq!("本机公告", history[0].title);
+    }
+
+    #[test]
+    fn updates_the_local_profile_nickname() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage = Arc::new(Storage::open(temp.path().join("lanchat.sqlite3")).expect("storage"));
+        let services = NativeAppServices::new(storage);
+
+        let profile = services
+            .update_profile_nickname("原生版昵称")
+            .expect("profile updated");
+
+        assert_eq!(profile.nickname, "原生版昵称");
+        assert!(services.update_profile_nickname("   ").is_err());
     }
 }
