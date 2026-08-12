@@ -144,6 +144,7 @@ pub fn run() -> Result<(), String> {
         })
         .collect::<Vec<_>>();
     window.set_notifications(ModelRc::new(VecModel::from(notification_rows)));
+    window.set_alerts(ModelRc::new(VecModel::from(Vec::<AlertItem>::new())));
     window.set_channel_members(ModelRc::new(VecModel::from(channel_member_rows(
         services.load_channel_members(DEFAULT_GROUP_ID).unwrap_or_default(),
     ))));
@@ -294,7 +295,54 @@ pub fn run() -> Result<(), String> {
             Err(error) => window.set_settings_feedback(SharedString::from(error)),
         });
     });
-    start_native_network_refresh(&window, services.clone(), network_events, sidebar.profile.nickname.clone());
+    let alert_network = network.clone();
+    let alert_services = services.clone();
+    let alert_events = network_events.clone();
+    window.on_send_alert(move || {
+        let Ok(profile) = alert_services.load_sidebar().map(|sidebar| sidebar.profile) else {
+            return;
+        };
+        let frame = crate::protocol::QuickAlertFrame {
+            alert_id: uuid::Uuid::new_v4().to_string(),
+            sender_device_id: profile.device_id,
+            sender_nickname: profile.nickname,
+            sender_address: Some(crate::network::local_ip_address()),
+            content: "呱呱~呱~~".to_string(),
+            mode: "normal".to_string(),
+            simulation: None,
+            created_at: chrono::Utc::now().timestamp_millis(),
+        };
+        let _ = tauri::async_runtime::block_on(
+            alert_network.broadcast_quick_alert(NetworkEventSink::native(alert_events.clone()), frame.clone()),
+        );
+        alert_events.publish("quick_alert_received", serde_json::to_value(frame).unwrap_or_default());
+    });
+    let feedback_network = network.clone();
+    let feedback_services = services.clone();
+    let feedback_events = network_events.clone();
+    window.on_feedback_alert(move |alert_id, sender_device_id, result| {
+        let Ok(profile) = feedback_services.load_sidebar().map(|sidebar| sidebar.profile) else {
+            return;
+        };
+        let _ = tauri::async_runtime::block_on(feedback_network.broadcast_quick_alert_feedback(
+            NetworkEventSink::native(feedback_events.clone()),
+            crate::protocol::QuickAlertFeedbackFrame {
+                alert_id: alert_id.to_string(),
+                alert_sender_device_id: sender_device_id.to_string(),
+                responder_device_id: profile.device_id,
+                responder_nickname: profile.nickname,
+                result: result.to_string(),
+                created_at: chrono::Utc::now().timestamp_millis(),
+            },
+        ));
+    });
+    start_native_network_refresh(
+        &window,
+        services.clone(),
+        network_events,
+        sidebar.profile.nickname.clone(),
+        sidebar.profile.device_id.clone(),
+    );
     let pet_window = create_pet_window()?;
     window
         .show()
@@ -333,13 +381,21 @@ fn start_native_network_refresh(
     services: NativeAppServices,
     events: NativeEventBus,
     local_nickname: String,
+    local_device_id: String,
 ) {
     let window = window.as_weak();
     let timer = Box::leak(Box::new(Timer::default()));
     timer.start(TimerMode::Repeated, Duration::from_millis(300), move || {
-        if events.drain().is_empty() {
+        let events = events.drain();
+        if events.is_empty() {
             return;
         }
+        let alerts = events
+            .iter()
+            .filter(|event| event.name == "quick_alert_received")
+            .filter_map(|event| serde_json::from_value::<crate::protocol::QuickAlertFrame>(event.payload.clone()).ok())
+            .map(|alert| alert_item_from_frame(alert, &local_device_id))
+            .collect::<Vec<_>>();
         let Ok(sidebar) = services.load_sidebar() else {
             return;
         };
@@ -387,8 +443,26 @@ fn start_native_network_refresh(
             window.set_conversations(ModelRc::new(VecModel::from(conversations)));
             window.set_peers(ModelRc::new(VecModel::from(peers)));
             window.set_messages(ModelRc::new(VecModel::from(rows)));
+            if !alerts.is_empty() {
+                window.set_alerts(ModelRc::new(VecModel::from(alerts)));
+            }
         }
     });
+}
+
+fn alert_item_from_frame(
+    alert: crate::protocol::QuickAlertFrame,
+    local_device_id: &str,
+) -> AlertItem {
+    let feedback_allowed = alert.sender_device_id != local_device_id;
+    AlertItem {
+        id: SharedString::from(alert.alert_id),
+        sender_device_id: SharedString::from(alert.sender_device_id),
+        sender: SharedString::from(alert.sender_nickname),
+        source: SharedString::from(alert.sender_address.unwrap_or_else(|| "未知 IP".to_string())),
+        content: SharedString::from(alert.content),
+        feedback_allowed,
+    }
 }
 
 fn create_pet_window() -> Result<Option<PetWindow>, String> {
@@ -472,7 +546,8 @@ fn native_pet_resource_roots(app_data_dir: &Path) -> Vec<PetResourceRoot> {
 
 #[cfg(test)]
 mod tests {
-    use super::{native_page_title, NativePage};
+    use super::{alert_item_from_frame, native_page_title, NativePage};
+    use crate::protocol::QuickAlertFrame;
 
     #[test]
     fn native_shell_opens_on_chat_page() {
@@ -482,5 +557,25 @@ mod tests {
     #[test]
     fn notification_page_has_a_localized_title() {
         assert_eq!(native_page_title(NativePage::Alerts), "告警与通知");
+    }
+
+    #[test]
+    fn alert_item_keeps_sender_identity_for_feedback() {
+        let item = alert_item_from_frame(
+            QuickAlertFrame {
+                alert_id: "alert-1".to_string(),
+                sender_device_id: "AA-BB-CC".to_string(),
+                sender_nickname: "测试设备".to_string(),
+                sender_address: Some("192.168.1.12".to_string()),
+                content: "呱呱~呱~~".to_string(),
+                mode: "normal".to_string(),
+                simulation: None,
+                created_at: 1,
+            },
+            "本机设备",
+        );
+
+        assert_eq!(item.sender_device_id, "AA-BB-CC");
+        assert!(item.feedback_allowed);
     }
 }

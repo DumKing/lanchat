@@ -778,9 +778,10 @@ impl Network {
 
     pub async fn broadcast_quick_alert(
         &self,
-        app: AppHandle,
+        app: impl Into<NetworkEventSink>,
         frame: QuickAlertFrame,
     ) -> Result<(), String> {
+        let app = app.into();
         let wire_frame = WireFrame::QuickAlert(frame.clone());
         let senders = self
             .senders
@@ -804,9 +805,10 @@ impl Network {
 
     pub async fn broadcast_quick_alert_feedback(
         &self,
-        app: AppHandle,
+        app: impl Into<NetworkEventSink>,
         frame: QuickAlertFeedbackFrame,
     ) -> Result<(), String> {
+        let app = app.into();
         let wire_frame = WireFrame::QuickAlertFeedback(frame.clone());
         let senders = self
             .senders
