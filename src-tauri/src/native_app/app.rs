@@ -3,7 +3,7 @@ include!(concat!(env!("OUT_DIR"), "/native_main_ui.rs"));
 use crate::native_app::{game_room_from_frame, native_game_catalog, NativeAppServices, NativeEventBus, NativeGameRoomStore, NativeUiSettings, PetWindow, TextKey, Translator};
 use crate::storage::DEFAULT_GROUP_ID;
 use crate::{
-    desktop_pet::{DesktopPetManager, DesktopPetPackage, PetPackageSource, PetResourceRoot, PetStateKind},
+    desktop_pet::{DesktopPetManager, DesktopPetPackage, PetEvent, PetPackageSource, PetResourceRoot, PetStateKind, PetStateMachine},
     native_app::initial_idle_frame,
     network::Network,
     runtime_events::NetworkEventSink,
@@ -416,7 +416,8 @@ pub fn run() -> Result<(), String> {
             frame,
         ));
     });
-    let pet_window = create_pet_window(&window)?;
+    let pet_state = Rc::new(RefCell::new(PetStateMachine::new()));
+    let pet_window = create_pet_window(&window, pet_state.clone())?;
     start_native_network_refresh(
         &window,
         services.clone(),
@@ -424,6 +425,7 @@ pub fn run() -> Result<(), String> {
         sidebar.profile.nickname.clone(),
         sidebar.profile.device_id.clone(),
         room_store,
+        pet_state,
     );
     window
         .show()
@@ -472,6 +474,7 @@ fn start_native_network_refresh(
     local_nickname: String,
     local_device_id: String,
     room_store: Rc<RefCell<NativeGameRoomStore>>,
+    pet_state: Rc<RefCell<PetStateMachine>>,
 ) {
     let window = window.as_weak();
     let timer = Box::leak(Box::new(Timer::default()));
@@ -486,6 +489,9 @@ fn start_native_network_refresh(
             .filter_map(|event| serde_json::from_value::<crate::protocol::QuickAlertFrame>(event.payload.clone()).ok())
             .map(|alert| alert_item_from_frame(alert, &local_device_id))
             .collect::<Vec<_>>();
+        if !alerts.is_empty() {
+            pet_state.borrow_mut().handle(PetEvent::AlertRaised);
+        }
         for room in events
             .iter()
             .filter(|event| event.name == "game_frame_received")
@@ -580,7 +586,10 @@ fn alert_item_from_frame(
     }
 }
 
-fn create_pet_window(main_window: &MainWindow) -> Result<Option<PetWindow>, String> {
+fn create_pet_window(
+    main_window: &MainWindow,
+    pet_state: Rc<RefCell<PetStateMachine>>,
+) -> Result<Option<PetWindow>, String> {
     let manager = native_desktop_pet_manager();
     if !manager.settings().enabled {
         return Ok(None);
@@ -596,12 +605,19 @@ fn create_pet_window(main_window: &MainWindow) -> Result<Option<PetWindow>, Stri
     let pet_window = PetWindow::new().map_err(|error| format!("创建原生桌宠窗口失败：{error}"))?;
     pet_window.set_pet_image(image);
     let main_window = main_window.as_weak();
+    let click_state = pet_state.clone();
     pet_window.on_clicked(move || {
+        let mut state = click_state.borrow_mut();
+        if state.current() == PetStateKind::Alert {
+            state.handle(PetEvent::AlertCleared);
+        } else {
+            state.handle(PetEvent::PointerInteract);
+        }
         let _ = main_window.upgrade_in_event_loop(|window| {
             let _ = window.show();
         });
     });
-    start_native_pet_animation(&pet_window, package);
+    start_native_pet_animation(&pet_window, package, pet_state);
     Ok(Some(pet_window))
 }
 
@@ -614,13 +630,18 @@ fn native_desktop_pet_manager() -> DesktopPetManager {
     )
 }
 
-fn start_native_pet_animation(pet_window: &PetWindow, package: DesktopPetPackage) {
+fn start_native_pet_animation(
+    pet_window: &PetWindow,
+    package: DesktopPetPackage,
+    state_machine: Rc<RefCell<PetStateMachine>>,
+) {
     let window = pet_window.as_weak();
     let clip_index = Rc::new(Cell::new(0usize));
     let elapsed_seconds = Rc::new(Cell::new(0.0f32));
     let timer = Box::leak(Box::new(Timer::default()));
     timer.start(TimerMode::Repeated, Duration::from_millis(80), move || {
-        let candidates = package.clip_candidates(PetStateKind::Idle, None);
+        let state = state_machine.borrow().current();
+        let candidates = package.clip_candidates(state, None);
         if candidates.is_empty() {
             return;
         }
@@ -630,6 +651,7 @@ fn start_native_pet_animation(pet_window: &PetWindow, package: DesktopPetPackage
         if elapsed >= DesktopPetPackage::clip_cycle_seconds(clip) {
             clip_index.set((current_index + 1 + fastrand::usize(..candidates.len())) % candidates.len());
             elapsed_seconds.set(0.0);
+            state_machine.borrow_mut().handle(pet_completion_event(state));
             return;
         }
         elapsed_seconds.set(elapsed);
@@ -643,6 +665,15 @@ fn start_native_pet_animation(pet_window: &PetWindow, package: DesktopPetPackage
             window.set_pet_image(image);
         }
     });
+}
+
+fn pet_completion_event(state: PetStateKind) -> PetEvent {
+    match state {
+        PetStateKind::Interact => PetEvent::InteractionFinished,
+        PetStateKind::Move => PetEvent::MovementFinished,
+        PetStateKind::Life => PetEvent::LifeFinished,
+        PetStateKind::Alert | PetStateKind::Idle => PetEvent::LifeFinished,
+    }
 }
 
 fn native_pet_resource_roots(app_data_dir: &Path) -> Vec<PetResourceRoot> {
@@ -667,8 +698,8 @@ fn native_pet_resource_roots(app_data_dir: &Path) -> Vec<PetResourceRoot> {
 
 #[cfg(test)]
 mod tests {
-    use super::{alert_item_from_frame, native_page_title, NativePage};
-    use crate::protocol::QuickAlertFrame;
+    use super::{alert_item_from_frame, native_page_title, pet_completion_event, NativePage};
+    use crate::{desktop_pet::{PetEvent, PetStateKind}, protocol::QuickAlertFrame};
 
     #[test]
     fn native_shell_opens_on_chat_page() {
@@ -698,6 +729,14 @@ mod tests {
 
         assert_eq!(item.sender_device_id, "AA-BB-CC");
         assert!(item.feedback_allowed);
+    }
+
+    #[test]
+    fn pet_interaction_completion_uses_existing_state_machine_event() {
+        assert_eq!(
+            pet_completion_event(PetStateKind::Interact),
+            PetEvent::InteractionFinished
+        );
     }
 
 }
