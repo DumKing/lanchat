@@ -1,6 +1,36 @@
 import { Button, LineEdit, ScrollView } from "std-widgets.slint";
 
-export struct ChatMessage { author: string, content: string, outgoing: bool }
+// All visual tokens live here. Components only consume AppTheme properties.
+export struct AppTheme {
+    app-bg: color,
+    surface: color,
+    surface-muted: color,
+    surface-hover: color,
+    surface-selected: color,
+    rail-bg: color,
+    rail-hover: color,
+    rail-active: color,
+    rail-text: color,
+    accent: color,
+    accent-hover: color,
+    accent-soft: color,
+    on-accent: color,
+    incoming-bubble: color,
+    outgoing-bubble: color,
+    text: color,
+    text-muted: color,
+    text-faint: color,
+    border: color,
+    online: color,
+    offline: color,
+    system: color,
+    radius-small: length,
+    radius: length,
+    panel-padding: length,
+    gap: length,
+}
+
+export struct ChatMessage { author: string, content: string, kind: string, outgoing: bool }
 export struct AdminNotification { title: string, content: string, status: string }
 export struct Conversation { id: string, title: string, subtitle: string, unread-count: string }
 export struct Device { id: string, nickname: string, address: string, status: string, capability: string }
@@ -11,44 +41,218 @@ export struct AlertItem { id: string, sender-device-id: string, sender: string, 
 export struct GameOption { id: string, name: string, description: string, icon: string, players: string }
 export struct GameRoom { id: string, game-id: string, game-name: string, name: string, host: string, players: string }
 
-component RailAction inherits Rectangle {
+// Compact initial avatar used in contacts, messages and member lists.
+component Avatar inherits Rectangle {
+    in property <AppTheme> theme;
+    in property <string> label;
+    in property <color> fill: theme.accent-soft;
+    in property <color> ink: theme.accent;
+    width: 38px;
+    height: 38px;
+    border-radius: theme.radius-small;
+    background: fill;
+    Text {
+        text: label;
+        color: ink;
+        font-size: 15px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// Reusable icon-only action with a desktop hover state.
+component IconAction inherits Rectangle {
+    in property <AppTheme> theme;
+    in property <string> icon;
+    in property <string> tooltip;
+    in property <bool> active;
+    callback clicked();
+    width: 34px;
+    height: 34px;
+    border-radius: theme.radius-small;
+    background: touch.has-hover ? theme.surface-hover : (active ? theme.accent-soft : transparent);
+    Text {
+        text: icon;
+        color: active ? theme.accent : theme.text-muted;
+        font-size: 18px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea { clicked => { root.clicked(); } }
+}
+
+// Left tool rail item. Labels are kept visible to feel like a desktop app.
+component RailItem inherits Rectangle {
+    in property <AppTheme> theme;
     in property <string> icon;
     in property <string> label;
     in property <bool> active;
     callback clicked();
-    width: 48px; height: 48px; border-radius: 10px;
-    background: active ? #159b8c : transparent;
-    VerticalLayout { padding: 5px; spacing: 0px;
-        Text { text: icon; color: active ? white : #b9d8d2; font-size: 18px; horizontal-alignment: center; }
-        Text { text: label; color: active ? white : #b9d8d2; font-size: 10px; horizontal-alignment: center; }
+    width: 52px;
+    height: 54px;
+    border-radius: theme.radius;
+    background: active ? theme.rail-active : (touch.has-hover ? theme.rail-hover : transparent);
+    VerticalLayout {
+        padding-top: 5px;
+        padding-bottom: 4px;
+        spacing: 0px;
+        Text { text: icon; color: active ? theme.on-accent : theme.rail-text; font-size: 18px; horizontal-alignment: center; }
+        Text { text: label; color: active ? theme.on-accent : theme.rail-text; font-size: 10px; horizontal-alignment: center; }
     }
-    TouchArea { clicked => { root.clicked(); } }
+    touch := TouchArea { clicked => { root.clicked(); } }
 }
 
-component InitialAvatar inherits Rectangle {
-    in property <string> value;
-    in property <color> fill: #d9f1ec;
-    width: 38px; height: 38px; border-radius: 10px; background: fill;
-    Text { text: value; color: #147d70; font-size: 15px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+// One contact row with selected and hover state, status dot and aligned metadata.
+component ConversationRow inherits Rectangle {
+    in property <AppTheme> theme;
+    in property <Conversation> conversation;
+    in property <bool> selected;
+    callback clicked(string);
+    height: 70px;
+    border-radius: theme.radius;
+    background: selected ? theme.surface-selected : (touch.has-hover ? theme.surface-hover : transparent);
+    HorizontalLayout {
+        padding: 10px;
+        spacing: 10px;
+        Avatar { theme: root.theme; label: conversation.title == "" ? "L" : conversation.title; }
+        VerticalLayout {
+            vertical-stretch: 1;
+            spacing: 4px;
+            HorizontalLayout {
+                Text { text: conversation.title; color: root.theme.text; font-size: 14px; font-weight: 700; overflow: elide; }
+                Rectangle { horizontal-stretch: 1; background: transparent; }
+                Text { text: conversation.unread-count; color: root.theme.accent; font-size: 11px; horizontal-alignment: right; }
+            }
+            HorizontalLayout {
+                Text { text: conversation.subtitle; color: root.theme.text-muted; font-size: 12px; overflow: elide; }
+                Rectangle { horizontal-stretch: 1; background: transparent; }
+                Rectangle { width: 7px; height: 7px; border-radius: 4px; background: conversation.subtitle == "频道" ? root.theme.online : root.theme.offline; }
+            }
+        }
+    }
+    touch := TouchArea { clicked => { root.clicked(conversation.id); } }
+}
+
+// Chat bubble handles normal incoming/outgoing messages. System messages are separate below.
+component ChatBubble inherits Rectangle {
+    in property <AppTheme> theme;
+    in property <ChatMessage> message;
+    min-height: 48px;
+    max-width: 470px;
+    border-radius: theme.radius;
+    border-width: message.outgoing ? 0px : 1px;
+    border-color: theme.border;
+    background: message.outgoing ? theme.outgoing-bubble : theme.incoming-bubble;
+    VerticalLayout {
+        padding: 10px;
+        spacing: 3px;
+        Text {
+            text: message.author;
+            color: message.outgoing ? theme.accent-soft : theme.text-muted;
+            font-size: 11px;
+            horizontal-alignment: message.outgoing ? right : left;
+        }
+        Text { text: message.content; color: message.outgoing ? theme.on-accent : theme.text; font-size: 14px; wrap: word-wrap; }
+    }
+}
+
+// System events are deliberately quiet and centered in the timeline.
+component SystemMessage inherits Rectangle {
+    in property <AppTheme> theme;
+    in property <string> content;
+    height: 28px;
+    background: transparent;
+    Text { text: content; color: theme.system; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+}
+
+// A timeline row selects either a normal bubble or a lightweight system event.
+component MessageRow inherits Rectangle {
+    in property <AppTheme> theme;
+    in property <ChatMessage> message;
+    height: message.kind == "system" ? 28px : 58px;
+    background: transparent;
+    SystemMessage { theme: root.theme; content: root.message.content; visible: root.message.kind == "system"; }
+    HorizontalLayout {
+        visible: root.message.kind != "system";
+        spacing: 8px;
+        Rectangle { horizontal-stretch: root.message.outgoing ? 1 : 0; background: transparent; }
+        if !root.message.outgoing : Avatar { theme: root.theme; label: root.message.author; }
+        ChatBubble { theme: root.theme; message: root.message; }
+        if root.message.outgoing : Avatar { theme: root.theme; label: "我"; fill: root.theme.accent; ink: root.theme.on-accent; }
+        Rectangle { horizontal-stretch: root.message.outgoing ? 0 : 1; background: transparent; }
+    }
+}
+
+// Bottom composer with reusable tool actions. The input keeps its desktop proportions.
+component Composer inherits Rectangle {
+    in property <AppTheme> theme;
+    in property <string> placeholder;
+    in property <string> hint;
+    in property <string> send-label;
+    in property <string> feedback;
+    in-out property <string> text;
+    in property <bool> disabled;
+    callback send(string);
+    height: 164px;
+    border-width: 1px;
+    border-color: theme.border;
+    background: theme.surface;
+    VerticalLayout {
+        padding: 14px;
+        spacing: 9px;
+        HorizontalLayout {
+            spacing: 6px;
+            IconAction { theme: root.theme; icon: "☺"; tooltip: "表情"; }
+            IconAction { theme: root.theme; icon: "◉"; tooltip: "语音"; }
+            IconAction { theme: root.theme; icon: "☎"; tooltip: "语音通话"; }
+            IconAction { theme: root.theme; icon: "▣"; tooltip: "视频通话"; }
+            IconAction { theme: root.theme; icon: "⌁"; tooltip: "发送文件"; }
+        }
+        Rectangle {
+            vertical-stretch: 1;
+            border-width: 1px;
+            border-color: root.theme.border;
+            border-radius: root.theme.radius;
+            background: root.disabled ? root.theme.surface-muted : root.theme.surface;
+            VerticalLayout {
+                padding: 10px;
+                spacing: 3px;
+                LineEdit { text <=> root.text; enabled: !root.disabled; placeholder-text: root.disabled ? "对方离线，暂不可发送消息" : root.placeholder; }
+                HorizontalLayout {
+                    Text { text: root.feedback == "" ? root.hint : root.feedback; color: root.theme.text-faint; font-size: 11px; }
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                    Button {
+                        text: root.send-label;
+                        enabled: !root.disabled;
+                        horizontal-stretch: 0;
+                        clicked => { root.send(root.text); }
+                    }
+                }
+            }
+        }
+    }
 }
 
 export component MainWindow inherits Window {
+    in property <AppTheme> theme: {
+        app-bg: #edf3f7, surface: #ffffff, surface-muted: #f5f7f9, surface-hover: #edf4ff,
+        surface-selected: #e6f1ff, rail-bg: #173546, rail-hover: #24485b, rail-active: #2c80dd, rail-text: #cce1de,
+        accent: #2f85e5, accent-hover: #1e73d0, accent-soft: #dcedff, on-accent: #ffffff, incoming-bubble: #f1f3f5,
+        outgoing-bubble: #2f85e5, text: #1f2937, text-muted: #6f7d8c, text-faint: #9aa6b2,
+        border: #e1e7ee, online: #23a566, offline: #ea6363, system: #a0a9b3,
+        radius-small: 7px, radius: 10px, panel-padding: 16px, gap: 10px,
+    };
     in property <string> app-title;
-    in property <string> nav-chat;
-    in property <string> nav-devices;
-    in property <string> nav-games;
-    in property <string> nav-alerts;
-    in property <string> nav-settings;
-    in property <string> search-chats;
-    in property <string> lan-channel;
-    in property <string> channel-broadcast;
-    in property <string> input-message;
-    in property <string> send-label;
-    in property <string> input-hint;
+    in property <string> nav-chat; in property <string> nav-devices; in property <string> nav-games; in property <string> nav-alerts; in property <string> nav-settings;
+    in property <string> search-chats; in property <string> lan-channel; in property <string> channel-broadcast;
+    in property <string> input-message; in property <string> send-label; in property <string> input-hint;
     in-out property <string> message-input;
     in property <string> send-feedback;
     in-out property <string> active-conversation-id: "lan-room";
     in property <bool> active-conversation-is-group: true;
+    in property <bool> active-peer-online: true;
+    in property <string> active-peer-address;
     in property <int> page;
     in property <string> page-title;
     in property <[ChatMessage]> messages;
@@ -68,160 +272,150 @@ export component MainWindow inherits Window {
     callback select-page(int); callback select-conversation(string); callback select-device(string);
     callback save-profile(string); callback select-pet(string); callback toggle-pet(bool);
     callback send-message(string); callback send-alert(); callback feedback-alert(string, string, string);
-    callback create-game-room(string); callback join-game-room(string, string);
-    callback set-locale(string);
-    title: root.app-title; min-width: 1000px; min-height: 620px; background: #f3f8f6;
+    callback create-game-room(string); callback join-game-room(string, string); callback set-locale(string);
+    title: root.app-title;
+    min-width: 1040px;
+    min-height: 680px;
+    background: theme.app-bg;
 
     HorizontalLayout {
         spacing: 0px;
+        // Global navigation rail.
         Rectangle {
-            width: 72px; background: #102f2d;
-            VerticalLayout { padding-top: 14px; padding-bottom: 13px; spacing: 9px;
-                InitialAvatar { width: 44px; height: 44px; fill: #17635d; value: "L"; }
-                Rectangle { height: 6px; background: transparent; }
-                RailAction { icon: "●"; label: root.nav-chat; active: root.page == 0; clicked => { root.select-page(0); } }
-                RailAction { icon: "▣"; label: root.nav-devices; active: root.page == 1; clicked => { root.select-page(1); } }
-                RailAction { icon: "♟"; label: root.nav-games; active: root.page == 2; clicked => { root.select-page(2); } }
-                RailAction { icon: "!"; label: root.nav-alerts; active: root.page == 3; clicked => { root.select-page(3); } }
-                RailAction { icon: "＋"; label: "新建"; active: false; }
+            width: 76px;
+            background: root.theme.rail-bg;
+            VerticalLayout {
+                padding-top: 14px; padding-bottom: 14px; spacing: 9px;
+                Avatar { theme: root.theme; width: 46px; height: 46px; label: "L"; fill: root.theme.accent; ink: root.theme.on-accent; }
+                Rectangle { height: 7px; background: transparent; }
+                RailItem { theme: root.theme; icon: "●"; label: root.nav-chat; active: root.page == 0; clicked => { root.select-page(0); } }
+                RailItem { theme: root.theme; icon: "▣"; label: root.nav-devices; active: root.page == 1; clicked => { root.select-page(1); } }
+                RailItem { theme: root.theme; icon: "♟"; label: root.nav-games; active: root.page == 2; clicked => { root.select-page(2); } }
+                RailItem { theme: root.theme; icon: "!"; label: root.nav-alerts; active: root.page == 3; clicked => { root.select-page(3); } }
                 Rectangle { vertical-stretch: 1; background: transparent; }
-                RailAction { icon: "⚙"; label: root.nav-settings; active: root.page == 4; clicked => { root.select-page(4); } }
+                RailItem { theme: root.theme; icon: "⚙"; label: root.nav-settings; active: root.page == 4; clicked => { root.select-page(4); } }
             }
         }
 
+        // Contact and channel list.
         Rectangle {
-            width: 292px; background: #f5faf8; border-width: 1px; border-color: #d9e5e1;
-            VerticalLayout { padding-top: 17px; spacing: 10px;
-                HorizontalLayout { padding-left: 17px; padding-right: 15px;
-                    Text { text: root.nav-chat; color: #1b3532; font-size: 20px; font-weight: 700; }
+            width: 300px;
+            background: root.theme.surface;
+            border-width: 1px;
+            border-color: root.theme.border;
+            VerticalLayout {
+                padding-top: root.theme.panel-padding;
+                spacing: root.theme.gap;
+                HorizontalLayout {
+                    padding-left: root.theme.panel-padding; padding-right: root.theme.panel-padding;
+                    Text { text: root.nav-chat; color: root.theme.text; font-size: 20px; font-weight: 700; }
                     Rectangle { horizontal-stretch: 1; background: transparent; }
-                    Text { text: "＋"; color: #2d625b; font-size: 21px; }
-                    Text { text: "↻"; color: #55736e; font-size: 18px; }
+                    IconAction { theme: root.theme; icon: "＋"; tooltip: "新建频道"; }
+                    IconAction { theme: root.theme; icon: "↻"; tooltip: "刷新设备"; }
                 }
-                HorizontalLayout { padding-left: 15px; padding-right: 15px;
-                    Rectangle { height: 36px; border-radius: 8px; border-width: 1px; border-color: #d5e3df; background: white;
-                        LineEdit { text: ""; placeholder-text: root.search-chats; }
+                HorizontalLayout {
+                    padding-left: root.theme.panel-padding; padding-right: root.theme.panel-padding;
+                    Rectangle {
+                        height: 38px; border-width: 1px; border-color: root.theme.border; border-radius: root.theme.radius-small; background: root.theme.surface-muted;
+                        LineEdit { placeholder-text: root.search-chats; }
                     }
                 }
-                Rectangle { height: 1px; background: #dfe9e6; }
-                HorizontalLayout { padding-left: 9px; padding-right: 9px;
-                    Rectangle { height: 70px; border-width: 1px; border-color: #159b8c; border-radius: 8px; background: #e2f5f0;
-                        HorizontalLayout { padding: 10px; spacing: 10px;
-                            InitialAvatar { value: "局"; fill: #d3f0e9; }
+                Rectangle { height: 1px; background: root.theme.border; }
+                HorizontalLayout {
+                    padding-left: 10px; padding-right: 10px;
+                    Rectangle {
+                        height: 70px; border-radius: root.theme.radius;
+                        background: root.active-conversation-id == "lan-room" ? root.theme.surface-selected : root.theme.surface-muted;
+                        HorizontalLayout { padding: 10px; spacing: root.theme.gap;
+                            Avatar { theme: root.theme; label: "局"; }
                             VerticalLayout { spacing: 3px;
-                                Text { text: root.lan-channel; color: #1d4540; font-size: 15px; font-weight: 700; }
-                                Text { text: root.channel-broadcast; color: #6f8984; font-size: 12px; }
+                                Text { text: root.lan-channel; color: root.theme.text; font-size: 15px; font-weight: 700; }
+                                Text { text: root.channel-broadcast; color: root.theme.text-muted; font-size: 12px; }
                             }
+                            Rectangle { horizontal-stretch: 1; background: transparent; }
+                            Rectangle { width: 8px; height: 8px; border-radius: 4px; background: root.theme.online; }
                         }
                         TouchArea { clicked => { root.active-conversation-id = "lan-room"; root.select-conversation("lan-room"); } }
                     }
                 }
-                ScrollView { vertical-stretch: 1;
-                    VerticalLayout { padding-left: 9px; padding-right: 9px; spacing: 4px;
-                        for conversation in root.conversations: Rectangle {
-                            height: 67px; border-radius: 8px; background: conversation.id == root.active-conversation-id ? #e7f5f1 : transparent;
-                            HorizontalLayout { padding: 10px; spacing: 10px;
-                                InitialAvatar { value: conversation.title == "" ? "L" : conversation.title; }
-                                VerticalLayout { spacing: 4px;
-                                    HorizontalLayout { Text { text: conversation.title; color: #243b38; font-size: 14px; font-weight: 700; } Text { text: conversation.unread-count; color: #ec5361; horizontal-alignment: right; font-size: 12px; } }
-                                    Text { text: conversation.subtitle; color: #819692; font-size: 12px; }
-                                }
-                            }
-                            TouchArea { clicked => { root.active-conversation-id = conversation.id; root.select-conversation(conversation.id); } }
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout { padding-left: 10px; padding-right: 10px; spacing: 4px;
+                        for conversation in root.conversations: ConversationRow {
+                            theme: root.theme; conversation: conversation; selected: conversation.id == root.active-conversation-id;
+                            clicked(id) => { root.active-conversation-id = id; root.select-conversation(id); }
                         }
                     }
                 }
             }
         }
 
+        // Main content changes with the active navigation page.
         VerticalLayout {
-            padding: 0px; spacing: 0px;
-            Rectangle { height: 76px; background: #fbfdfc; border-width: 1px; border-color: #dfe9e6;
-                VerticalLayout { padding-left: 24px; padding-top: 14px; spacing: 3px;
-                    Text { text: root.page-title; color: #1d3834; font-size: 19px; font-weight: 700; }
-                    Text { text: root.page == 3 ? "告警处理与本机历史通知" : root.channel-broadcast; color: #77908b; font-size: 12px; }
-                }
-            }
-            if root.page == 0 : Rectangle { vertical-stretch: 1; background: #ffffff;
-                ScrollView { vertical-stretch: 1;
-                    VerticalLayout { padding-left: 28px; padding-right: 28px; padding-top: 20px; padding-bottom: 18px; spacing: 13px;
-                        Text { text: "今天"; color: #8da19d; font-size: 11px; horizontal-alignment: center; }
-                        for message in root.messages: HorizontalLayout {
-                            Rectangle { horizontal-stretch: message.outgoing ? 1 : 0; background: transparent; }
-                            InitialAvatar { value: message.author; fill: message.outgoing ? #1a9b8d : #d9f1ec; }
-                            Rectangle { max-width: 440px; min-height: 46px; border-radius: 8px; border-width: message.outgoing ? 0 : 1px; border-color: #dfe9e6; background: message.outgoing ? #159b8c : #f5f8f7;
-                                VerticalLayout { padding: 10px; spacing: 3px;
-                                    Text { text: message.author; color: message.outgoing ? #d5f7f0 : #748b86; font-size: 11px; horizontal-alignment: message.outgoing ? right : left; }
-                                    Text { text: message.content; color: message.outgoing ? white : #263e3a; wrap: word-wrap; font-size: 14px; }
-                                }
-                            }
-                            if message.outgoing : InitialAvatar { value: "我"; fill: #159b8c; }
-                            Rectangle { horizontal-stretch: message.outgoing ? 0 : 1; background: transparent; }
-                        }
+            padding: 0px;
+            spacing: 0px;
+            Rectangle {
+                height: 76px; background: root.theme.surface; border-width: 1px; border-color: root.theme.border;
+                HorizontalLayout { padding-left: 24px; padding-right: 18px; spacing: 10px;
+                    VerticalLayout { spacing: 3px;
+                        Text { text: root.page-title; color: root.theme.text; font-size: 19px; font-weight: 700; }
+                        Text { text: root.page == 0 ? root.active-peer-address : root.channel-broadcast; color: root.theme.text-muted; font-size: 12px; }
+                    }
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                    if root.page == 0 : Rectangle {
+                        height: 30px; border-radius: root.theme.radius-small; background: root.active-peer-online ? root.theme.accent-soft : root.theme.surface-muted;
+                        HorizontalLayout { padding: 8px; spacing: 6px; Rectangle { width: 7px; height: 7px; border-radius: 4px; background: root.active-peer-online ? root.theme.online : root.theme.offline; } Text { text: root.active-peer-online ? "在线" : "离线"; color: root.theme.text-muted; font-size: 11px; } }
                     }
                 }
             }
-            if root.page == 1 : Rectangle { vertical-stretch: 1; background: white;
-                ScrollView { VerticalLayout { padding: 20px; spacing: 7px;
-                    Text { text: "已发现设备"; color: #627c76; font-size: 13px; }
-                    for peer in root.peers: Rectangle { height: 62px; border-radius: 8px; border-width: 1px; border-color: #dfe9e6; background: #fbfdfc;
-                        HorizontalLayout { padding: 11px; spacing: 11px;
-                            InitialAvatar { value: peer.nickname; }
-                            VerticalLayout { spacing: 3px; Text { text: peer.nickname; color: #243b38; font-size: 14px; font-weight: 700; } Text { text: peer.address + " · " + peer.capability; color: #819692; font-size: 12px; } }
-                            Text { text: peer.status; color: peer.status == "在线" ? #18a766 : #e2575e; font-size: 12px; horizontal-alignment: right; }
-                        }
-                        TouchArea { clicked => { root.select-device(peer.id); } }
+            if root.page == 0 : Rectangle {
+                vertical-stretch: 1;
+                background: root.theme.surface;
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout { padding-left: 28px; padding-right: 28px; padding-top: 18px; padding-bottom: 18px; spacing: 12px;
+                        Text { text: "今天"; color: root.theme.text-faint; font-size: 11px; horizontal-alignment: center; }
+                        for message in root.messages: MessageRow { theme: root.theme; message: message; }
                     }
-                } }
-            }
-            if root.page == 2 : Rectangle { vertical-stretch: 1; background: white;
-                ScrollView { VerticalLayout { padding: 22px; spacing: 10px;
-                    Text { text: "局域网游戏"; color: #203e39; font-size: 18px; font-weight: 700; }
-                    Text { text: "创建房间后向当前在线设备广播。"; color: #78908b; font-size: 12px; }
-                    for game in root.games: Rectangle { min-height: 76px; border-radius: 8px; border-width: 1px; border-color: #dbe8e5; background: #f7fbfa;
-                        HorizontalLayout { padding: 12px; spacing: 12px;
-                            InitialAvatar { value: game.icon; fill: #d8f1ec; }
-                            VerticalLayout { spacing: 3px; Text { text: game.name + " · " + game.players; color: #1e4640; font-size: 15px; font-weight: 700; } Text { text: game.description; color: #748d87; font-size: 12px; wrap: word-wrap; } }
-                            Button { text: "创建房间"; horizontal-stretch: 0; clicked => { root.create-game-room(game.id); } }
-                        }
-                    }
-                    Text { text: "已发现房间"; color: #203e39; font-size: 16px; font-weight: 700; }
-                    for room in root.game-rooms: Rectangle { min-height: 58px; border-radius: 8px; border-width: 1px; border-color: #dbe8e5; background: white;
-                        HorizontalLayout { padding: 10px; spacing: 10px; VerticalLayout { spacing: 3px; Text { text: room.name + " · " + room.game-name; font-size: 14px; font-weight: 700; } Text { text: "房主：" + room.host + " · " + room.players; color: #758e88; font-size: 12px; } } Button { text: "加入"; horizontal-stretch: 0; clicked => { root.join-game-room(room.id, room.game-id); } } }
-                    }
-                } }
-            }
-            if root.page == 3 : Rectangle { vertical-stretch: 1; background: white;
-                ScrollView { VerticalLayout { padding: 22px; spacing: 10px;
-                    HorizontalLayout { Text { text: "最近告警"; color: #203e39; font-size: 18px; font-weight: 700; } Button { text: "发送告警"; horizontal-stretch: 0; clicked => { root.send-alert(); } } }
-                    for alert in root.alerts: Rectangle { min-height: 78px; border-radius: 8px; border-width: 1px; border-color: #f1d9d2; background: #fff7f4;
-                        VerticalLayout { padding: 11px; spacing: 4px; Text { text: alert.sender + " · " + alert.source; color: #926158; font-size: 12px; } Text { text: alert.content; color: #442d29; font-size: 14px; font-weight: 700; wrap: word-wrap; } if alert.feedback-allowed : HorizontalLayout { Button { text: "真实"; clicked => { root.feedback-alert(alert.id, alert.sender-device-id, "real"); } } Button { text: "虚假"; clicked => { root.feedback-alert(alert.id, alert.sender-device-id, "false"); } } } }
-                    }
-                    Text { text: "历史公告通知"; color: #203e39; font-size: 16px; font-weight: 700; }
-                    for notification in root.notifications: Rectangle { min-height: 74px; border-radius: 8px; border-width: 1px; border-color: #dce8e5; background: #f7fbfa;
-                        VerticalLayout { padding: 11px; spacing: 4px; Text { text: notification.title; color: #1f4942; font-size: 14px; font-weight: 700; } Text { text: notification.content; color: #617872; font-size: 12px; wrap: word-wrap; } Text { text: notification.status; color: #8a9c98; font-size: 11px; } }
-                    }
-                } }
-            }
-            if root.page == 4 : Rectangle { vertical-stretch: 1; background: white;
-                ScrollView { VerticalLayout { padding: 26px; spacing: 12px;
-                    Text { text: "基础设置"; color: #203e39; font-size: 18px; font-weight: 700; } Text { text: "本机资料"; color: #708984; font-size: 12px; }
-                    LineEdit { text <=> root.profile-nickname; placeholder-text: "输入昵称"; } Button { text: "保存昵称"; horizontal-stretch: 0; clicked => { root.save-profile(root.profile-nickname); } } Text { text: root.settings-feedback; color: #159b8c; font-size: 12px; }
-                    Rectangle { height: 1px; background: #e1ebe8; } Text { text: "桌宠设置"; color: #203e39; font-size: 18px; font-weight: 700; } Button { text: root.pet-enabled ? "关闭桌宠" : "开启桌宠"; horizontal-stretch: 0; clicked => { root.toggle-pet(!root.pet-enabled); } } Text { text: "已导入桌宠"; color: #708984; font-size: 12px; }
-                    for pet in root.pets: Button { text: pet.selected ? ("✓  " + pet.name) : pet.name; clicked => { root.select-pet(pet.id); } }
-                    Rectangle { height: 1px; background: #e1ebe8; } Text { text: "语言"; color: #203e39; font-size: 18px; font-weight: 700; } HorizontalLayout { spacing: 8px; Button { text: root.current-locale == "zh-CN" ? "✓ 中文" : "中文"; horizontal-stretch: 0; clicked => { root.set-locale("zh-CN"); } } Button { text: root.current-locale == "en-US" ? "✓ English" : "English"; horizontal-stretch: 0; clicked => { root.set-locale("en-US"); } } }
-                } }
-            }
-            if root.page == 0 : Rectangle { height: 148px; border-width: 1px; border-color: #dfe9e6; background: #fbfdfc;
-                VerticalLayout { padding: 13px; spacing: 9px; Text { text: "☺   ◉   ▣   ♫   @"; color: #54716b; font-size: 18px; }
-                    Rectangle { vertical-stretch: 1; border-radius: 8px; border-width: 1px; border-color: #d7e4e0; background: white; VerticalLayout { padding: 9px; LineEdit { text <=> root.message-input; placeholder-text: root.input-message; } HorizontalLayout { Text { text: root.send-feedback == "" ? root.input-hint : root.send-feedback; color: #8a9d98; font-size: 11px; } Button { text: root.send-label; horizontal-stretch: 0; clicked => { root.send-message(root.message-input); } } } } }
                 }
             }
+            if root.page == 1 : Rectangle { vertical-stretch: 1; background: root.theme.surface;
+                ScrollView { VerticalLayout { padding: 22px; spacing: 8px;
+                    Text { text: "已发现设备"; color: root.theme.text-muted; font-size: 13px; }
+                    for peer in root.peers: Rectangle { height: 64px; border-radius: root.theme.radius; border-width: 1px; border-color: root.theme.border; background: touch.has-hover ? root.theme.surface-hover : root.theme.surface;
+                        HorizontalLayout { padding: 11px; spacing: 11px; Avatar { theme: root.theme; label: peer.nickname; } VerticalLayout { spacing: 3px; Text { text: peer.nickname; color: root.theme.text; font-size: 14px; font-weight: 700; } Text { text: peer.address + " · " + peer.capability; color: root.theme.text-muted; font-size: 12px; } } Rectangle { horizontal-stretch: 1; background: transparent; } Rectangle { width: 8px; height: 8px; border-radius: 4px; background: peer.status == "在线" ? root.theme.online : root.theme.offline; } }
+                        touch := TouchArea { clicked => { root.select-device(peer.id); } }
+                    }
+                } }
+            }
+            if root.page == 2 : Rectangle { vertical-stretch: 1; background: root.theme.surface;
+                ScrollView { VerticalLayout { padding: 22px; spacing: 10px; Text { text: "局域网游戏"; color: root.theme.text; font-size: 18px; font-weight: 700; } Text { text: "创建房间后向当前在线设备广播。"; color: root.theme.text-muted; font-size: 12px; }
+                    for game in root.games: Rectangle { min-height: 76px; border-radius: root.theme.radius; border-width: 1px; border-color: root.theme.border; background: root.theme.surface-muted; HorizontalLayout { padding: 12px; spacing: 12px; Avatar { theme: root.theme; label: game.icon; } VerticalLayout { spacing: 3px; Text { text: game.name + " · " + game.players; color: root.theme.text; font-size: 15px; font-weight: 700; } Text { text: game.description; color: root.theme.text-muted; font-size: 12px; wrap: word-wrap; } } Button { text: "创建房间"; horizontal-stretch: 0; clicked => { root.create-game-room(game.id); } } } }
+                    Text { text: "已发现房间"; color: root.theme.text; font-size: 16px; font-weight: 700; }
+                    for room in root.game-rooms: Rectangle { min-height: 58px; border-radius: root.theme.radius; border-width: 1px; border-color: root.theme.border; background: root.theme.surface; HorizontalLayout { padding: 10px; spacing: 10px; VerticalLayout { spacing: 3px; Text { text: room.name + " · " + room.game-name; color: root.theme.text; font-size: 14px; font-weight: 700; } Text { text: "房主：" + room.host + " · " + room.players; color: root.theme.text-muted; font-size: 12px; } } Button { text: "加入"; horizontal-stretch: 0; clicked => { root.join-game-room(room.id, room.game-id); } } } }
+                } }
+            }
+            if root.page == 3 : Rectangle { vertical-stretch: 1; background: root.theme.surface;
+                ScrollView { VerticalLayout { padding: 22px; spacing: 10px; HorizontalLayout { Text { text: "最近告警"; color: root.theme.text; font-size: 18px; font-weight: 700; } Rectangle { horizontal-stretch: 1; background: transparent; } Button { text: "发送告警"; horizontal-stretch: 0; clicked => { root.send-alert(); } } }
+                    for alert in root.alerts: Rectangle { min-height: 78px; border-radius: root.theme.radius; border-width: 1px; border-color: root.theme.border; background: root.theme.surface-muted; VerticalLayout { padding: 11px; spacing: 4px; Text { text: alert.sender + " · " + alert.source; color: root.theme.text-muted; font-size: 12px; } Text { text: alert.content; color: root.theme.text; font-size: 14px; font-weight: 700; wrap: word-wrap; } if alert.feedback-allowed : HorizontalLayout { Button { text: "真实"; clicked => { root.feedback-alert(alert.id, alert.sender-device-id, "real"); } } Button { text: "虚假"; clicked => { root.feedback-alert(alert.id, alert.sender-device-id, "false"); } } } } }
+                    Text { text: "历史公告通知"; color: root.theme.text; font-size: 16px; font-weight: 700; }
+                    for notification in root.notifications: Rectangle { min-height: 74px; border-radius: root.theme.radius; border-width: 1px; border-color: root.theme.border; background: root.theme.surface-muted; VerticalLayout { padding: 11px; spacing: 4px; Text { text: notification.title; color: root.theme.text; font-size: 14px; font-weight: 700; } Text { text: notification.content; color: root.theme.text-muted; font-size: 12px; wrap: word-wrap; } Text { text: notification.status; color: root.theme.text-faint; font-size: 11px; } } }
+                } }
+            }
+            if root.page == 4 : Rectangle { vertical-stretch: 1; background: root.theme.surface;
+                ScrollView { VerticalLayout { padding: 26px; spacing: 12px; Text { text: "基础设置"; color: root.theme.text; font-size: 18px; font-weight: 700; } Text { text: "本机资料"; color: root.theme.text-muted; font-size: 12px; } LineEdit { text <=> root.profile-nickname; placeholder-text: "输入昵称"; } Button { text: "保存昵称"; horizontal-stretch: 0; clicked => { root.save-profile(root.profile-nickname); } } Text { text: root.settings-feedback; color: root.theme.accent; font-size: 12px; }
+                    Rectangle { height: 1px; background: root.theme.border; } Text { text: "桌宠设置"; color: root.theme.text; font-size: 18px; font-weight: 700; } Button { text: root.pet-enabled ? "关闭桌宠" : "开启桌宠"; horizontal-stretch: 0; clicked => { root.toggle-pet(!root.pet-enabled); } } Text { text: "已导入桌宠"; color: root.theme.text-muted; font-size: 12px; } for pet in root.pets: Button { text: pet.selected ? ("✓  " + pet.name) : pet.name; clicked => { root.select-pet(pet.id); } }
+                    Rectangle { height: 1px; background: root.theme.border; } Text { text: "语言"; color: root.theme.text; font-size: 18px; font-weight: 700; } HorizontalLayout { spacing: 8px; Button { text: root.current-locale == "zh-CN" ? "✓ 中文" : "中文"; horizontal-stretch: 0; clicked => { root.set-locale("zh-CN"); } } Button { text: root.current-locale == "en-US" ? "✓ English" : "English"; horizontal-stretch: 0; clicked => { root.set-locale("en-US"); } } }
+                } }
+            }
+            if root.page == 0 : Composer { theme: root.theme; placeholder: root.input-message; hint: root.input-hint; send-label: root.send-label; feedback: root.send-feedback; text <=> root.message-input; disabled: !root.active-peer-online && !root.active-conversation-is-group; send(value) => { root.send-message(value); } }
         }
 
-        if root.page == 0 && root.active-conversation-is-group : Rectangle { width: 238px; background: #f8fbfa; border-width: 1px; border-color: #d9e5e1;
-            VerticalLayout { padding-top: 18px; spacing: 8px; HorizontalLayout { padding-left: 16px; Text { text: "频道信息"; color: #24453f; font-size: 16px; font-weight: 700; } } HorizontalLayout { padding-left: 14px; padding-right: 14px; Rectangle { min-height: 62px; border-radius: 8px; border-width: 1px; border-color: #dce8e5; background: white; VerticalLayout { padding: 9px; Text { text: "频道公告"; color: #42645e; font-size: 12px; font-weight: 700; } Text { text: "局域网内的即时交流频道"; color: #819692; font-size: 11px; } } } } Rectangle { height: 1px; background: #dfe9e6; } HorizontalLayout { padding-left: 16px; Text { text: "频道成员"; color: #24453f; font-size: 15px; font-weight: 700; } } ScrollView { vertical-stretch: 1; VerticalLayout { padding-left: 14px; padding-right: 14px; spacing: 2px; for member in root.channel-members: HorizontalLayout { height: 34px; InitialAvatar { width: 27px; height: 27px; border-radius: 8px; value: member.nickname; } Text { text: member.nickname; color: #385650; font-size: 12px; } Text { text: member.detail; color: member.online ? #20a76b : #da6066; font-size: 10px; horizontal-alignment: right; } } } } }
+        // Compact group information panel only appears for channels.
+        if root.page == 0 && root.active-conversation-is-group : Rectangle {
+            width: 238px; background: root.theme.surface; border-width: 1px; border-color: root.theme.border;
+            VerticalLayout { padding-top: 18px; spacing: 8px; HorizontalLayout { padding-left: 16px; Text { text: "频道信息"; color: root.theme.text; font-size: 16px; font-weight: 700; } } HorizontalLayout { padding-left: 14px; padding-right: 14px; Rectangle { min-height: 62px; border-radius: root.theme.radius; border-width: 1px; border-color: root.theme.border; background: root.theme.surface-muted; VerticalLayout { padding: 9px; Text { text: "频道公告"; color: root.theme.text-muted; font-size: 12px; font-weight: 700; } Text { text: "局域网内的即时交流频道"; color: root.theme.text-faint; font-size: 11px; } } } } Rectangle { height: 1px; background: root.theme.border; } HorizontalLayout { padding-left: 16px; Text { text: "频道成员"; color: root.theme.text; font-size: 15px; font-weight: 700; } } ScrollView { vertical-stretch: 1; VerticalLayout { padding-left: 14px; padding-right: 14px; spacing: 2px; for member in root.channel-members: HorizontalLayout { height: 34px; Avatar { theme: root.theme; width: 27px; height: 27px; label: member.nickname; } Text { text: member.nickname; color: root.theme.text; font-size: 12px; } Rectangle { horizontal-stretch: 1; background: transparent; } Rectangle { width: 7px; height: 7px; border-radius: 4px; background: member.online ? root.theme.online : root.theme.offline; } } } } }
         }
-        if root.page == 1 : Rectangle { width: 248px; background: #f8fbfa; border-width: 1px; border-color: #d9e5e1; VerticalLayout { padding: 18px; spacing: 8px; Text { text: "设备详情"; color: #24453f; font-size: 17px; font-weight: 700; } Text { text: root.selected-device.nickname; color: #24453f; font-size: 16px; font-weight: 700; } Rectangle { height: 1px; background: #dfe9e6; } Text { text: "MAC"; color: #849993; font-size: 11px; } Text { text: root.selected-device.device-id; color: #3e5d57; font-size: 12px; wrap: word-wrap; } Text { text: "地址"; color: #849993; font-size: 11px; } Text { text: root.selected-device.address; color: #3e5d57; font-size: 12px; wrap: word-wrap; } Text { text: root.selected-device.status + " · " + root.selected-device.capability; color: #159b8c; font-size: 12px; } Text { text: root.selected-device.client-kind + " · " + root.selected-device.build-version; color: #849993; font-size: 11px; wrap: word-wrap; } } }
+        if root.page == 1 : Rectangle { width: 248px; background: root.theme.surface; border-width: 1px; border-color: root.theme.border; VerticalLayout { padding: 18px; spacing: 8px; Text { text: "设备详情"; color: root.theme.text; font-size: 17px; font-weight: 700; } Text { text: root.selected-device.nickname; color: root.theme.text; font-size: 16px; font-weight: 700; } Rectangle { height: 1px; background: root.theme.border; } Text { text: "MAC"; color: root.theme.text-faint; font-size: 11px; } Text { text: root.selected-device.device-id; color: root.theme.text-muted; font-size: 12px; wrap: word-wrap; } Text { text: "地址"; color: root.theme.text-faint; font-size: 11px; } Text { text: root.selected-device.address; color: root.theme.text-muted; font-size: 12px; wrap: word-wrap; } Text { text: root.selected-device.status + " · " + root.selected-device.capability; color: root.theme.accent; font-size: 12px; } Text { text: root.selected-device.client-kind + " · " + root.selected-device.build-version; color: root.theme.text-faint; font-size: 11px; wrap: word-wrap; } } }
     }
 }

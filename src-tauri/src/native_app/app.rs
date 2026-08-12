@@ -110,6 +110,7 @@ pub fn run() -> Result<(), String> {
                 message.sender_device_id
             }),
             content: SharedString::from(message.content),
+            kind: SharedString::from(message.message_type),
             outgoing: message.outgoing,
         })
         .collect::<Vec<_>>();
@@ -165,6 +166,8 @@ pub fn run() -> Result<(), String> {
     window.set_page_title(SharedString::from(native_page_title(NativePage::Chat)));
     window.set_page(0);
     window.set_active_conversation_is_group(true);
+    window.set_active_peer_online(true);
+    window.set_active_peer_address(SharedString::from("局域网频道 · 设备广播"));
     let notification_rows = services
         .load_local_notification_history()?
         .into_iter()
@@ -228,6 +231,7 @@ pub fn run() -> Result<(), String> {
                     message.sender_device_id
                 }),
                 content: SharedString::from(message.content),
+                kind: SharedString::from(message.message_type),
                 outgoing: message.outgoing,
             })
             .collect::<Vec<_>>();
@@ -243,6 +247,18 @@ pub fn run() -> Result<(), String> {
                 .iter()
                 .find(|conversation| conversation.id == conversation_id)
                 .is_some_and(|conversation| conversation.is_group);
+        let peer = (!is_group)
+            .then(|| {
+                message_sidebar
+                    .peers
+                    .iter()
+                    .find(|peer| peer.device_id == conversation_id)
+            })
+            .flatten();
+        let peer_online = peer.map(|peer| peer.online).unwrap_or(true);
+        let peer_address = peer
+            .map(|peer| peer.address.clone())
+            .unwrap_or_else(|| "局域网频道 · 设备广播".to_string());
         let members = channel_member_rows(
             message_services
                 .load_channel_members(&conversation_id)
@@ -254,6 +270,8 @@ pub fn run() -> Result<(), String> {
             window.set_page(0);
             window.set_page_title(SharedString::from(title));
             window.set_active_conversation_is_group(is_group);
+            window.set_active_peer_online(peer_online);
+            window.set_active_peer_address(SharedString::from(peer_address));
         });
     });
     let device_services = services.clone();
@@ -733,6 +751,18 @@ fn start_native_network_refresh(
             .unwrap_or_else(|| native_page_title(NativePage::Chat).to_string());
         let active_is_group = conversation_id == DEFAULT_GROUP_ID
             || active_conversation.is_some_and(|conversation| conversation.is_group);
+        let active_peer = (!active_is_group)
+            .then(|| {
+                sidebar
+                    .peers
+                    .iter()
+                    .find(|peer| peer.device_id == conversation_id)
+            })
+            .flatten();
+        let active_peer_online = active_peer.map(|peer| peer.online).unwrap_or(true);
+        let active_peer_address = active_peer
+            .map(|peer| peer.address.clone())
+            .unwrap_or_else(|| "局域网频道 · 设备广播".to_string());
         let members = channel_member_rows(
             services
                 .load_channel_members(&conversation_id)
@@ -750,6 +780,7 @@ fn start_native_network_refresh(
                     message.sender_device_id
                 }),
                 content: SharedString::from(message.content),
+                kind: SharedString::from(message.message_type),
                 outgoing: message.outgoing,
             })
             .collect::<Vec<_>>();
@@ -759,6 +790,8 @@ fn start_native_network_refresh(
             window.set_messages(ModelRc::new(VecModel::from(rows)));
             window.set_page_title(SharedString::from(active_title));
             window.set_active_conversation_is_group(active_is_group);
+            window.set_active_peer_online(active_peer_online);
+            window.set_active_peer_address(SharedString::from(active_peer_address));
             window.set_channel_members(ModelRc::new(VecModel::from(members)));
             if !alerts.is_empty() {
                 window.set_alerts(ModelRc::new(VecModel::from(alerts)));
