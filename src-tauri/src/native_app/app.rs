@@ -257,7 +257,7 @@ pub fn run() -> Result<(), String> {
             status: crate::storage::MessageStatus::Sending,
             simulation: None,
         };
-        let result = tauri::async_runtime::block_on(message_network.send_message_native(
+        let result = tauri::async_runtime::block_on(message_network.send_message(
             NetworkEventSink::native(message_events.clone()),
             message,
         ));

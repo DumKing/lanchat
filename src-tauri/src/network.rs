@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::mpsc;
@@ -857,7 +857,12 @@ impl Network {
         Ok(())
     }
 
-    pub async fn send_message(&self, app: AppHandle, message: Message) -> Result<(), String> {
+    pub async fn send_message(
+        &self,
+        app: impl Into<NetworkEventSink>,
+        message: Message,
+    ) -> Result<(), String> {
+        let app = app.into();
         if !self.supports_chat {
             return Err("当前客户端不支持聊天、频道和文件消息".to_string());
         }
@@ -980,104 +985,13 @@ impl Network {
         Ok(())
     }
 
-    pub async fn send_message_native(
-        &self,
-        events: NetworkEventSink,
-        message: Message,
-    ) -> Result<(), String> {
-        if !self.supports_chat {
-            return Err("当前客户端不支持聊天、频道和文件消息".to_string());
-        }
-        if self
-            .storage
-            .is_channel_muted(DEFAULT_GROUP_ID, &message.sender_device_id)?
-        {
-            return Err("你已被超管禁言，暂不能在公共频道发言".to_string());
-        }
-        self.storage.save_message(&message)?;
-        events.emit("message_status_changed", &message).ok();
-        let frame = WireFrame::ChatMessage(ChatMessageFrame {
-            message_id: message.id.clone(),
-            conversation_id: message.conversation_id.clone(),
-            sender_device_id: message.sender_device_id.clone(),
-            content: message.content.clone(),
-            message_type: message.message_type.as_str().to_string(),
-            file_meta: message.file_meta.clone(),
-            encrypted: false,
-            nonce: None,
-            key_version: None,
-            simulation: message.simulation.clone(),
-            created_at: message.created_at,
-        });
-        let delivered = if message.conversation_id == DEFAULT_GROUP_ID {
-            let senders = self
-                .senders
-                .lock()
-                .map_err(|_| "连接表已损坏".to_string())?;
-            let mut delivered = false;
-            for (peer_id, sender) in senders.iter() {
-                if self.peer_supports_full_features(peer_id)? {
-                    delivered |= sender.sender.try_send(frame.clone()).is_ok();
-                }
-            }
-            delivered
-        } else {
-            self.send_direct_frame_native(events.clone(), &message.conversation_id, frame)
-                .await?
-        };
-        let mut updated = message;
-        updated.status = if delivered {
-            MessageStatus::Sent
-        } else {
-            MessageStatus::Failed
-        };
-        self.storage
-            .update_message_status(&updated.id, updated.status.clone())?;
-        events.emit("message_status_changed", &updated).ok();
-        Ok(())
-    }
-
-    async fn send_direct_frame_native(
-        &self,
-        events: NetworkEventSink,
-        peer_device_id: &str,
-        frame: WireFrame,
-    ) -> Result<bool, String> {
-        let peer_device_id = normalize_device_id(peer_device_id);
-        if let Some(sender) = self
-            .senders
-            .lock()
-            .map_err(|_| "连接表已损坏".to_string())?
-            .get(&peer_device_id)
-            .cloned()
-        {
-            return Ok(sender.sender.try_send(frame).is_ok());
-        }
-        let peer = self
-            .storage
-            .get_peer(&peer_device_id)?
-            .ok_or_else(|| "未找到该设备，无法发送私聊消息".to_string())?;
-        if !peer.supports_full_features() {
-            return Err("该设备不支持聊天".to_string());
-        }
-        if !peer.online {
-            return Err("对方已离线，不能发送私聊消息".to_string());
-        }
-        self.connect_peer(events, peer.address, peer.port).await?;
-        Ok(self
-            .senders
-            .lock()
-            .map_err(|_| "连接表已损坏".to_string())?
-            .get(&peer_device_id)
-            .is_some_and(|sender| sender.sender.try_send(frame).is_ok()))
-    }
-
     async fn send_direct_frame(
         &self,
-        app: AppHandle,
+        app: impl Into<NetworkEventSink>,
         peer_device_id: &str,
         frame: WireFrame,
     ) -> Result<bool, String> {
+        let app = app.into();
         let peer_device_id = normalize_device_id(peer_device_id);
         if let Some(sender) = self
             .senders
