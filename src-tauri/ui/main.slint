@@ -48,6 +48,7 @@ export component MainWindow inherits Window {
     in-out property <string> message-input;
     in property <string> send-feedback;
     in-out property <string> active-conversation-id: "lan-room";
+    in property <bool> active-conversation-is-group: true;
     in property <int> page;
     in property <string> page-title;
     in property <[ChatMessage]> messages;
@@ -215,7 +216,7 @@ export component MainWindow inherits Window {
             }
         }
 
-        if root.page == 0 : Rectangle { width: 238px; background: #f8fbfa; border-width: 1px; border-color: #d9e5e1;
+        if root.page == 0 && root.active-conversation-is-group : Rectangle { width: 238px; background: #f8fbfa; border-width: 1px; border-color: #d9e5e1;
             VerticalLayout { padding-top: 18px; spacing: 8px; HorizontalLayout { padding-left: 16px; Text { text: "频道信息"; color: #24453f; font-size: 16px; font-weight: 700; } } HorizontalLayout { padding-left: 14px; padding-right: 14px; Rectangle { min-height: 62px; border-radius: 8px; border-width: 1px; border-color: #dce8e5; background: white; VerticalLayout { padding: 9px; Text { text: "频道公告"; color: #42645e; font-size: 12px; font-weight: 700; } Text { text: "局域网内的即时交流频道"; color: #819692; font-size: 11px; } } } } Rectangle { height: 1px; background: #dfe9e6; } HorizontalLayout { padding-left: 16px; Text { text: "频道成员"; color: #24453f; font-size: 15px; font-weight: 700; } } ScrollView { vertical-stretch: 1; VerticalLayout { padding-left: 14px; padding-right: 14px; spacing: 2px; for member in root.channel-members: HorizontalLayout { height: 34px; InitialAvatar { width: 27px; height: 27px; border-radius: 8px; value: member.nickname; } Text { text: member.nickname; color: #385650; font-size: 12px; } Text { text: member.detail; color: member.online ? #20a76b : #da6066; font-size: 10px; horizontal-alignment: right; } } } } }
         }
         if root.page == 1 : Rectangle { width: 248px; background: #f8fbfa; border-width: 1px; border-color: #d9e5e1; VerticalLayout { padding: 18px; spacing: 8px; Text { text: "设备详情"; color: #24453f; font-size: 17px; font-weight: 700; } Text { text: root.selected-device.nickname; color: #24453f; font-size: 16px; font-weight: 700; } Rectangle { height: 1px; background: #dfe9e6; } Text { text: "MAC"; color: #849993; font-size: 11px; } Text { text: root.selected-device.device-id; color: #3e5d57; font-size: 12px; wrap: word-wrap; } Text { text: "地址"; color: #849993; font-size: 11px; } Text { text: root.selected-device.address; color: #3e5d57; font-size: 12px; wrap: word-wrap; } Text { text: root.selected-device.status + " · " + root.selected-device.capability; color: #159b8c; font-size: 12px; } Text { text: root.selected-device.client-kind + " · " + root.selected-device.build-version; color: #849993; font-size: 11px; wrap: word-wrap; } } }

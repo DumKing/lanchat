@@ -148,6 +148,7 @@ pub fn run() -> Result<(), String> {
     window.set_selected_device(DeviceDetail::default());
     window.set_page_title(SharedString::from(native_page_title(NativePage::Chat)));
     window.set_page(0);
+    window.set_active_conversation_is_group(true);
     let notification_rows = services
         .load_local_notification_history()?
         .into_iter()
@@ -220,6 +221,12 @@ pub fn run() -> Result<(), String> {
             .find(|conversation| conversation.id == conversation_id)
             .map(|conversation| conversation.title.clone())
             .unwrap_or_else(|| native_page_title(NativePage::Chat).to_string());
+        let is_group = conversation_id == DEFAULT_GROUP_ID
+            || message_sidebar
+                .conversations
+                .iter()
+                .find(|conversation| conversation.id == conversation_id)
+                .is_some_and(|conversation| conversation.is_group);
         let members = channel_member_rows(
             message_services
                 .load_channel_members(&conversation_id)
@@ -230,6 +237,7 @@ pub fn run() -> Result<(), String> {
             window.set_channel_members(ModelRc::new(VecModel::from(members)));
             window.set_page(0);
             window.set_page_title(SharedString::from(title));
+            window.set_active_conversation_is_group(is_group);
         });
     });
     let device_services = services.clone();
