@@ -61,6 +61,9 @@ pub fn run() -> Result<(), String> {
     let room_store = Rc::new(RefCell::new(NativeGameRoomStore::default()));
     let network = Network::new_with_desktop_pet(services.storage(), native_desktop_pet_manager());
     network.start_native(NetworkEventSink::native(network_events.clone()))?;
+    let pet_controller = Rc::new(RefCell::new(start_native_desktop_pet(
+        network_events.clone(),
+    )?));
     let ui_settings = NativeUiSettings::load(
         NativeAppServices::default_app_data_dir().join("native-ui-settings.json"),
     );
@@ -265,8 +268,14 @@ pub fn run() -> Result<(), String> {
     });
     let pet_services = services.clone();
     let pet_window = window.as_weak();
+    let pet_selection_controller = pet_controller.clone();
     window.on_select_pet(move |pet_id| {
         let result = pet_services.select_desktop_pet(&pet_id);
+        if result.is_ok() {
+            if let Some(controller) = pet_selection_controller.borrow().as_ref() {
+                controller.set_package(native_desktop_pet_manager().selected_package());
+            }
+        }
         let pets = pet_services
             .list_desktop_pets()
             .into_iter()
@@ -279,7 +288,7 @@ pub fn run() -> Result<(), String> {
         let _ = pet_window.upgrade_in_event_loop(move |window| {
             window.set_pets(ModelRc::new(VecModel::from(pets)));
             let feedback = match result {
-                Ok(()) => "桌宠已切换，将在下次启动原生桌宠时生效".to_string(),
+                Ok(()) => "桌宠已切换".to_string(),
                 Err(error) => error,
             };
             window.set_settings_feedback(SharedString::from(feedback));
@@ -331,13 +340,25 @@ pub fn run() -> Result<(), String> {
     });
     let pet_toggle_services = services.clone();
     let pet_toggle_window = window.as_weak();
+    let pet_toggle_controller = pet_controller.clone();
+    let pet_toggle_events = network_events.clone();
     window.on_toggle_pet(move |enabled| {
         let result = pet_toggle_services.set_desktop_pet_enabled(enabled);
+        if result.is_ok() {
+            if enabled && pet_toggle_controller.borrow().is_none() {
+                if let Ok(controller) = start_native_desktop_pet(pet_toggle_events.clone()) {
+                    *pet_toggle_controller.borrow_mut() = controller;
+                }
+            }
+            if let Some(controller) = pet_toggle_controller.borrow().as_ref() {
+                controller.set_enabled(enabled);
+            }
+        }
         let _ = pet_toggle_window.upgrade_in_event_loop(move |window| match result {
             Ok(()) => {
                 window.set_pet_enabled(enabled);
                 window.set_settings_feedback(SharedString::from(if enabled {
-                    "桌宠已开启，重启原生界面后显示"
+                    "桌宠已开启"
                 } else {
                     "桌宠已关闭"
                 }));
@@ -460,7 +481,6 @@ pub fn run() -> Result<(), String> {
         ));
     });
     let pet_state = Rc::new(RefCell::new(PetStateMachine::new()));
-    let pet_controller = start_native_desktop_pet(network_events.clone())?;
     start_native_network_refresh(
         &window,
         services.clone(),
@@ -470,7 +490,7 @@ pub fn run() -> Result<(), String> {
         sidebar.profile.device_id.clone(),
         room_store,
         pet_state,
-        pet_controller,
+        pet_controller.borrow().clone(),
     );
     window
         .show()
