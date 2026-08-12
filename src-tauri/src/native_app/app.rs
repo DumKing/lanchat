@@ -416,6 +416,7 @@ pub fn run() -> Result<(), String> {
             frame,
         ));
     });
+    let pet_window = create_pet_window(&window)?;
     start_native_network_refresh(
         &window,
         services.clone(),
@@ -424,7 +425,6 @@ pub fn run() -> Result<(), String> {
         sidebar.profile.device_id.clone(),
         room_store,
     );
-    let pet_window = create_pet_window()?;
     window
         .show()
         .map_err(|error| format!("显示原生主窗口失败：{error}"))?;
@@ -580,7 +580,7 @@ fn alert_item_from_frame(
     }
 }
 
-fn create_pet_window() -> Result<Option<PetWindow>, String> {
+fn create_pet_window(main_window: &MainWindow) -> Result<Option<PetWindow>, String> {
     let manager = native_desktop_pet_manager();
     if !manager.settings().enabled {
         return Ok(None);
@@ -595,6 +595,12 @@ fn create_pet_window() -> Result<Option<PetWindow>, String> {
         .map_err(|error| format!("加载桌宠首帧失败：{error}"))?;
     let pet_window = PetWindow::new().map_err(|error| format!("创建原生桌宠窗口失败：{error}"))?;
     pet_window.set_pet_image(image);
+    let main_window = main_window.as_weak();
+    pet_window.on_clicked(move || {
+        let _ = main_window.upgrade_in_event_loop(|window| {
+            let _ = window.show();
+        });
+    });
     start_native_pet_animation(&pet_window, package);
     Ok(Some(pet_window))
 }
@@ -693,4 +699,5 @@ mod tests {
         assert_eq!(item.sender_device_id, "AA-BB-CC");
         assert!(item.feedback_allowed);
     }
+
 }
