@@ -1,6 +1,6 @@
 include!(concat!(env!("OUT_DIR"), "/native_main_ui.rs"));
 
-use crate::native_app::{NativeAppServices, NativeEventBus, NativeUiSettings, PetWindow, TextKey, Translator};
+use crate::native_app::{game_room_from_frame, native_game_catalog, NativeAppServices, NativeEventBus, NativeGameRoomStore, NativeUiSettings, PetWindow, TextKey, Translator};
 use crate::storage::DEFAULT_GROUP_ID;
 use crate::{
     desktop_pet::{DesktopPetManager, DesktopPetPackage, PetPackageSource, PetResourceRoot, PetStateKind},
@@ -9,7 +9,7 @@ use crate::{
     runtime_events::NetworkEventSink,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
@@ -52,6 +52,7 @@ pub fn run() -> Result<(), String> {
     let _available_pages = NAVIGATION_PAGES;
     let services = NativeAppServices::open_default()?;
     let network_events = NativeEventBus::default();
+    let room_store = Rc::new(RefCell::new(NativeGameRoomStore::default()));
     let network = Network::new_with_desktop_pet(services.storage(), native_desktop_pet_manager());
     network.start_native(NetworkEventSink::native(network_events.clone()))?;
     let ui_settings = NativeUiSettings::load(
@@ -145,6 +146,19 @@ pub fn run() -> Result<(), String> {
         .collect::<Vec<_>>();
     window.set_notifications(ModelRc::new(VecModel::from(notification_rows)));
     window.set_alerts(ModelRc::new(VecModel::from(Vec::<AlertItem>::new())));
+    window.set_games(ModelRc::new(VecModel::from(
+        native_game_catalog()
+            .into_iter()
+            .map(|game| GameOption {
+                id: SharedString::from(game.id),
+                name: SharedString::from(game.name),
+                description: SharedString::from(game.description),
+                icon: SharedString::from(game.icon),
+                players: SharedString::from(format!("{}-{} 人", game.min_players, game.max_players)),
+            })
+            .collect::<Vec<_>>(),
+    )));
+    window.set_game_rooms(ModelRc::new(VecModel::from(Vec::<GameRoom>::new())));
     window.set_channel_members(ModelRc::new(VecModel::from(channel_member_rows(
         services.load_channel_members(DEFAULT_GROUP_ID).unwrap_or_default(),
     ))));
@@ -336,12 +350,79 @@ pub fn run() -> Result<(), String> {
             },
         ));
     });
+    let game_network = network.clone();
+    let game_services = services.clone();
+    let game_events = network_events.clone();
+    let game_window = window.as_weak();
+    window.on_create_game_room(move |game_id| {
+        let game_id = game_id.to_string();
+        let Ok(profile) = game_services.load_sidebar().map(|sidebar| sidebar.profile) else {
+            return;
+        };
+        let room_id = format!("{}-{}", game_id, uuid::Uuid::new_v4().simple());
+        let payload = serde_json::json!({
+            "roomId": room_id,
+            "gameType": game_id,
+            "roomName": format!("{}房间", game_name(&game_id)),
+            "hostDeviceId": profile.device_id,
+            "hostName": profile.nickname,
+            "players": [{ "deviceId": profile.device_id, "nickname": profile.nickname, "online": true, "ready": false }],
+            "createdAt": chrono::Utc::now().timestamp_millis(),
+        });
+        let frame = crate::protocol::GameFrame {
+            frame_id: uuid::Uuid::new_v4().to_string(),
+            game: game_id.clone(),
+            room_id,
+            sender_device_id: profile.device_id,
+            sender_nickname: profile.nickname,
+            kind: "room_created".to_string(),
+            payload,
+            created_at: chrono::Utc::now().timestamp_millis(),
+        };
+        let result = tauri::async_runtime::block_on(game_network.send_game_frame(
+            NetworkEventSink::native(game_events.clone()),
+            None,
+            frame.clone(),
+        ));
+        game_events.publish("game_frame_received", serde_json::to_value(frame).unwrap_or_default());
+        let _ = game_window.upgrade_in_event_loop(move |window| {
+            window.set_page(2);
+            window.set_page_title(SharedString::from(match result {
+                Ok(()) => "房间已创建，已向在线设备广播",
+                Err(_) => "房间已创建，等待设备上线后邀请",
+            }));
+        });
+    });
+    let join_network = network.clone();
+    let join_services = services.clone();
+    let join_events = network_events.clone();
+    window.on_join_game_room(move |room_id, game_id| {
+        let Ok(profile) = join_services.load_sidebar().map(|sidebar| sidebar.profile) else {
+            return;
+        };
+        let frame = crate::protocol::GameFrame {
+            frame_id: uuid::Uuid::new_v4().to_string(),
+            game: game_id.to_string(),
+            room_id: room_id.to_string(),
+            sender_device_id: profile.device_id,
+            sender_nickname: profile.nickname,
+            kind: "room_action".to_string(),
+            payload: serde_json::json!({ "roomId": room_id.to_string(), "action": "join" }),
+            created_at: chrono::Utc::now().timestamp_millis(),
+        };
+        let _ = tauri::async_runtime::block_on(join_network.send_game_frame(
+            NetworkEventSink::native(join_events.clone()),
+            None,
+            frame,
+        ));
+    });
     start_native_network_refresh(
         &window,
         services.clone(),
         network_events,
         sidebar.profile.nickname.clone(),
         sidebar.profile.device_id.clone(),
+        room_store,
     );
     let pet_window = create_pet_window()?;
     window
@@ -376,12 +457,21 @@ fn channel_member_rows(
         .collect()
 }
 
+fn game_name(game_id: &str) -> &'static str {
+    native_game_catalog()
+        .into_iter()
+        .find(|game| game.id == game_id)
+        .map(|game| game.name)
+        .unwrap_or("局域网游戏")
+}
+
 fn start_native_network_refresh(
     window: &MainWindow,
     services: NativeAppServices,
     events: NativeEventBus,
     local_nickname: String,
     local_device_id: String,
+    room_store: Rc<RefCell<NativeGameRoomStore>>,
 ) {
     let window = window.as_weak();
     let timer = Box::leak(Box::new(Timer::default()));
@@ -395,6 +485,28 @@ fn start_native_network_refresh(
             .filter(|event| event.name == "quick_alert_received")
             .filter_map(|event| serde_json::from_value::<crate::protocol::QuickAlertFrame>(event.payload.clone()).ok())
             .map(|alert| alert_item_from_frame(alert, &local_device_id))
+            .collect::<Vec<_>>();
+        for room in events
+            .iter()
+            .filter(|event| event.name == "game_frame_received")
+            .filter_map(|event| serde_json::from_value::<crate::protocol::GameFrame>(event.payload.clone()).ok())
+            .filter(|frame| frame.kind == "room_created")
+            .map(|frame| game_room_from_frame(&frame))
+        {
+            room_store.borrow_mut().upsert(room);
+        }
+        let rooms = room_store
+            .borrow()
+            .rows()
+            .into_iter()
+            .map(|room| GameRoom {
+                id: SharedString::from(room.id),
+                game_id: SharedString::from(room.game_id),
+                game_name: SharedString::from(room.game_name),
+                name: SharedString::from(room.name),
+                host: SharedString::from(room.host),
+                players: SharedString::from(room.players),
+            })
             .collect::<Vec<_>>();
         let Ok(sidebar) = services.load_sidebar() else {
             return;
@@ -445,6 +557,9 @@ fn start_native_network_refresh(
             window.set_messages(ModelRc::new(VecModel::from(rows)));
             if !alerts.is_empty() {
                 window.set_alerts(ModelRc::new(VecModel::from(alerts)));
+            }
+            if !rooms.is_empty() {
+                window.set_game_rooms(ModelRc::new(VecModel::from(rooms)));
             }
         }
     });

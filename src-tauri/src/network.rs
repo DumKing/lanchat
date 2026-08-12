@@ -243,10 +243,11 @@ impl Network {
 
     pub async fn send_game_frame(
         &self,
-        app: AppHandle,
+        app: impl Into<NetworkEventSink>,
         target_device_id: Option<String>,
         frame: GameFrame,
     ) -> Result<(), String> {
+        let app = app.into();
         if !self.supports_chat {
             return Err("当前客户端不支持游戏".to_string());
         }

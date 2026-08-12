@@ -47,6 +47,23 @@ export struct AlertItem {
     feedback-allowed: bool,
 }
 
+export struct GameOption {
+    id: string,
+    name: string,
+    description: string,
+    icon: string,
+    players: string,
+}
+
+export struct GameRoom {
+    id: string,
+    game-id: string,
+    game-name: string,
+    name: string,
+    host: string,
+    players: string,
+}
+
 export component MainWindow inherits Window {
     in property <string> app-title;
     in property <string> nav-chat;
@@ -76,6 +93,8 @@ export component MainWindow inherits Window {
     in property <[PetOption]> pets;
     in property <[ChannelMember]> channel-members;
     in property <[AlertItem]> alerts;
+    in property <[GameOption]> games;
+    in property <[GameRoom]> game-rooms;
     in property <bool> pet-enabled;
     in-out property <string> profile-nickname;
     in property <string> settings-feedback;
@@ -87,6 +106,8 @@ export component MainWindow inherits Window {
     callback send-message(string);
     callback send-alert();
     callback feedback-alert(string, string, string);
+    callback create-game-room(string);
+    callback join-game-room(string, string);
 
     HorizontalLayout {
         spacing: 0px;
@@ -236,6 +257,47 @@ export component MainWindow inherits Window {
                                 Rectangle { width: 38px; height: 38px; border-radius: 19px; background: #d8f1ed; Text { text: "●"; color: #108c81; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; } }
                                 VerticalLayout { spacing: 3px; Text { text: peer.nickname; font-size: 16px; font-weight: 600; } Text { text: peer.address; color: #82949f; font-size: 12px; } }
                                 VerticalLayout { horizontal-stretch: 0; spacing: 3px; Text { text: peer.status; color: peer.status == "在线" ? #16a765 : #d8565f; horizontal-alignment: right; } Text { text: peer.capability; color: #82949f; font-size: 12px; horizontal-alignment: right; } }
+                            }
+                        }
+                    }
+                }
+            }
+            if root.page == 2 : Rectangle {
+                vertical-stretch: 1;
+                background: white;
+                ScrollView {
+                    VerticalLayout {
+                        padding: 24px;
+                        spacing: 12px;
+                        Text { text: "局域网游戏"; font-size: 18px; font-weight: 700; color: #173f3d; }
+                        Text { text: "创建房间后会广播给当前在线设备。"; color: #718693; font-size: 13px; }
+                        for game in root.games: Rectangle {
+                            min-height: 84px;
+                            border-radius: 8px;
+                            background: #f7fbfa;
+                            border-width: 1px;
+                            border-color: #dbe8e5;
+                            HorizontalLayout {
+                                padding: 14px;
+                                spacing: 13px;
+                                Rectangle { width: 44px; height: 44px; border-radius: 8px; background: #d8f1ed; Text { text: game.icon; color: #108c81; font-size: 20px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+                                VerticalLayout { spacing: 4px; Text { text: game.name + " · " + game.players; font-size: 16px; font-weight: 700; color: #183b3a; } Text { text: game.description; color: #718693; font-size: 12px; wrap: word-wrap; } }
+                                Button { text: "创建房间"; horizontal-stretch: 0; clicked => { root.create-game-room(game.id); } }
+                            }
+                        }
+                        Rectangle { height: 1px; background: #dfe8ea; }
+                        Text { text: "已发现房间"; font-size: 18px; font-weight: 700; color: #173f3d; }
+                        for room in root.game-rooms: Rectangle {
+                            min-height: 68px;
+                            border-radius: 8px;
+                            background: #ffffff;
+                            border-width: 1px;
+                            border-color: #dbe8e5;
+                            HorizontalLayout {
+                                padding: 12px;
+                                spacing: 12px;
+                                VerticalLayout { spacing: 3px; Text { text: room.name + " · " + room.game-name; font-size: 15px; font-weight: 700; color: #183b3a; } Text { text: "房主：" + room.host + " · " + room.players; color: #718693; font-size: 12px; } }
+                                Button { text: "加入"; horizontal-stretch: 0; clicked => { root.join-game-room(room.id, room.game-id); } }
                             }
                         }
                     }
