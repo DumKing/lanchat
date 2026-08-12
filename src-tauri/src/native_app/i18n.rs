@@ -42,7 +42,8 @@ impl NativeUiSettings {
 
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), String> {
         if let Some(parent) = path.as_ref().parent() {
-            std::fs::create_dir_all(parent).map_err(|error| format!("创建原生界面设置目录失败：{error}"))?;
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("创建原生界面设置目录失败：{error}"))?;
         }
         let bytes = serde_json::to_vec_pretty(self)
             .map_err(|error| format!("序列化原生界面设置失败：{error}"))?;

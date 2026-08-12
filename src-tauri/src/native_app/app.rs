@@ -1,15 +1,20 @@
 include!(concat!(env!("OUT_DIR"), "/native_main_ui.rs"));
 
-use crate::native_app::{game_room_from_frame, native_game_catalog, NativeAppServices, NativeEventBus, NativeGameRoomStore, NativeUiSettings, PetWindow, TextKey, Translator};
+use crate::native_app::{
+    game_room_from_frame, native_game_catalog, NativeAppServices, NativeEventBus,
+    NativeGameRoomStore, NativeUiSettings, TextKey, Translator,
+};
 use crate::storage::DEFAULT_GROUP_ID;
 use crate::{
-    desktop_pet::{DesktopPetManager, DesktopPetPackage, PetEvent, PetPackageSource, PetResourceRoot, PetStateKind, PetStateMachine},
-    native_app::initial_idle_frame,
+    desktop_pet::{
+        DesktopPetManager, PetEvent, PetPackageSource, PetResourceRoot, PetStateMachine,
+    },
+    desktop_pet_runtime::DesktopPetController,
     network::Network,
     runtime_events::NetworkEventSink,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
@@ -69,7 +74,9 @@ pub fn run() -> Result<(), String> {
     window.set_nav_settings(SharedString::from(translator.text(TextKey::Settings)));
     window.set_search_chats(SharedString::from(translator.text(TextKey::SearchChats)));
     window.set_lan_channel(SharedString::from(translator.text(TextKey::LanChannel)));
-    window.set_channel_broadcast(SharedString::from(translator.text(TextKey::ChannelBroadcast)));
+    window.set_channel_broadcast(SharedString::from(
+        translator.text(TextKey::ChannelBroadcast),
+    ));
     window.set_input_message(SharedString::from(translator.text(TextKey::InputMessage)));
     window.set_send_label(SharedString::from(translator.text(TextKey::Send)));
     window.set_input_hint(SharedString::from(translator.text(TextKey::InputHint)));
@@ -156,13 +163,18 @@ pub fn run() -> Result<(), String> {
                 name: SharedString::from(game.name),
                 description: SharedString::from(game.description),
                 icon: SharedString::from(game.icon),
-                players: SharedString::from(format!("{}-{} 人", game.min_players, game.max_players)),
+                players: SharedString::from(format!(
+                    "{}-{} 人",
+                    game.min_players, game.max_players
+                )),
             })
             .collect::<Vec<_>>(),
     )));
     window.set_game_rooms(ModelRc::new(VecModel::from(Vec::<GameRoom>::new())));
     window.set_channel_members(ModelRc::new(VecModel::from(channel_member_rows(
-        services.load_channel_members(DEFAULT_GROUP_ID).unwrap_or_default(),
+        services
+            .load_channel_members(DEFAULT_GROUP_ID)
+            .unwrap_or_default(),
     ))));
     let weak_window = window.as_weak();
     window.on_select_page(move |page| {
@@ -227,7 +239,11 @@ pub fn run() -> Result<(), String> {
                     device_id: SharedString::from(detail.device_id),
                     address: SharedString::from(detail.address),
                     status: SharedString::from(if detail.online { "在线" } else { "离线" }),
-                    capability: SharedString::from(if detail.supports_chat { "可聊天" } else { "仅告警" }),
+                    capability: SharedString::from(if detail.supports_chat {
+                        "可聊天"
+                    } else {
+                        "仅告警"
+                    }),
                     client_kind: SharedString::from(detail.client_kind),
                     build_version: SharedString::from(detail.build_version),
                 });
@@ -301,10 +317,9 @@ pub fn run() -> Result<(), String> {
             status: crate::storage::MessageStatus::Sending,
             simulation: None,
         };
-        let result = tauri::async_runtime::block_on(message_network.send_message(
-            NetworkEventSink::native(message_events.clone()),
-            message,
-        ));
+        let result = tauri::async_runtime::block_on(
+            message_network.send_message(NetworkEventSink::native(message_events.clone()), message),
+        );
         let _ = send_window.upgrade_in_event_loop(move |window| match result {
             Ok(()) => {
                 window.set_message_input(SharedString::default());
@@ -346,16 +361,23 @@ pub fn run() -> Result<(), String> {
             simulation: None,
             created_at: chrono::Utc::now().timestamp_millis(),
         };
-        let _ = tauri::async_runtime::block_on(
-            alert_network.broadcast_quick_alert(NetworkEventSink::native(alert_events.clone()), frame.clone()),
+        let _ = tauri::async_runtime::block_on(alert_network.broadcast_quick_alert(
+            NetworkEventSink::native(alert_events.clone()),
+            frame.clone(),
+        ));
+        alert_events.publish(
+            "quick_alert_received",
+            serde_json::to_value(frame).unwrap_or_default(),
         );
-        alert_events.publish("quick_alert_received", serde_json::to_value(frame).unwrap_or_default());
     });
     let feedback_network = network.clone();
     let feedback_services = services.clone();
     let feedback_events = network_events.clone();
     window.on_feedback_alert(move |alert_id, sender_device_id, result| {
-        let Ok(profile) = feedback_services.load_sidebar().map(|sidebar| sidebar.profile) else {
+        let Ok(profile) = feedback_services
+            .load_sidebar()
+            .map(|sidebar| sidebar.profile)
+        else {
             return;
         };
         let _ = tauri::async_runtime::block_on(feedback_network.broadcast_quick_alert_feedback(
@@ -437,7 +459,7 @@ pub fn run() -> Result<(), String> {
         ));
     });
     let pet_state = Rc::new(RefCell::new(PetStateMachine::new()));
-    let pet_window = create_pet_window(&window, pet_state.clone())?;
+    start_native_desktop_pet()?;
     start_native_network_refresh(
         &window,
         services.clone(),
@@ -450,11 +472,6 @@ pub fn run() -> Result<(), String> {
     window
         .show()
         .map_err(|error| format!("显示原生主窗口失败：{error}"))?;
-    if let Some(pet_window) = &pet_window {
-        pet_window
-            .show()
-            .map_err(|error| format!("显示原生桌宠窗口失败：{error}"))?;
-    }
     slint::run_event_loop().map_err(|error| format!("运行原生界面事件循环失败：{error}"))
 }
 
@@ -506,7 +523,10 @@ fn start_native_network_refresh(
         let alerts = events
             .iter()
             .filter(|event| event.name == "quick_alert_received")
-            .filter_map(|event| serde_json::from_value::<crate::protocol::QuickAlertFrame>(event.payload.clone()).ok())
+            .filter_map(|event| {
+                serde_json::from_value::<crate::protocol::QuickAlertFrame>(event.payload.clone())
+                    .ok()
+            })
             .map(|alert| alert_item_from_frame(alert, &local_device_id))
             .collect::<Vec<_>>();
         if !alerts.is_empty() {
@@ -515,7 +535,9 @@ fn start_native_network_refresh(
         for room in events
             .iter()
             .filter(|event| event.name == "game_frame_received")
-            .filter_map(|event| serde_json::from_value::<crate::protocol::GameFrame>(event.payload.clone()).ok())
+            .filter_map(|event| {
+                serde_json::from_value::<crate::protocol::GameFrame>(event.payload.clone()).ok()
+            })
             .filter(|frame| frame.kind == "room_created")
             .map(|frame| game_room_from_frame(&frame))
         {
@@ -548,7 +570,11 @@ fn start_native_network_refresh(
                         .then(|| conversation.unread_count.to_string())
                         .unwrap_or_default(),
                 ),
-                subtitle: SharedString::from(if conversation.is_group { "频道" } else { "私聊" }),
+                subtitle: SharedString::from(if conversation.is_group {
+                    "频道"
+                } else {
+                    "私聊"
+                }),
             })
             .collect::<Vec<_>>();
         let peers = sidebar
@@ -559,7 +585,11 @@ fn start_native_network_refresh(
                 nickname: SharedString::from(peer.display_name.clone()),
                 address: SharedString::from(peer.address.clone()),
                 status: SharedString::from(if peer.online { "在线" } else { "离线" }),
-                capability: SharedString::from(if peer.supports_chat { "可聊天" } else { "仅告警" }),
+                capability: SharedString::from(if peer.supports_chat {
+                    "可聊天"
+                } else {
+                    "仅告警"
+                }),
             })
             .collect::<Vec<_>>();
         let conversation_id = window
@@ -573,7 +603,11 @@ fn start_native_network_refresh(
         let rows = messages
             .into_iter()
             .map(|message| ChatMessage {
-                author: SharedString::from(if message.outgoing { local_nickname.clone() } else { message.sender_device_id }),
+                author: SharedString::from(if message.outgoing {
+                    local_nickname.clone()
+                } else {
+                    message.sender_device_id
+                }),
                 content: SharedString::from(message.content),
                 outgoing: message.outgoing,
             })
@@ -601,45 +635,29 @@ fn alert_item_from_frame(
         id: SharedString::from(alert.alert_id),
         sender_device_id: SharedString::from(alert.sender_device_id),
         sender: SharedString::from(alert.sender_nickname),
-        source: SharedString::from(alert.sender_address.unwrap_or_else(|| "未知 IP".to_string())),
+        source: SharedString::from(
+            alert
+                .sender_address
+                .unwrap_or_else(|| "未知 IP".to_string()),
+        ),
         content: SharedString::from(alert.content),
         feedback_allowed,
     }
 }
 
-fn create_pet_window(
-    main_window: &MainWindow,
-    pet_state: Rc<RefCell<PetStateMachine>>,
-) -> Result<Option<PetWindow>, String> {
+fn start_native_desktop_pet() -> Result<(), String> {
     let manager = native_desktop_pet_manager();
     if !manager.settings().enabled {
-        return Ok(None);
+        return Ok(());
     }
     let Some(package) = manager.selected_package() else {
-        return Ok(None);
+        return Ok(());
     };
-    let Some(path) = initial_idle_frame(&package) else {
-        return Ok(None);
-    };
-    let image = slint::Image::load_from_path(&path)
-        .map_err(|error| format!("加载桌宠首帧失败：{error}"))?;
-    let pet_window = PetWindow::new().map_err(|error| format!("创建原生桌宠窗口失败：{error}"))?;
-    pet_window.set_pet_image(image);
-    let main_window = main_window.as_weak();
-    let click_state = pet_state.clone();
-    pet_window.on_clicked(move || {
-        let mut state = click_state.borrow_mut();
-        if state.current() == PetStateKind::Alert {
-            state.handle(PetEvent::AlertCleared);
-        } else {
-            state.handle(PetEvent::PointerInteract);
-        }
-        let _ = main_window.upgrade_in_event_loop(|window| {
-            let _ = window.show();
-        });
-    });
-    start_native_pet_animation(&pet_window, package, pet_state);
-    Ok(Some(pet_window))
+    let controller = DesktopPetController::start_for_native_ui();
+    controller.set_package(Some(package));
+    controller.set_enabled(true);
+    Box::leak(Box::new(controller));
+    Ok(())
 }
 
 fn native_desktop_pet_manager() -> DesktopPetManager {
@@ -651,55 +669,11 @@ fn native_desktop_pet_manager() -> DesktopPetManager {
     )
 }
 
-fn start_native_pet_animation(
-    pet_window: &PetWindow,
-    package: DesktopPetPackage,
-    state_machine: Rc<RefCell<PetStateMachine>>,
-) {
-    let window = pet_window.as_weak();
-    let clip_index = Rc::new(Cell::new(0usize));
-    let elapsed_seconds = Rc::new(Cell::new(0.0f32));
-    let timer = Box::leak(Box::new(Timer::default()));
-    timer.start(TimerMode::Repeated, Duration::from_millis(80), move || {
-        let state = state_machine.borrow().current();
-        let candidates = package.clip_candidates(state, None);
-        if candidates.is_empty() {
-            return;
-        }
-        let current_index = clip_index.get() % candidates.len();
-        let clip = candidates[current_index];
-        let elapsed = elapsed_seconds.get() + 0.08;
-        if elapsed >= DesktopPetPackage::clip_cycle_seconds(clip) {
-            clip_index.set((current_index + 1 + fastrand::usize(..candidates.len())) % candidates.len());
-            elapsed_seconds.set(0.0);
-            state_machine.borrow_mut().handle(pet_completion_event(state));
-            return;
-        }
-        elapsed_seconds.set(elapsed);
-        let Some(frame) = DesktopPetPackage::frame_in_clip(clip, elapsed) else {
-            return;
-        };
-        let Ok(image) = slint::Image::load_from_path(&frame.path) else {
-            return;
-        };
-        if let Some(window) = window.upgrade() {
-            window.set_pet_image(image);
-        }
-    });
-}
-
-fn pet_completion_event(state: PetStateKind) -> PetEvent {
-    match state {
-        PetStateKind::Interact => PetEvent::InteractionFinished,
-        PetStateKind::Move => PetEvent::MovementFinished,
-        PetStateKind::Life => PetEvent::LifeFinished,
-        PetStateKind::Alert | PetStateKind::Idle => PetEvent::LifeFinished,
-    }
-}
-
 fn native_pet_resource_roots(app_data_dir: &Path) -> Vec<PetResourceRoot> {
     let mut roots = vec![PetResourceRoot::new(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources").join("desktop-pets"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("desktop-pets"),
         PetPackageSource::BuiltIn,
     )];
     if let Ok(executable) = std::env::current_exe() {
@@ -719,8 +693,8 @@ fn native_pet_resource_roots(app_data_dir: &Path) -> Vec<PetResourceRoot> {
 
 #[cfg(test)]
 mod tests {
-    use super::{alert_item_from_frame, native_page_title, pet_completion_event, NativePage};
-    use crate::{desktop_pet::{PetEvent, PetStateKind}, protocol::QuickAlertFrame};
+    use super::{alert_item_from_frame, native_page_title, NativePage};
+    use crate::protocol::QuickAlertFrame;
 
     #[test]
     fn native_shell_opens_on_chat_page() {
@@ -751,13 +725,4 @@ mod tests {
         assert_eq!(item.sender_device_id, "AA-BB-CC");
         assert!(item.feedback_allowed);
     }
-
-    #[test]
-    fn pet_interaction_completion_uses_existing_state_machine_event() {
-        assert_eq!(
-            pet_completion_event(PetStateKind::Interact),
-            PetEvent::InteractionFinished
-        );
-    }
-
 }

@@ -214,7 +214,7 @@ pub struct DesktopPetController {
     package: Arc<Mutex<Option<DesktopPetPackage>>>,
     repaint: Arc<Mutex<Option<egui::Context>>>,
     process: Arc<Mutex<Option<DesktopPetProcessHandle>>>,
-    app: AppHandle,
+    app: Option<AppHandle>,
 }
 
 struct DesktopPetProcessHandle {
@@ -290,7 +290,10 @@ mod desktop_pet_enable_tests {
 
         assert_eq!(merged.latest_alert_id.as_deref(), Some("alert-1"));
         assert_eq!(merged.latest_sender.as_deref(), Some("王二"));
-        assert_eq!(merged.latest_sender_address.as_deref(), Some("192.168.1.23"));
+        assert_eq!(
+            merged.latest_sender_address.as_deref(),
+            Some("192.168.1.23")
+        );
     }
 
     #[test]
@@ -318,6 +321,14 @@ mod desktop_pet_enable_tests {
 
 impl DesktopPetController {
     pub fn start(app: AppHandle) -> Self {
+        Self::start_with_app(Some(app))
+    }
+
+    pub fn start_for_native_ui() -> Self {
+        Self::start_with_app(None)
+    }
+
+    fn start_with_app(app: Option<AppHandle>) -> Self {
         let state = Arc::new(Mutex::new(DesktopPetRuntimeState {
             enabled: true,
             ..Default::default()
@@ -329,7 +340,7 @@ impl DesktopPetController {
             package: package.clone(),
             repaint: repaint.clone(),
             process: Arc::new(Mutex::new(None)),
-            app: app.clone(),
+            app,
         };
         controller.ensure_process();
         controller
@@ -461,7 +472,10 @@ impl DesktopPetController {
     }
 }
 
-fn start_desktop_pet_stdout_reader(app: AppHandle, stdout: impl std::io::Read + Send + 'static) {
+fn start_desktop_pet_stdout_reader(
+    app: Option<AppHandle>,
+    stdout: impl std::io::Read + Send + 'static,
+) {
     let _ = std::thread::Builder::new()
         .name("lanchat-desktop-pet-stdout".to_string())
         .spawn(move || {
@@ -472,7 +486,9 @@ fn start_desktop_pet_stdout_reader(app: AppHandle, stdout: impl std::io::Read + 
                 }
                 match serde_json::from_str::<DesktopPetProcessEvent>(&line) {
                     Ok(DesktopPetProcessEvent::Action(action)) => {
-                        let _ = app.emit("desktop_pet_action", &action);
+                        if let Some(app) = &app {
+                            let _ = app.emit("desktop_pet_action", &action);
+                        }
                     }
                     Ok(DesktopPetProcessEvent::Log(message)) => {
                         native_pet_log(&format!("child: {message}"));

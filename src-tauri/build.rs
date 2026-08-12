@@ -1,7 +1,6 @@
 fn main() {
     println!("cargo:rerun-if-changed=build-timestamp.txt");
     println!("cargo:rerun-if-changed=ui/main.slint");
-    println!("cargo:rerun-if-changed=ui/pet.slint");
     let config = slint_build::CompilerConfiguration::new().with_style("fluent".to_string());
     let manifest_dir = std::path::PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("缺少 CARGO_MANIFEST_DIR"),
@@ -13,12 +12,6 @@ fn main() {
         config.clone(),
     )
     .expect("编译原生 Slint 主界面失败");
-    slint_build::compile_with_output_path(
-        manifest_dir.join("ui/pet.slint"),
-        output_dir.join("native_pet_ui.rs"),
-        config,
-    )
-    .expect("编译原生 Slint 桌宠界面失败");
     let timestamp = std::fs::read_to_string("build-timestamp.txt")
         .ok()
         .map(|value| value.trim().to_string())

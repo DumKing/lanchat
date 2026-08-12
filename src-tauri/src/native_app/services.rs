@@ -1,8 +1,8 @@
-use crate::native_app::models::{
-    NativeConversationRow, NativeMessageRow, NativeNotificationRow, NativePeerRow, NativeProfile,
-    NativeChannelMemberRow, NativePetRow, NativePeerDetail, NativeSidebar,
-};
 use crate::desktop_pet::{DesktopPetManager, PetPackageSource, PetResourceRoot};
+use crate::native_app::models::{
+    NativeChannelMemberRow, NativeConversationRow, NativeMessageRow, NativeNotificationRow,
+    NativePeerDetail, NativePeerRow, NativePetRow, NativeProfile, NativeSidebar,
+};
 use crate::storage::{
     AdminNotificationRecord, ConversationKind, Message, MessageStatus, MessageType, Peer, Profile,
     Storage,
@@ -58,15 +58,18 @@ impl NativeAppServices {
     }
 
     pub fn load_peer_detail(&self, device_id: &str) -> Result<Option<NativePeerDetail>, String> {
-        let detail = self.storage.get_peer(device_id)?.map(|peer| NativePeerDetail {
-            device_id: peer.device_id,
-            nickname: peer.note.unwrap_or(peer.nickname),
-            address: format!("{}:{}", peer.address, peer.port),
-            online: peer.online,
-            supports_chat: peer.supports_chat,
-            client_kind: peer.client_kind,
-            build_version: peer.build_version,
-        });
+        let detail = self
+            .storage
+            .get_peer(device_id)?
+            .map(|peer| NativePeerDetail {
+                device_id: peer.device_id,
+                nickname: peer.note.unwrap_or(peer.nickname),
+                address: format!("{}:{}", peer.address, peer.port),
+                online: peer.online,
+                supports_chat: peer.supports_chat,
+                client_kind: peer.client_kind,
+                build_version: peer.build_version,
+            });
         Ok(detail)
     }
 
@@ -122,7 +125,11 @@ impl NativeAppServices {
             .storage
             .list_admin_notifications()?
             .into_iter()
-            .filter(|record| record.target_device_id.eq_ignore_ascii_case(&profile.device_id))
+            .filter(|record| {
+                record
+                    .target_device_id
+                    .eq_ignore_ascii_case(&profile.device_id)
+            })
             .map(map_notification)
             .collect())
     }
@@ -135,9 +142,7 @@ impl NativeAppServices {
         }
         self.storage
             .update_profile(nickname, profile.listen_port, profile.avatar)?;
-        self.storage
-            .get_or_create_profile()
-            .map(map_profile)
+        self.storage.get_or_create_profile().map(map_profile)
     }
 
     pub fn list_desktop_pets(&self) -> Vec<NativePetRow> {
@@ -253,7 +258,9 @@ fn map_message(message: Message, local_device_id: &str) -> NativeMessageRow {
             MessageStatus::Failed => "failed".to_string(),
         },
         created_at: message.created_at,
-        outgoing: message.sender_device_id.eq_ignore_ascii_case(local_device_id),
+        outgoing: message
+            .sender_device_id
+            .eq_ignore_ascii_case(local_device_id),
         has_attachment: message.file_meta.is_some(),
     }
 }
@@ -278,7 +285,9 @@ mod tests {
 
     #[test]
     fn resolves_the_existing_tauri_database_name_under_app_data() {
-        let path = NativeAppServices::storage_path_for_app_data("C:/Users/test/AppData/Roaming/com.lanchat.desktop");
+        let path = NativeAppServices::storage_path_for_app_data(
+            "C:/Users/test/AppData/Roaming/com.lanchat.desktop",
+        );
 
         assert_eq!(
             std::path::PathBuf::from("C:/Users/test/AppData/Roaming/com.lanchat.desktop")
@@ -290,7 +299,8 @@ mod tests {
     #[test]
     fn loads_existing_profile_peer_and_conversation_into_native_sidebar() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let storage = Arc::new(Storage::open(temp.path().join("lanchat.sqlite3")).expect("storage"));
+        let storage =
+            Arc::new(Storage::open(temp.path().join("lanchat.sqlite3")).expect("storage"));
         storage
             .update_profile("本机", 18145, None)
             .expect("profile updated");
@@ -332,7 +342,8 @@ mod tests {
     #[test]
     fn loads_twenty_most_recent_messages_for_native_timeline() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let storage = Arc::new(Storage::open(temp.path().join("lanchat.sqlite3")).expect("storage"));
+        let storage =
+            Arc::new(Storage::open(temp.path().join("lanchat.sqlite3")).expect("storage"));
         for index in 1..=23 {
             storage
                 .save_message(&Message {
@@ -361,7 +372,8 @@ mod tests {
     #[test]
     fn loads_only_notifications_received_by_the_local_device() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let storage = Arc::new(Storage::open(temp.path().join("lanchat.sqlite3")).expect("storage"));
+        let storage =
+            Arc::new(Storage::open(temp.path().join("lanchat.sqlite3")).expect("storage"));
         let profile = storage.get_or_create_profile().expect("profile");
         for (id, target, title) in [
             ("received", profile.device_id.as_str(), "本机公告"),
@@ -397,7 +409,8 @@ mod tests {
     #[test]
     fn updates_the_local_profile_nickname() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let storage = Arc::new(Storage::open(temp.path().join("lanchat.sqlite3")).expect("storage"));
+        let storage =
+            Arc::new(Storage::open(temp.path().join("lanchat.sqlite3")).expect("storage"));
         let services = NativeAppServices::new(storage);
 
         let profile = services
@@ -411,7 +424,8 @@ mod tests {
     #[test]
     fn exposes_peer_detail_by_mac_identity() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let storage = Arc::new(Storage::open(temp.path().join("lanchat.sqlite3")).expect("storage"));
+        let storage =
+            Arc::new(Storage::open(temp.path().join("lanchat.sqlite3")).expect("storage"));
         storage
             .upsert_peer(&Peer {
                 device_id: "AA-BB-CC-DD-EE-FF".to_string(),

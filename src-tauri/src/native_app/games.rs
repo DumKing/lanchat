@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use super::{game_room_from_frame, native_game_catalog, NativeGameRoomRow, NativeGameRoomStore};
+    use super::{
+        game_room_from_frame, native_game_catalog, NativeGameRoomRow, NativeGameRoomStore,
+    };
     use crate::protocol::GameFrame;
 
     #[test]
@@ -10,7 +12,9 @@ mod tests {
         assert_eq!(games.len(), 4);
         assert_eq!(games[0].id, "doudizhu");
         assert_eq!(games[3].id, "xiangqi");
-        assert!(games.iter().all(|game| game.max_players >= game.min_players));
+        assert!(games
+            .iter()
+            .all(|game| game.max_players >= game.min_players));
     }
 
     #[test]
@@ -35,10 +39,20 @@ mod tests {
     fn room_store_keeps_multiple_discovered_rooms() {
         let mut store = NativeGameRoomStore::default();
         store.upsert(NativeGameRoomRow {
-            id: "room-a".to_string(), game_id: "gomoku".to_string(), game_name: "五子棋".to_string(), name: "A".to_string(), host: "甲".to_string(), players: "1 人".to_string(),
+            id: "room-a".to_string(),
+            game_id: "gomoku".to_string(),
+            game_name: "五子棋".to_string(),
+            name: "A".to_string(),
+            host: "甲".to_string(),
+            players: "1 人".to_string(),
         });
         store.upsert(NativeGameRoomRow {
-            id: "room-b".to_string(), game_id: "xiangqi".to_string(), game_name: "中国象棋".to_string(), name: "B".to_string(), host: "乙".to_string(), players: "2 人".to_string(),
+            id: "room-b".to_string(),
+            game_id: "xiangqi".to_string(),
+            game_name: "中国象棋".to_string(),
+            name: "B".to_string(),
+            host: "乙".to_string(),
+            players: "2 人".to_string(),
         });
 
         assert_eq!(store.rows().len(), 2);
