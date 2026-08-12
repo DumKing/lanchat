@@ -56,12 +56,14 @@ export component MainWindow inherits Window {
     in property <[Conversation]> conversations;
     in property <[Device]> peers;
     in property <[PetOption]> pets;
+    in property <bool> pet-enabled;
     in-out property <string> profile-nickname;
     in property <string> settings-feedback;
     callback select-page(int);
     callback select-conversation(string);
     callback save-profile(string);
     callback select-pet(string);
+    callback toggle-pet(bool);
 
     HorizontalLayout {
         spacing: 0px;
@@ -206,6 +208,7 @@ export component MainWindow inherits Window {
                     Text { text: root.settings-feedback; color: #159e90; font-size: 13px; }
                     Rectangle { height: 1px; background: #e5edef; }
                     Text { text: "桌宠设置"; font-size: 18px; font-weight: 700; color: #173f3d; }
+                    Button { text: root.pet-enabled ? "关闭桌宠" : "开启桌宠"; clicked => { root.toggle-pet(!root.pet-enabled); } }
                     Text { text: "已导入桌宠"; color: #5b7377; font-size: 14px; }
                     for pet in root.pets: Button { text: pet.selected ? ("✓  " + pet.name) : pet.name; clicked => { root.select-pet(pet.id); } }
                 }

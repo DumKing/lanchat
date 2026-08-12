@@ -112,6 +112,17 @@ impl NativeAppServices {
         self.desktop_pet_manager().select(id).map(|_| ())
     }
 
+    pub fn desktop_pet_enabled(&self) -> bool {
+        self.desktop_pet_manager().settings().enabled
+    }
+
+    pub fn set_desktop_pet_enabled(&self, enabled: bool) -> Result<(), String> {
+        let manager = self.desktop_pet_manager();
+        let mut settings = manager.settings();
+        settings.enabled = enabled;
+        manager.update_settings(settings).map(|_| ())
+    }
+
     fn desktop_pet_manager(&self) -> DesktopPetManager {
         let app_data_dir = Self::default_app_data_dir();
         let mut roots = vec![PetResourceRoot::new(

@@ -92,6 +92,7 @@ pub fn run() -> Result<(), String> {
         })
         .collect::<Vec<_>>();
     window.set_pets(ModelRc::new(VecModel::from(pets)));
+    window.set_pet_enabled(services.desktop_pet_enabled());
     let conversations = sidebar
         .conversations
         .iter()
@@ -216,6 +217,22 @@ pub fn run() -> Result<(), String> {
                 Err(error) => error,
             };
             window.set_settings_feedback(SharedString::from(feedback));
+        });
+    });
+    let pet_toggle_services = services.clone();
+    let pet_toggle_window = window.as_weak();
+    window.on_toggle_pet(move |enabled| {
+        let result = pet_toggle_services.set_desktop_pet_enabled(enabled);
+        let _ = pet_toggle_window.upgrade_in_event_loop(move |window| match result {
+            Ok(()) => {
+                window.set_pet_enabled(enabled);
+                window.set_settings_feedback(SharedString::from(if enabled {
+                    "桌宠已开启，重启原生界面后显示"
+                } else {
+                    "桌宠已关闭"
+                }));
+            }
+            Err(error) => window.set_settings_feedback(SharedString::from(error)),
         });
     });
     let pet_window = create_pet_window()?;
