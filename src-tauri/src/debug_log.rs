@@ -1,5 +1,5 @@
+use crate::runtime_events::DebugLogSink;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DebugLogEntry {
@@ -10,8 +10,8 @@ pub struct DebugLogEntry {
     pub detail: Option<String>,
 }
 
-pub fn emit_debug_log(
-    app: &AppHandle,
+pub fn emit_debug_log<T: DebugLogSink>(
+    app: &T,
     level: impl Into<String>,
     scope: impl Into<String>,
     message: impl Into<String>,
@@ -24,5 +24,5 @@ pub fn emit_debug_log(
         message: message.into(),
         detail,
     };
-    app.emit("debug_log", entry).ok();
+    app.emit_debug_log_entry(entry);
 }

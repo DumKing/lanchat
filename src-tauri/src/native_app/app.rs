@@ -1,10 +1,12 @@
 include!(concat!(env!("OUT_DIR"), "/native_main_ui.rs"));
 
-use crate::native_app::{NativeAppServices, NativeUiSettings, PetWindow, TextKey, Translator};
+use crate::native_app::{NativeAppServices, NativeEventBus, NativeUiSettings, PetWindow, TextKey, Translator};
 use crate::storage::DEFAULT_GROUP_ID;
 use crate::{
     desktop_pet::{DesktopPetManager, DesktopPetPackage, PetPackageSource, PetResourceRoot, PetStateKind},
     native_app::initial_idle_frame,
+    network::Network,
+    runtime_events::NetworkEventSink,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::Cell;
@@ -49,6 +51,9 @@ pub fn run() -> Result<(), String> {
     let _initial_page = NativePage::default();
     let _available_pages = NAVIGATION_PAGES;
     let services = NativeAppServices::open_default()?;
+    let network_events = NativeEventBus::default();
+    let network = Network::new_with_desktop_pet(services.storage(), native_desktop_pet_manager());
+    network.start_native(NetworkEventSink::native(network_events.clone()))?;
     let ui_settings = NativeUiSettings::load(
         NativeAppServices::default_app_data_dir().join("native-ui-settings.json"),
     );
@@ -219,6 +224,47 @@ pub fn run() -> Result<(), String> {
             window.set_settings_feedback(SharedString::from(feedback));
         });
     });
+    let message_network = network.clone();
+    let message_services = services.clone();
+    let message_events = network_events.clone();
+    let send_window = window.as_weak();
+    window.on_send_message(move |content| {
+        let content = content.trim().to_string();
+        if content.is_empty() {
+            return;
+        }
+        let profile = match message_services.load_sidebar() {
+            Ok(sidebar) => sidebar.profile,
+            Err(error) => {
+                let _ = send_window.upgrade_in_event_loop(move |window| {
+                    window.set_send_feedback(SharedString::from(error));
+                });
+                return;
+            }
+        };
+        let message = crate::storage::Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            conversation_id: DEFAULT_GROUP_ID.to_string(),
+            sender_device_id: profile.device_id,
+            content,
+            message_type: crate::storage::MessageType::Text,
+            file_meta: None,
+            created_at: chrono::Utc::now().timestamp_millis(),
+            status: crate::storage::MessageStatus::Sending,
+            simulation: None,
+        };
+        let result = tauri::async_runtime::block_on(message_network.send_message_native(
+            NetworkEventSink::native(message_events.clone()),
+            message,
+        ));
+        let _ = send_window.upgrade_in_event_loop(move |window| match result {
+            Ok(()) => {
+                window.set_message_input(SharedString::default());
+                window.set_send_feedback(SharedString::from("已发送"));
+            }
+            Err(error) => window.set_send_feedback(SharedString::from(error)),
+        });
+    });
     let pet_toggle_services = services.clone();
     let pet_toggle_window = window.as_weak();
     window.on_toggle_pet(move |enabled| {
@@ -235,6 +281,7 @@ pub fn run() -> Result<(), String> {
             Err(error) => window.set_settings_feedback(SharedString::from(error)),
         });
     });
+    start_native_network_refresh(&window, services.clone(), network_events, sidebar.profile.nickname.clone());
     let pet_window = create_pet_window()?;
     window
         .show()
@@ -247,13 +294,66 @@ pub fn run() -> Result<(), String> {
     slint::run_event_loop().map_err(|error| format!("运行原生界面事件循环失败：{error}"))
 }
 
+fn start_native_network_refresh(
+    window: &MainWindow,
+    services: NativeAppServices,
+    events: NativeEventBus,
+    local_nickname: String,
+) {
+    let window = window.as_weak();
+    let timer = Box::leak(Box::new(Timer::default()));
+    timer.start(TimerMode::Repeated, Duration::from_millis(300), move || {
+        if events.drain().is_empty() {
+            return;
+        }
+        let Ok(sidebar) = services.load_sidebar() else {
+            return;
+        };
+        let conversations = sidebar
+            .conversations
+            .iter()
+            .map(|conversation| Conversation {
+                id: SharedString::from(conversation.id.clone()),
+                title: SharedString::from(conversation.title.clone()),
+                unread_count: SharedString::from(
+                    (conversation.unread_count > 0)
+                        .then(|| conversation.unread_count.to_string())
+                        .unwrap_or_default(),
+                ),
+                subtitle: SharedString::from(if conversation.is_group { "频道" } else { "私聊" }),
+            })
+            .collect::<Vec<_>>();
+        let peers = sidebar
+            .peers
+            .iter()
+            .map(|peer| Device {
+                nickname: SharedString::from(peer.display_name.clone()),
+                address: SharedString::from(peer.address.clone()),
+                status: SharedString::from(if peer.online { "在线" } else { "离线" }),
+                capability: SharedString::from(if peer.supports_chat { "可聊天" } else { "仅告警" }),
+            })
+            .collect::<Vec<_>>();
+        let Ok(messages) = services.load_messages(DEFAULT_GROUP_ID, None) else {
+            return;
+        };
+        let rows = messages
+            .into_iter()
+            .map(|message| ChatMessage {
+                author: SharedString::from(if message.outgoing { local_nickname.clone() } else { message.sender_device_id }),
+                content: SharedString::from(message.content),
+                outgoing: message.outgoing,
+            })
+            .collect::<Vec<_>>();
+        if let Some(window) = window.upgrade() {
+            window.set_conversations(ModelRc::new(VecModel::from(conversations)));
+            window.set_peers(ModelRc::new(VecModel::from(peers)));
+            window.set_messages(ModelRc::new(VecModel::from(rows)));
+        }
+    });
+}
+
 fn create_pet_window() -> Result<Option<PetWindow>, String> {
-    let app_data_dir = NativeAppServices::default_app_data_dir();
-    let manager = DesktopPetManager::new(
-        native_pet_resource_roots(&app_data_dir),
-        app_data_dir.join("desktop-pets"),
-        app_data_dir.join("desktop-pet-settings.json"),
-    );
+    let manager = native_desktop_pet_manager();
     if !manager.settings().enabled {
         return Ok(None);
     }
@@ -269,6 +369,15 @@ fn create_pet_window() -> Result<Option<PetWindow>, String> {
     pet_window.set_pet_image(image);
     start_native_pet_animation(&pet_window, package);
     Ok(Some(pet_window))
+}
+
+fn native_desktop_pet_manager() -> DesktopPetManager {
+    let app_data_dir = NativeAppServices::default_app_data_dir();
+    DesktopPetManager::new(
+        native_pet_resource_roots(&app_data_dir),
+        app_data_dir.join("desktop-pets"),
+        app_data_dir.join("desktop-pet-settings.json"),
+    )
 }
 
 fn start_native_pet_animation(pet_window: &PetWindow, package: DesktopPetPackage) {

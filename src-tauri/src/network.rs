@@ -1,5 +1,6 @@
 use crate::channel_crypto::{decrypt_channel_content, encrypt_channel_content};
 use crate::debug_log::emit_debug_log;
+use crate::runtime_events::NetworkEventSink;
 use crate::desktop_pet::DesktopPetManager;
 use crate::identity::normalize_device_id;
 use crate::protocol::{
@@ -18,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::mpsc;
@@ -92,6 +93,14 @@ impl Network {
     }
 
     pub fn start(&self, app: AppHandle) -> Result<(), String> {
+        self.start_with_events(app.into())
+    }
+
+    pub fn start_native(&self, events: NetworkEventSink) -> Result<(), String> {
+        self.start_with_events(events)
+    }
+
+    fn start_with_events(&self, app: NetworkEventSink) -> Result<(), String> {
         emit_debug_log(&app, "info", "network", "启动网络模块", None);
         let network = self.clone();
         let app_for_listener = app.clone();
@@ -184,10 +193,11 @@ impl Network {
 
     pub async fn connect_peer(
         &self,
-        app: AppHandle,
+        app: impl Into<NetworkEventSink>,
         address: String,
         port: u16,
     ) -> Result<Peer, String> {
+        let app = app.into();
         emit_debug_log(
             &app,
             "info",
@@ -336,9 +346,10 @@ impl Network {
     }
     fn broadcast_private_channel_snapshot(
         &self,
-        app: AppHandle,
+        app: impl Into<NetworkEventSink>,
         channel_id: &str,
     ) -> Result<(), String> {
+        let app = app.into();
         let Some(channel) = self.storage.get_private_channel(channel_id)? else {
             return Ok(());
         };
@@ -969,6 +980,60 @@ impl Network {
         Ok(())
     }
 
+    pub async fn send_message_native(
+        &self,
+        events: NetworkEventSink,
+        message: Message,
+    ) -> Result<(), String> {
+        if !self.supports_chat {
+            return Err("当前客户端不支持聊天、频道和文件消息".to_string());
+        }
+        if message.conversation_id != DEFAULT_GROUP_ID {
+            return Err("原生版私聊和私有频道发送正在迁移中".to_string());
+        }
+        if self
+            .storage
+            .is_channel_muted(DEFAULT_GROUP_ID, &message.sender_device_id)?
+        {
+            return Err("你已被超管禁言，暂不能在公共频道发言".to_string());
+        }
+        self.storage.save_message(&message)?;
+        events.emit("message_status_changed", &message).ok();
+        let frame = WireFrame::ChatMessage(ChatMessageFrame {
+            message_id: message.id.clone(),
+            conversation_id: message.conversation_id.clone(),
+            sender_device_id: message.sender_device_id.clone(),
+            content: message.content.clone(),
+            message_type: message.message_type.as_str().to_string(),
+            file_meta: message.file_meta.clone(),
+            encrypted: false,
+            nonce: None,
+            key_version: None,
+            simulation: message.simulation.clone(),
+            created_at: message.created_at,
+        });
+        let senders = self
+            .senders
+            .lock()
+            .map_err(|_| "连接表已损坏".to_string())?;
+        let mut delivered = false;
+        for (peer_id, sender) in senders.iter() {
+            if self.peer_supports_full_features(peer_id)? {
+                delivered |= sender.sender.try_send(frame.clone()).is_ok();
+            }
+        }
+        let mut updated = message;
+        updated.status = if delivered {
+            MessageStatus::Sent
+        } else {
+            MessageStatus::Failed
+        };
+        self.storage
+            .update_message_status(&updated.id, updated.status.clone())?;
+        events.emit("message_status_changed", &updated).ok();
+        Ok(())
+    }
+
     async fn send_direct_frame(
         &self,
         app: AppHandle,
@@ -1032,7 +1097,7 @@ impl Network {
         }
     }
 
-    async fn start_tcp_listener(&self, app: AppHandle) -> Result<(), String> {
+    async fn start_tcp_listener(&self, app: NetworkEventSink) -> Result<(), String> {
         let profile = self.storage.get_or_create_profile()?;
         let listener = TcpListener::bind(("0.0.0.0", profile.listen_port))
             .await
@@ -1073,7 +1138,7 @@ impl Network {
 
     async fn attach_stream(
         &self,
-        app: AppHandle,
+        app: NetworkEventSink,
         stream: TcpStream,
         remote_hint: Option<(String, u16)>,
     ) -> Result<Peer, String> {
@@ -1632,12 +1697,7 @@ impl Network {
                             match read_storage.upsert_admin_notification(&frame) {
                                 Ok(record) => {
                                     if record.force_open_main_window {
-                                        if let Some(window) = read_app.get_webview_window("main") {
-                                            let _ = window.set_skip_taskbar(false);
-                                            let _ = window.show();
-                                            let _ = window.unminimize();
-                                            let _ = window.set_focus();
-                                        }
+                                        read_app.request_main_window();
                                         emit_debug_log(
                                             &read_app,
                                             "warn",
@@ -1848,7 +1908,7 @@ impl Network {
         Ok(peer)
     }
 
-    async fn start_udp_presence_listener(&self, app: AppHandle) -> Result<(), String> {
+    async fn start_udp_presence_listener(&self, app: NetworkEventSink) -> Result<(), String> {
         let socket = UdpSocket::bind(("0.0.0.0", UDP_PRESENCE_PORT))
             .await
             .map_err(|err| format!("监听 UDP 在线广播端口 {UDP_PRESENCE_PORT} 失败：{err}"))?;
@@ -1923,7 +1983,7 @@ impl Network {
             }
         }
     }
-    async fn start_offline_sweeper(&self, app: AppHandle) {
+    async fn start_offline_sweeper(&self, app: NetworkEventSink) {
         let mut interval =
             tokio::time::interval(std::time::Duration::from_secs(OFFLINE_SWEEP_SECONDS));
         loop {
@@ -1949,7 +2009,7 @@ impl Network {
             }
         }
     }
-    async fn start_status_broadcast(&self, app: AppHandle) {
+    async fn start_status_broadcast(&self, app: NetworkEventSink) {
         let udp_socket = UdpSocket::bind(("0.0.0.0", 0)).await.ok();
         if let Some(socket) = &udp_socket {
             match socket.set_broadcast(true) {
@@ -2140,7 +2200,7 @@ fn mdns_instance_name(device_id: &str) -> String {
     }
 }
 
-fn start_mdns(app: AppHandle, network: Network) -> Result<(), String> {
+fn start_mdns(app: NetworkEventSink, network: Network) -> Result<(), String> {
     let profile = network.storage.get_or_create_profile()?;
     let mdns = ServiceDaemon::new().map_err(|err| format!("启动 mDNS 失败：{err}"))?;
     register_mdns_service(&mdns, &profile, &network.client_kind, network.supports_chat)?;

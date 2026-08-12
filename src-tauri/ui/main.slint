@@ -45,6 +45,8 @@ export component MainWindow inherits Window {
     in property <string> input-message;
     in property <string> send-label;
     in property <string> input-hint;
+    in-out property <string> message-input;
+    in property <string> send-feedback;
     in property <int> page;
     in property <string> page-title;
     title: root.app-title;
@@ -64,6 +66,7 @@ export component MainWindow inherits Window {
     callback save-profile(string);
     callback select-pet(string);
     callback toggle-pet(bool);
+    callback send-message(string);
 
     HorizontalLayout {
         spacing: 0px;
@@ -213,7 +216,7 @@ export component MainWindow inherits Window {
                     for pet in root.pets: Button { text: pet.selected ? ("✓  " + pet.name) : pet.name; clicked => { root.select-pet(pet.id); } }
                 }
             }
-            if root.page == 0 : Rectangle { height: 142px; background: #fafcfd; border-width: 1px; border-color: #e1e8ed; VerticalLayout { padding: 14px; spacing: 10px; Text { text: "☺   📎   🎙   @"; color: #607583; font-size: 18px; } LineEdit { placeholder-text: root.input-message; } HorizontalLayout { Text { text: root.input-hint; color: #9aa9b5; } Button { text: root.send-label; horizontal-stretch: 0; } } } }
+            if root.page == 0 : Rectangle { height: 142px; background: #fafcfd; border-width: 1px; border-color: #e1e8ed; VerticalLayout { padding: 14px; spacing: 10px; Text { text: "☺   📎   🎙   @"; color: #607583; font-size: 18px; } LineEdit { text <=> root.message-input; placeholder-text: root.input-message; } HorizontalLayout { Text { text: root.send-feedback == "" ? root.input-hint : root.send-feedback; color: #159e90; } Button { text: root.send-label; horizontal-stretch: 0; clicked => { root.send-message(root.message-input); } } } } }
         }
     }
 }

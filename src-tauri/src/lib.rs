@@ -7,6 +7,7 @@ mod identity;
 mod network;
 pub mod native_app;
 mod protocol;
+pub mod runtime_events;
 mod storage;
 
 #[cfg(test)]

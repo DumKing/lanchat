@@ -53,6 +53,10 @@ impl NativeAppServices {
         })
     }
 
+    pub fn storage(&self) -> Arc<Storage> {
+        self.storage.clone()
+    }
+
     pub fn load_messages(
         &self,
         conversation_id: &str,
