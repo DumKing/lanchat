@@ -1,7 +1,7 @@
 include!(concat!(env!("OUT_DIR"), "/native_main_ui.rs"));
 
 use crate::native_app::{
-    game_room_from_frame, native_game_catalog, NativeAppServices, NativeEventBus,
+    game_room_from_frame, native_game_catalog, Locale, NativeAppServices, NativeEventBus,
     NativeGameRoomStore, NativeUiSettings, TextKey, Translator,
 };
 use crate::storage::DEFAULT_GROUP_ID;
@@ -47,6 +47,21 @@ fn native_page_title(page: NativePage) -> &'static str {
     }
 }
 
+fn locale_code(locale: Locale) -> &'static str {
+    match locale {
+        Locale::ZhCn => "zh-CN",
+        Locale::EnUs => "en-US",
+    }
+}
+
+fn locale_from_code(value: &str) -> Option<Locale> {
+    match value {
+        "zh-CN" => Some(Locale::ZhCn),
+        "en-US" => Some(Locale::EnUs),
+        _ => None,
+    }
+}
+
 impl Default for NativePage {
     fn default() -> Self {
         Self::Chat
@@ -84,6 +99,7 @@ pub fn run() -> Result<(), String> {
     window.set_input_message(SharedString::from(translator.text(TextKey::InputMessage)));
     window.set_send_label(SharedString::from(translator.text(TextKey::Send)));
     window.set_input_hint(SharedString::from(translator.text(TextKey::InputHint)));
+    window.set_current_locale(SharedString::from(locale_code(ui_settings.locale)));
     let messages = services.load_messages(DEFAULT_GROUP_ID, None)?;
     let rows = messages
         .into_iter()
@@ -270,6 +286,36 @@ pub fn run() -> Result<(), String> {
             Ok(profile) => {
                 window.set_profile_nickname(SharedString::from(profile.nickname));
                 window.set_settings_feedback(SharedString::from("昵称已保存"));
+            }
+            Err(error) => window.set_settings_feedback(SharedString::from(error)),
+        });
+    });
+    let locale_window = window.as_weak();
+    let locale_path = NativeAppServices::default_app_data_dir().join("native-ui-settings.json");
+    window.on_set_locale(move |locale| {
+        let locale = locale_from_code(&locale).unwrap_or(Locale::ZhCn);
+        let mut settings = NativeUiSettings::load(&locale_path);
+        settings.locale = locale;
+        let result = settings.save(&locale_path);
+        let translator = Translator::new(locale);
+        let _ = locale_window.upgrade_in_event_loop(move |window| match result {
+            Ok(()) => {
+                window.set_current_locale(SharedString::from(locale_code(locale)));
+                window.set_nav_chat(SharedString::from(translator.text(TextKey::Chat)));
+                window.set_nav_devices(SharedString::from(translator.text(TextKey::Devices)));
+                window.set_nav_games(SharedString::from(translator.text(TextKey::Games)));
+                window.set_nav_alerts(SharedString::from(translator.text(TextKey::Alerts)));
+                window.set_nav_settings(SharedString::from(translator.text(TextKey::Settings)));
+                window.set_search_chats(SharedString::from(translator.text(TextKey::SearchChats)));
+                window.set_lan_channel(SharedString::from(translator.text(TextKey::LanChannel)));
+                window.set_channel_broadcast(SharedString::from(
+                    translator.text(TextKey::ChannelBroadcast),
+                ));
+                window
+                    .set_input_message(SharedString::from(translator.text(TextKey::InputMessage)));
+                window.set_send_label(SharedString::from(translator.text(TextKey::Send)));
+                window.set_input_hint(SharedString::from(translator.text(TextKey::InputHint)));
+                window.set_settings_feedback(SharedString::from("语言设置已保存"));
             }
             Err(error) => window.set_settings_feedback(SharedString::from(error)),
         });

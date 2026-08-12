@@ -62,12 +62,14 @@ export component MainWindow inherits Window {
     in property <[GameOption]> games;
     in property <[GameRoom]> game-rooms;
     in property <bool> pet-enabled;
+    in property <string> current-locale;
     in-out property <string> profile-nickname;
     in property <string> settings-feedback;
     callback select-page(int); callback select-conversation(string); callback select-device(string);
     callback save-profile(string); callback select-pet(string); callback toggle-pet(bool);
     callback send-message(string); callback send-alert(); callback feedback-alert(string, string, string);
     callback create-game-room(string); callback join-game-room(string, string);
+    callback set-locale(string);
     title: root.app-title; min-width: 1000px; min-height: 620px; background: #f3f8f6;
 
     HorizontalLayout {
@@ -207,6 +209,7 @@ export component MainWindow inherits Window {
                     LineEdit { text <=> root.profile-nickname; placeholder-text: "输入昵称"; } Button { text: "保存昵称"; horizontal-stretch: 0; clicked => { root.save-profile(root.profile-nickname); } } Text { text: root.settings-feedback; color: #159b8c; font-size: 12px; }
                     Rectangle { height: 1px; background: #e1ebe8; } Text { text: "桌宠设置"; color: #203e39; font-size: 18px; font-weight: 700; } Button { text: root.pet-enabled ? "关闭桌宠" : "开启桌宠"; horizontal-stretch: 0; clicked => { root.toggle-pet(!root.pet-enabled); } } Text { text: "已导入桌宠"; color: #708984; font-size: 12px; }
                     for pet in root.pets: Button { text: pet.selected ? ("✓  " + pet.name) : pet.name; clicked => { root.select-pet(pet.id); } }
+                    Rectangle { height: 1px; background: #e1ebe8; } Text { text: "语言"; color: #203e39; font-size: 18px; font-weight: 700; } HorizontalLayout { spacing: 8px; Button { text: root.current-locale == "zh-CN" ? "✓ 中文" : "中文"; horizontal-stretch: 0; clicked => { root.set-locale("zh-CN"); } } Button { text: root.current-locale == "en-US" ? "✓ English" : "English"; horizontal-stretch: 0; clicked => { root.set-locale("en-US"); } } }
                 } }
             }
             if root.page == 0 : Rectangle { height: 148px; border-width: 1px; border-color: #dfe9e6; background: #fbfdfc;
