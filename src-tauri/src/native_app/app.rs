@@ -244,7 +244,11 @@ pub fn run() -> Result<(), String> {
         };
         let message = crate::storage::Message {
             id: uuid::Uuid::new_v4().to_string(),
-            conversation_id: DEFAULT_GROUP_ID.to_string(),
+            conversation_id: send_window
+                .upgrade()
+                .map(|window| window.get_active_conversation_id().to_string())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| DEFAULT_GROUP_ID.to_string()),
             sender_device_id: profile.device_id,
             content,
             message_type: crate::storage::MessageType::Text,

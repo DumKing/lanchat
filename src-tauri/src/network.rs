@@ -988,9 +988,6 @@ impl Network {
         if !self.supports_chat {
             return Err("当前客户端不支持聊天、频道和文件消息".to_string());
         }
-        if message.conversation_id != DEFAULT_GROUP_ID {
-            return Err("原生版私聊和私有频道发送正在迁移中".to_string());
-        }
         if self
             .storage
             .is_channel_muted(DEFAULT_GROUP_ID, &message.sender_device_id)?
@@ -1012,16 +1009,22 @@ impl Network {
             simulation: message.simulation.clone(),
             created_at: message.created_at,
         });
-        let senders = self
-            .senders
-            .lock()
-            .map_err(|_| "连接表已损坏".to_string())?;
-        let mut delivered = false;
-        for (peer_id, sender) in senders.iter() {
-            if self.peer_supports_full_features(peer_id)? {
-                delivered |= sender.sender.try_send(frame.clone()).is_ok();
+        let delivered = if message.conversation_id == DEFAULT_GROUP_ID {
+            let senders = self
+                .senders
+                .lock()
+                .map_err(|_| "连接表已损坏".to_string())?;
+            let mut delivered = false;
+            for (peer_id, sender) in senders.iter() {
+                if self.peer_supports_full_features(peer_id)? {
+                    delivered |= sender.sender.try_send(frame.clone()).is_ok();
+                }
             }
-        }
+            delivered
+        } else {
+            self.send_direct_frame_native(events.clone(), &message.conversation_id, frame)
+                .await?
+        };
         let mut updated = message;
         updated.status = if delivered {
             MessageStatus::Sent
@@ -1032,6 +1035,41 @@ impl Network {
             .update_message_status(&updated.id, updated.status.clone())?;
         events.emit("message_status_changed", &updated).ok();
         Ok(())
+    }
+
+    async fn send_direct_frame_native(
+        &self,
+        events: NetworkEventSink,
+        peer_device_id: &str,
+        frame: WireFrame,
+    ) -> Result<bool, String> {
+        let peer_device_id = normalize_device_id(peer_device_id);
+        if let Some(sender) = self
+            .senders
+            .lock()
+            .map_err(|_| "连接表已损坏".to_string())?
+            .get(&peer_device_id)
+            .cloned()
+        {
+            return Ok(sender.sender.try_send(frame).is_ok());
+        }
+        let peer = self
+            .storage
+            .get_peer(&peer_device_id)?
+            .ok_or_else(|| "未找到该设备，无法发送私聊消息".to_string())?;
+        if !peer.supports_full_features() {
+            return Err("该设备不支持聊天".to_string());
+        }
+        if !peer.online {
+            return Err("对方已离线，不能发送私聊消息".to_string());
+        }
+        self.connect_peer(events, peer.address, peer.port).await?;
+        Ok(self
+            .senders
+            .lock()
+            .map_err(|_| "连接表已损坏".to_string())?
+            .get(&peer_device_id)
+            .is_some_and(|sender| sender.sender.try_send(frame).is_ok()))
     }
 
     async fn send_direct_frame(

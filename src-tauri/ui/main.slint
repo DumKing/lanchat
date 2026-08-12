@@ -47,6 +47,7 @@ export component MainWindow inherits Window {
     in property <string> input-hint;
     in-out property <string> message-input;
     in property <string> send-feedback;
+    in-out property <string> active-conversation-id: "lan-room";
     in property <int> page;
     in property <string> page-title;
     title: root.app-title;
@@ -96,7 +97,7 @@ export component MainWindow inherits Window {
                 spacing: 12px;
                 HorizontalLayout { Text { text: root.nav-chat; font-size: 20px; font-weight: 700; } Text { text: "+"; horizontal-alignment: right; font-size: 22px; } }
                 LineEdit { placeholder-text: root.search-chats; }
-                Rectangle { height: 64px; border-radius: 7px; background: #e2f5f1; VerticalLayout { padding: 10px; Text { text: root.lan-channel; font-size: 16px; } Text { text: root.channel-broadcast; color: #6d8790; } } TouchArea { clicked => { root.select-conversation("lan-room"); } } }
+                Rectangle { height: 64px; border-radius: 7px; background: #e2f5f1; VerticalLayout { padding: 10px; Text { text: root.lan-channel; font-size: 16px; } Text { text: root.channel-broadcast; color: #6d8790; } } TouchArea { clicked => { root.active-conversation-id = "lan-room"; root.select-conversation("lan-room"); } } }
                 ScrollView {
                     vertical-stretch: 1;
                     VerticalLayout {
@@ -114,7 +115,7 @@ export component MainWindow inherits Window {
                                 }
                                 Text { text: conversation.subtitle; color: #8798a4; font-size: 12px; }
                             }
-                            TouchArea { clicked => { root.select-conversation(conversation.id); } }
+                            TouchArea { clicked => { root.active-conversation-id = conversation.id; root.select-conversation(conversation.id); } }
                         }
                     }
                 }
