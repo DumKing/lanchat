@@ -144,6 +144,9 @@ pub fn run() -> Result<(), String> {
         })
         .collect::<Vec<_>>();
     window.set_notifications(ModelRc::new(VecModel::from(notification_rows)));
+    window.set_channel_members(ModelRc::new(VecModel::from(channel_member_rows(
+        services.load_channel_members(DEFAULT_GROUP_ID).unwrap_or_default(),
+    ))));
     let weak_window = window.as_weak();
     window.on_select_page(move |page| {
         let page = match page {
@@ -184,8 +187,14 @@ pub fn run() -> Result<(), String> {
             .find(|conversation| conversation.id == conversation_id)
             .map(|conversation| conversation.title.clone())
             .unwrap_or_else(|| native_page_title(NativePage::Chat).to_string());
+        let members = channel_member_rows(
+            message_services
+                .load_channel_members(&conversation_id)
+                .unwrap_or_default(),
+        );
         let _ = message_window.upgrade_in_event_loop(move |window| {
             window.set_messages(ModelRc::new(VecModel::from(rows)));
+            window.set_channel_members(ModelRc::new(VecModel::from(members)));
             window.set_page(0);
             window.set_page_title(SharedString::from(title));
         });
@@ -298,6 +307,27 @@ pub fn run() -> Result<(), String> {
     slint::run_event_loop().map_err(|error| format!("运行原生界面事件循环失败：{error}"))
 }
 
+fn channel_member_rows(
+    members: Vec<crate::native_app::NativeChannelMemberRow>,
+) -> Vec<ChannelMember> {
+    members
+        .into_iter()
+        .map(|member| ChannelMember {
+            nickname: SharedString::from(member.nickname),
+            detail: SharedString::from(if member.is_owner {
+                "群主"
+            } else if member.muted {
+                "已禁言"
+            } else if member.online {
+                "在线"
+            } else {
+                "离线"
+            }),
+            online: member.online,
+        })
+        .collect()
+}
+
 fn start_native_network_refresh(
     window: &MainWindow,
     services: NativeAppServices,
@@ -337,7 +367,12 @@ fn start_native_network_refresh(
                 capability: SharedString::from(if peer.supports_chat { "可聊天" } else { "仅告警" }),
             })
             .collect::<Vec<_>>();
-        let Ok(messages) = services.load_messages(DEFAULT_GROUP_ID, None) else {
+        let conversation_id = window
+            .upgrade()
+            .map(|window| window.get_active_conversation_id().to_string())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_GROUP_ID.to_string());
+        let Ok(messages) = services.load_messages(&conversation_id, None) else {
             return;
         };
         let rows = messages

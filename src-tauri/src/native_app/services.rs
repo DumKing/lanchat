@@ -1,6 +1,6 @@
 use crate::native_app::models::{
     NativeConversationRow, NativeMessageRow, NativeNotificationRow, NativePeerRow, NativeProfile,
-    NativePetRow, NativeSidebar,
+    NativeChannelMemberRow, NativePetRow, NativeSidebar,
 };
 use crate::desktop_pet::{DesktopPetManager, PetPackageSource, PetResourceRoot};
 use crate::storage::{
@@ -68,6 +68,39 @@ impl NativeAppServices {
             .into_iter()
             .map(|message| Ok(map_message(message, &profile.device_id)))
             .collect()
+    }
+
+    pub fn load_channel_members(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Vec<NativeChannelMemberRow>, String> {
+        if conversation_id == crate::storage::DEFAULT_GROUP_ID {
+            return Ok(self
+                .storage
+                .list_peers()?
+                .into_iter()
+                .filter(|peer| peer.online)
+                .map(|peer| NativeChannelMemberRow {
+                    nickname: peer.note.unwrap_or(peer.nickname),
+                    device_id: peer.device_id,
+                    online: peer.online,
+                    is_owner: false,
+                    muted: false,
+                })
+                .collect());
+        }
+        Ok(self
+            .storage
+            .list_channel_members(conversation_id)?
+            .into_iter()
+            .map(|member| NativeChannelMemberRow {
+                nickname: member.nickname,
+                device_id: member.device_id,
+                online: member.online,
+                is_owner: member.is_owner,
+                muted: member.muted,
+            })
+            .collect())
     }
 
     pub fn load_local_notification_history(&self) -> Result<Vec<NativeNotificationRow>, String> {

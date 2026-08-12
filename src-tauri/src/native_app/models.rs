@@ -55,6 +55,15 @@ pub struct NativePetRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeChannelMemberRow {
+    pub nickname: String,
+    pub device_id: String,
+    pub online: bool,
+    pub is_owner: bool,
+    pub muted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeSidebar {
     pub profile: NativeProfile,
     pub peers: Vec<NativePeerRow>,
