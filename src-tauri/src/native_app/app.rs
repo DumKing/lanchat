@@ -9,12 +9,13 @@ use crate::{
     desktop_pet::{
         DesktopPetManager, PetEvent, PetPackageSource, PetResourceRoot, PetStateMachine,
     },
-    desktop_pet_runtime::DesktopPetController,
+    desktop_pet_runtime::{DesktopPetController, DesktopPetRuntimeState},
     network::Network,
     runtime_events::NetworkEventSink,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
@@ -459,15 +460,17 @@ pub fn run() -> Result<(), String> {
         ));
     });
     let pet_state = Rc::new(RefCell::new(PetStateMachine::new()));
-    start_native_desktop_pet()?;
+    let pet_controller = start_native_desktop_pet(network_events.clone())?;
     start_native_network_refresh(
         &window,
         services.clone(),
         network_events,
+        network.clone(),
         sidebar.profile.nickname.clone(),
         sidebar.profile.device_id.clone(),
         room_store,
         pet_state,
+        pet_controller,
     );
     window
         .show()
@@ -507,30 +510,79 @@ fn game_name(game_id: &str) -> &'static str {
 fn start_native_network_refresh(
     window: &MainWindow,
     services: NativeAppServices,
-    events: NativeEventBus,
+    event_bus: NativeEventBus,
+    network: Network,
     local_nickname: String,
     local_device_id: String,
     room_store: Rc<RefCell<NativeGameRoomStore>>,
     pet_state: Rc<RefCell<PetStateMachine>>,
+    pet_controller: Option<DesktopPetController>,
 ) {
     let window = window.as_weak();
+    let alert_frames = Rc::new(RefCell::new(HashMap::new()));
     let timer = Box::leak(Box::new(Timer::default()));
     timer.start(TimerMode::Repeated, Duration::from_millis(300), move || {
-        let events = events.drain();
+        let events = event_bus.drain();
         if events.is_empty() {
             return;
         }
-        let alerts = events
+        let quick_alerts = events
             .iter()
             .filter(|event| event.name == "quick_alert_received")
             .filter_map(|event| {
                 serde_json::from_value::<crate::protocol::QuickAlertFrame>(event.payload.clone())
                     .ok()
             })
+            .collect::<Vec<_>>();
+        for alert in &quick_alerts {
+            alert_frames
+                .borrow_mut()
+                .insert(alert.alert_id.clone(), alert.clone());
+        }
+        let alerts = quick_alerts
+            .iter()
+            .cloned()
             .map(|alert| alert_item_from_frame(alert, &local_device_id))
             .collect::<Vec<_>>();
         if !alerts.is_empty() {
             pet_state.borrow_mut().handle(PetEvent::AlertRaised);
+            if let (Some(controller), Some(alert)) = (pet_controller.as_ref(), quick_alerts.last())
+            {
+                controller.update(DesktopPetRuntimeState {
+                    enabled: true,
+                    pending_count: alerts.len() as u32,
+                    temperature: 100,
+                    latest_alert_id: Some(alert.alert_id.clone()),
+                    latest_sender: Some(alert.sender_nickname.clone()),
+                    latest_sender_address: alert.sender_address.clone(),
+                    latest_content: Some(alert.content.clone()),
+                    latest_created_at: Some(alert.created_at),
+                    feedbackable: alert.sender_device_id != local_device_id,
+                    flashing: true,
+                    disco: alert.mode.eq_ignore_ascii_case("disco"),
+                    ..Default::default()
+                });
+            }
+        }
+        for action in events
+            .iter()
+            .filter(|event| event.name == "desktop_pet_action")
+            .filter_map(|event| {
+                serde_json::from_value::<crate::desktop_pet_runtime::DesktopPetAction>(
+                    event.payload.clone(),
+                )
+                .ok()
+            })
+        {
+            handle_native_pet_action(
+                &action,
+                &window,
+                &services,
+                &network,
+                &event_bus,
+                &alert_frames,
+                pet_controller.as_ref(),
+            );
         }
         for room in events
             .iter()
@@ -645,19 +697,112 @@ fn alert_item_from_frame(
     }
 }
 
-fn start_native_desktop_pet() -> Result<(), String> {
+fn handle_native_pet_action(
+    action: &crate::desktop_pet_runtime::DesktopPetAction,
+    window: &slint::Weak<MainWindow>,
+    services: &NativeAppServices,
+    network: &Network,
+    events: &NativeEventBus,
+    alerts: &Rc<RefCell<HashMap<String, crate::protocol::QuickAlertFrame>>>,
+    pet_controller: Option<&DesktopPetController>,
+) {
+    match action.action.as_str() {
+        "open_main_window" => {
+            let _ = window.upgrade_in_event_loop(|window| {
+                let _ = window.show();
+            });
+        }
+        "stop_visuals" => {
+            if let Some(controller) = pet_controller {
+                controller.update(DesktopPetRuntimeState {
+                    enabled: true,
+                    ..Default::default()
+                });
+            }
+        }
+        "quick_alert" | "broadcast_disco_alert" => {
+            let Ok(profile) = services.load_sidebar().map(|sidebar| sidebar.profile) else {
+                return;
+            };
+            let frame = crate::protocol::QuickAlertFrame {
+                alert_id: uuid::Uuid::new_v4().to_string(),
+                sender_device_id: profile.device_id,
+                sender_nickname: profile.nickname,
+                sender_address: Some(crate::network::local_ip_address()),
+                content: "呱呱~呱~~".to_string(),
+                mode: if action.action == "broadcast_disco_alert" {
+                    "disco".to_string()
+                } else {
+                    "normal".to_string()
+                },
+                simulation: None,
+                created_at: chrono::Utc::now().timestamp_millis(),
+            };
+            let _ = tauri::async_runtime::block_on(
+                network
+                    .broadcast_quick_alert(NetworkEventSink::native(events.clone()), frame.clone()),
+            );
+            events.publish(
+                "quick_alert_received",
+                serde_json::to_value(frame).unwrap_or_default(),
+            );
+        }
+        "feedback_real" | "feedback_false" => {
+            let Some(alert_id) = action.alert_id.as_ref() else {
+                return;
+            };
+            let Some(alert) = alerts.borrow().get(alert_id).cloned() else {
+                return;
+            };
+            let Ok(profile) = services.load_sidebar().map(|sidebar| sidebar.profile) else {
+                return;
+            };
+            let result = if action.action == "feedback_real" {
+                "real"
+            } else {
+                "false"
+            };
+            let _ = tauri::async_runtime::block_on(network.broadcast_quick_alert_feedback(
+                NetworkEventSink::native(events.clone()),
+                crate::protocol::QuickAlertFeedbackFrame {
+                    alert_id: alert.alert_id,
+                    alert_sender_device_id: alert.sender_device_id,
+                    responder_device_id: profile.device_id,
+                    responder_nickname: profile.nickname,
+                    result: result.to_string(),
+                    created_at: chrono::Utc::now().timestamp_millis(),
+                },
+            ));
+            if let Some(controller) = pet_controller {
+                controller.update(DesktopPetRuntimeState {
+                    enabled: true,
+                    ..Default::default()
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+fn start_native_desktop_pet(
+    event_bus: NativeEventBus,
+) -> Result<Option<DesktopPetController>, String> {
     let manager = native_desktop_pet_manager();
     if !manager.settings().enabled {
-        return Ok(());
+        return Ok(None);
     }
     let Some(package) = manager.selected_package() else {
-        return Ok(());
+        return Ok(None);
     };
-    let controller = DesktopPetController::start_for_native_ui();
+    let controller = DesktopPetController::start_for_native_ui(move |action| {
+        event_bus.publish(
+            "desktop_pet_action",
+            serde_json::to_value(action).unwrap_or_default(),
+        );
+    });
     controller.set_package(Some(package));
     controller.set_enabled(true);
-    Box::leak(Box::new(controller));
-    Ok(())
+    Ok(Some(controller))
 }
 
 fn native_desktop_pet_manager() -> DesktopPetManager {

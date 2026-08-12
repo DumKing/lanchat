@@ -176,9 +176,9 @@ fn merge_runtime_state(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct DesktopPetAction {
-    action: String,
-    alert_id: Option<String>,
+pub(crate) struct DesktopPetAction {
+    pub(crate) action: String,
+    pub(crate) alert_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -215,6 +215,7 @@ pub struct DesktopPetController {
     repaint: Arc<Mutex<Option<egui::Context>>>,
     process: Arc<Mutex<Option<DesktopPetProcessHandle>>>,
     app: Option<AppHandle>,
+    action_handler: Option<Arc<dyn Fn(DesktopPetAction) + Send + Sync>>,
 }
 
 struct DesktopPetProcessHandle {
@@ -321,14 +322,19 @@ mod desktop_pet_enable_tests {
 
 impl DesktopPetController {
     pub fn start(app: AppHandle) -> Self {
-        Self::start_with_app(Some(app))
+        Self::start_with_app(Some(app), None)
     }
 
-    pub fn start_for_native_ui() -> Self {
-        Self::start_with_app(None)
+    pub(crate) fn start_for_native_ui(
+        action_handler: impl Fn(DesktopPetAction) + Send + Sync + 'static,
+    ) -> Self {
+        Self::start_with_app(None, Some(Arc::new(action_handler)))
     }
 
-    fn start_with_app(app: Option<AppHandle>) -> Self {
+    fn start_with_app(
+        app: Option<AppHandle>,
+        action_handler: Option<Arc<dyn Fn(DesktopPetAction) + Send + Sync>>,
+    ) -> Self {
         let state = Arc::new(Mutex::new(DesktopPetRuntimeState {
             enabled: true,
             ..Default::default()
@@ -341,6 +347,7 @@ impl DesktopPetController {
             repaint: repaint.clone(),
             process: Arc::new(Mutex::new(None)),
             app,
+            action_handler,
         };
         controller.ensure_process();
         controller
@@ -438,7 +445,7 @@ impl DesktopPetController {
             return;
         };
         if let Some(stdout) = child.stdout.take() {
-            start_desktop_pet_stdout_reader(self.app.clone(), stdout);
+            start_desktop_pet_stdout_reader(self.app.clone(), self.action_handler.clone(), stdout);
         }
         if let Some(stderr) = child.stderr.take() {
             start_desktop_pet_stderr_reader(stderr);
@@ -474,6 +481,7 @@ impl DesktopPetController {
 
 fn start_desktop_pet_stdout_reader(
     app: Option<AppHandle>,
+    action_handler: Option<Arc<dyn Fn(DesktopPetAction) + Send + Sync>>,
     stdout: impl std::io::Read + Send + 'static,
 ) {
     let _ = std::thread::Builder::new()
@@ -488,6 +496,9 @@ fn start_desktop_pet_stdout_reader(
                     Ok(DesktopPetProcessEvent::Action(action)) => {
                         if let Some(app) = &app {
                             let _ = app.emit("desktop_pet_action", &action);
+                        }
+                        if let Some(handler) = &action_handler {
+                            handler(action);
                         }
                     }
                     Ok(DesktopPetProcessEvent::Log(message)) => {
