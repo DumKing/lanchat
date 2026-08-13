@@ -96,7 +96,6 @@ pub struct FaceMatch {
 
 #[derive(Debug, Clone)]
 pub struct FaceRecognitionFrame {
-    pub detection_confidence: u8,
     pub matches: Vec<FaceMatch>,
 }
 
@@ -220,28 +219,6 @@ impl FaceMonitorRuntime {
         }
     }
 
-    pub fn analyze_frame(&self, bytes: &[u8], width: u32, height: u32) -> Result<Option<PresenceDetection>, String> {
-        if !self.settings().enabled || self.detector.is_none() || bytes.is_empty() || width == 0 || height == 0 { return Ok(None); }
-        if self.busy.swap(true, Ordering::AcqRel) {
-            self.dropped_frames.fetch_add(1, Ordering::Relaxed);
-            return Ok(None);
-        }
-        self.accepted_frames.fetch_add(1, Ordering::Relaxed);
-        let result = self.detect_presence(bytes);
-        self.busy.store(false, Ordering::Release);
-        match result {
-            Ok(detection) => {
-                if let Ok(mut last) = self.last_detection.lock() { *last = detection.clone(); }
-                if let Ok(mut error) = self.runtime_error.lock() { *error = None; }
-                Ok(detection)
-            }
-            Err(error) => {
-                if let Ok(mut last_error) = self.runtime_error.lock() { *last_error = Some(error.clone()); }
-                Err(error)
-            }
-        }
-    }
-
     fn detect_presence(&self, bytes: &[u8]) -> Result<Option<PresenceDetection>, String> {
         let image = image::load_from_memory(bytes).map_err(|error| format!("摄像头采样帧无法解码：{error}"))?.to_rgb8();
         self.detect_in_rgb(&image)
@@ -338,7 +315,7 @@ impl FaceMonitorRuntime {
                 .and_modify(|existing| if matched.confidence > existing.confidence { *existing = matched.clone(); })
                 .or_insert(matched);
         }
-        Ok(Some(FaceRecognitionFrame { detection_confidence: detection.confidence, matches: matches_by_person.into_values().collect() }))
+        Ok(Some(FaceRecognitionFrame { matches: matches_by_person.into_values().collect() }))
     }
 
     pub fn accept_match(&self, key: &str, confidence: u8, min_confidence: u8, required_hits: u8, cooldown_seconds: u32, now: i64) -> bool {
@@ -595,7 +572,7 @@ mod tests {
     #[test]
     fn disabled_runtime_rejects_frames_without_retaining_them() {
         let runtime = FaceMonitorRuntime::default();
-        assert!(runtime.analyze_frame(&[1, 2, 3], 16, 16).unwrap().is_none());
+        assert!(runtime.recognize_frame(&[1, 2, 3], &[]).unwrap().is_none());
         assert_eq!(runtime.status().accepted_frames, 0);
     }
 

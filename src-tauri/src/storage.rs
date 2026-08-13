@@ -112,6 +112,8 @@ pub struct FacePersonRecord {
     #[serde(skip_serializing)]
     pub embedding: Option<Vec<u8>>,
     pub embedding_model_version: Option<String>,
+    #[serde(default)]
+    pub has_embedding: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,6 +133,7 @@ pub struct FaceMonitorPolicyRecord {
 #[serde(rename_all = "camelCase")]
 pub struct CameraFaceAlertRecord {
     pub alert_id: String,
+    pub source_kind: String,
     pub source_device_id: String,
     pub source_nickname: String,
     pub source_address: Option<String>,
@@ -434,6 +437,7 @@ impl Storage {
         ensure_column(&conn, "messages", "simulation_created_at", "INTEGER")?;
         ensure_column(&conn, "face_people", "embedding", "BLOB")?;
         ensure_column(&conn, "face_people", "embedding_model_version", "TEXT")?;
+        ensure_column(&conn, "camera_face_alerts", "source_kind", "TEXT NOT NULL DEFAULT 'camera_face_presence'")?;
         ensure_column(&conn, "profile", "avatar", "TEXT")?;
         ensure_column(
             &conn,
@@ -566,7 +570,8 @@ impl Storage {
     }
 
     fn face_person_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FacePersonRecord> {
-        Ok(FacePersonRecord { person_id: row.get(0)?, display_name: row.get(1)?, photo_url: row.get(2)?, photo_sha256: row.get(3)?, expires_at: row.get(4)?, enabled: row.get::<_, i32>(5)? != 0, version: row.get(6)?, issued_by_device_id: row.get(7)?, issued_by_nickname: row.get(8)?, issued_at: row.get(9)?, deleted_at: row.get(10)?, embedding: row.get(11)?, embedding_model_version: row.get(12)? })
+        let embedding: Option<Vec<u8>> = row.get(11)?;
+        Ok(FacePersonRecord { person_id: row.get(0)?, display_name: row.get(1)?, photo_url: row.get(2)?, photo_sha256: row.get(3)?, expires_at: row.get(4)?, enabled: row.get::<_, i32>(5)? != 0, version: row.get(6)?, issued_by_device_id: row.get(7)?, issued_by_nickname: row.get(8)?, issued_at: row.get(9)?, deleted_at: row.get(10)?, has_embedding: embedding.is_some(), embedding, embedding_model_version: row.get(12)? })
     }
 
     fn read_face_monitor_policy(conn: &Connection, target_device_id: &str) -> Result<FaceMonitorPolicyRecord, String> {
@@ -584,17 +589,17 @@ impl Storage {
         }
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         conn.execute(
-            "INSERT INTO camera_face_alerts (alert_id,source_device_id,source_nickname,source_address,person_id,person_name,confidence,consecutive_hits,policy_version,created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+            "INSERT INTO camera_face_alerts (alert_id,source_kind,source_device_id,source_nickname,source_address,person_id,person_name,confidence,consecutive_hits,policy_version,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
              ON CONFLICT(alert_id) DO NOTHING",
-            params![frame.alert_id, frame.source_device_id, frame.source_nickname, frame.source_address, frame.person_id, frame.person_name, frame.confidence.min(100), frame.consecutive_hits.max(1), frame.policy_version, frame.created_at],
+            params![frame.alert_id, frame.source_kind, frame.source_device_id, frame.source_nickname, frame.source_address, frame.person_id, frame.person_name, frame.confidence.min(100), frame.consecutive_hits.max(1), frame.policy_version, frame.created_at],
         ).map_err(|err| format!("保存自动识别告警失败：{err}"))?;
         Self::read_camera_face_alert(&conn, &frame.alert_id)
     }
 
     pub fn list_camera_face_alerts(&self, limit: usize) -> Result<Vec<CameraFaceAlertRecord>, String> {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
-        let mut stmt = conn.prepare("SELECT a.alert_id,a.source_device_id,a.source_nickname,a.source_address,a.person_id,a.person_name,a.confidence,a.consecutive_hits,a.policy_version,a.created_at,COALESCE(SUM(CASE WHEN f.result='real' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN f.result='false' THEN 1 ELSE 0 END),0) FROM camera_face_alerts a LEFT JOIN camera_face_alert_feedbacks f ON f.alert_id=a.alert_id GROUP BY a.alert_id ORDER BY a.created_at DESC LIMIT ?1")
+        let mut stmt = conn.prepare("SELECT a.alert_id,a.source_kind,a.source_device_id,a.source_nickname,a.source_address,a.person_id,a.person_name,a.confidence,a.consecutive_hits,a.policy_version,a.created_at,COALESCE(SUM(CASE WHEN f.result='real' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN f.result='false' THEN 1 ELSE 0 END),0) FROM camera_face_alerts a LEFT JOIN camera_face_alert_feedbacks f ON f.alert_id=a.alert_id GROUP BY a.alert_id ORDER BY a.created_at DESC LIMIT ?1")
             .map_err(|err| format!("读取自动识别告警失败：{err}"))?;
         let rows = stmt.query_map(params![limit.clamp(1, 200) as i64], Self::camera_face_alert_from_row).map_err(|err| format!("读取自动识别告警失败：{err}"))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|err| format!("读取自动识别告警失败：{err}"))
@@ -609,12 +614,12 @@ impl Storage {
     }
 
     fn read_camera_face_alert(conn: &Connection, alert_id: &str) -> Result<CameraFaceAlertRecord, String> {
-        conn.query_row("SELECT a.alert_id,a.source_device_id,a.source_nickname,a.source_address,a.person_id,a.person_name,a.confidence,a.consecutive_hits,a.policy_version,a.created_at,COALESCE(SUM(CASE WHEN f.result='real' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN f.result='false' THEN 1 ELSE 0 END),0) FROM camera_face_alerts a LEFT JOIN camera_face_alert_feedbacks f ON f.alert_id=a.alert_id WHERE a.alert_id=?1 GROUP BY a.alert_id", params![alert_id], Self::camera_face_alert_from_row)
+        conn.query_row("SELECT a.alert_id,a.source_kind,a.source_device_id,a.source_nickname,a.source_address,a.person_id,a.person_name,a.confidence,a.consecutive_hits,a.policy_version,a.created_at,COALESCE(SUM(CASE WHEN f.result='real' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN f.result='false' THEN 1 ELSE 0 END),0) FROM camera_face_alerts a LEFT JOIN camera_face_alert_feedbacks f ON f.alert_id=a.alert_id WHERE a.alert_id=?1 GROUP BY a.alert_id", params![alert_id], Self::camera_face_alert_from_row)
             .map_err(|err| format!("读取自动识别告警失败：{err}"))
     }
 
     fn camera_face_alert_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CameraFaceAlertRecord> {
-        Ok(CameraFaceAlertRecord { alert_id: row.get(0)?, source_device_id: row.get(1)?, source_nickname: row.get(2)?, source_address: row.get(3)?, person_id: row.get(4)?, person_name: row.get(5)?, confidence: row.get(6)?, consecutive_hits: row.get(7)?, policy_version: row.get(8)?, created_at: row.get(9)?, feedback_real: row.get(10)?, feedback_false: row.get(11)? })
+        Ok(CameraFaceAlertRecord { alert_id: row.get(0)?, source_kind: row.get(1)?, source_device_id: row.get(2)?, source_nickname: row.get(3)?, source_address: row.get(4)?, person_id: row.get(5)?, person_name: row.get(6)?, confidence: row.get(7)?, consecutive_hits: row.get(8)?, policy_version: row.get(9)?, created_at: row.get(10)?, feedback_real: row.get(11)?, feedback_false: row.get(12)? })
     }
 
     pub fn get_or_create_profile(&self) -> Result<Profile, String> {
