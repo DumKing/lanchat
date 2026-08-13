@@ -28,6 +28,7 @@
     "test:memory-bounds": "node scripts/test-memory-bounds.mjs",
     "test:tray-attention": "node scripts/test-tray-attention.mjs",
     "test:app-error-boundary": "node scripts/test-app-error-boundary.mjs",
+    "test:face-recognition-alert": "node scripts/test-face-recognition-alert.mjs",
     "build": "node scripts/write-build-timestamp.mjs && vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri"
