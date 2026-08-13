@@ -5736,9 +5736,9 @@ async function closeWindow() {
         @update:show="(visible) => { if (!visible) closeCameraFaceAlertPreview(); }"
       >
         <div v-if="activeCameraFaceAlert" class="camera-face-alert-detail">
-          <NTag type="warning" :bordered="false">摄像头自动告警</NTag>
-          <h2>检测到人脸</h2>
-          <p>本机摄像头画面触发人脸出现检测，置信度 {{ activeCameraFaceAlert.confidence }}%。</p>
+          <NTag type="warning" :bordered="false">摄像头人脸识别告警</NTag>
+          <h2>检测到 {{ activeCameraFaceAlert.personName }}</h2>
+          <p>本机摄像头画面识别命中 {{ activeCameraFaceAlert.personName }}，置信度 {{ activeCameraFaceAlert.confidence }}%。</p>
           <img v-if="activeCameraFacePreviewUrl" :src="activeCameraFacePreviewUrl" alt="本机临时检测画面" />
           <NAlert v-else type="info" :show-icon="false">该告警的临时画面已释放；画面不会保存或通过局域网传输。</NAlert>
           <NText depth="3">{{ formatDateTime(activeCameraFaceAlert.createdAt) }} · 临时画面仅保留在本次运行内存中。</NText>
@@ -7154,7 +7154,7 @@ async function closeWindow() {
                       <span>重复冷却</span><strong>{{ faceMonitorPolicy.cooldownSeconds }} 秒</strong>
                       <span>策略来源</span><strong>{{ faceMonitorPolicy.issuedByNickname }}</strong>
                     </div>
-                    <NText v-else depth="3">当前使用本机默认策略：80% 置信度、连续 2 次、冷却 60 秒。</NText>
+                    <NText v-else depth="3">当前使用本机默认策略：60% 置信度、连续 1 次、冷却 60 秒。</NText>
                     <NAlert v-if="faceMonitorSettings.enabled && faceMonitorRuntimeStatus && !faceMonitorRuntimeStatus.recognizerReady" type="warning" :show-icon="false">
                       {{ faceMonitorRuntimeStatus.lastError || '识别模型不可用，摄像头监控不会产生告警。' }}
                     </NAlert>
@@ -7931,11 +7931,11 @@ async function closeWindow() {
 .face-monitor-alert-row > :first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .face-person-preview-thumb { display: block; width: 80px; height: 80px; border: 1px solid var(--panel-border); border-radius: 8px; object-fit: cover; }
 .face-capture-video { display: block; width: min(480px, 80vw); max-height: 58vh; border-radius: 8px; background: #101820; object-fit: contain; }
-.camera-face-alert-modal { width: min(440px, calc(100vw - 32px)); }
+.camera-face-alert-modal { width: min(720px, calc(100vw - 32px)); }
 .camera-face-alert-detail { display: grid; gap: 12px; }
 .camera-face-alert-detail h2, .camera-face-alert-detail p { margin: 0; }
-.camera-face-alert-detail > img { display: block; width: 100%; max-height: min(52vh, 360px); border-radius: 8px; background: #111827; object-fit: contain; }
-.camera-live-preview { position: relative; overflow: hidden; width: min(100%, 520px); aspect-ratio: 16 / 9; border: 1px solid var(--panel-border); border-radius: 8px; background: #111827; }
+.camera-face-alert-detail > img { display: block; width: 100%; max-height: min(62vh, 480px); border-radius: 8px; background: #111827; object-fit: contain; }
+.camera-live-preview { position: relative; overflow: hidden; width: min(100%, 720px); aspect-ratio: 16 / 9; border: 1px solid var(--panel-border); border-radius: 8px; background: #111827; }
 .camera-live-preview video { display: block; width: 100%; height: 100%; object-fit: cover; }
 .camera-live-preview span { position: absolute; left: 10px; bottom: 8px; padding: 3px 7px; border-radius: 4px; background: rgba(0, 0, 0, 0.56); color: #fff; font-size: 12px; }
 </style>

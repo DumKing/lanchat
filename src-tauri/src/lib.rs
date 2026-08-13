@@ -430,11 +430,11 @@ async fn post_external_push_webhook(name: &str, webhook: &str, payload: &serde_j
     Ok(())
 }
 
-/// 人脸识别告警的推送文案：与狼来了模板渲染完全分离，固定具名格式。
+/// 人脸识别告警的推送文案：与狼来了模板渲染完全分离，固定多行具名格式。
 fn render_camera_face_push_text(frame: &protocol::CameraFaceAlertFrame) -> String {
     let source_ip = frame.source_address.as_deref().unwrap_or("未知 IP");
     format!(
-        "[人脸识别告警] 检测到 {} · 置信度 {}% · 来源：{}（{}） · {}",
+        "[人脸识别告警]\n检测到 {} · 置信度 {}% ·\n来源：{}（{}） · {}\n@所有人",
         frame.person_name,
         frame.confidence,
         frame.source_nickname,
@@ -477,11 +477,9 @@ mod camera_face_push_tests {
             policy_version: 3, created_at: 1_723_000_000_000,
         };
         let text = render_camera_face_push_text(&frame);
-        assert!(text.starts_with("[人脸识别告警]"));
-        assert!(text.contains("张三"));
-        assert!(text.contains("87%"));
-        assert!(text.contains("监控机"));
-        assert!(text.contains("192.168.1.10"));
+        assert!(text.starts_with("[人脸识别告警]\n检测到 张三 · 置信度 87% ·\n"));
+        assert!(text.contains("来源：监控机（192.168.1.10）"));
+        assert!(text.ends_with("@所有人"));
     }
 }
 
@@ -666,7 +664,7 @@ async fn submit_face_monitor_frame(
     if recognition.matches.is_empty() { return Ok(None); }
     let profile = state.storage.get_or_create_profile()?;
     let policy = state.storage.effective_face_monitor_policy(&profile.device_id)?.unwrap_or(FaceMonitorPolicyRecord {
-        target_device_id: profile.device_id.clone(), min_confidence: 80, consecutive_hits: 2, cooldown_seconds: 60, version: 0,
+        target_device_id: profile.device_id.clone(), min_confidence: 60, consecutive_hits: 1, cooldown_seconds: 60, version: 0,
         issued_by_device_id: "local-default".to_string(), issued_by_nickname: "本机默认".to_string(), issued_at: 0,
     });
     let now = chrono::Utc::now().timestamp_millis();
