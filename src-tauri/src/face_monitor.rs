@@ -79,6 +79,27 @@ pub struct DetectedFace {
     pub score: f32,
 }
 
+/// 已录入人员的本机特征模板，仅在监控设备内存中使用。
+#[derive(Debug, Clone)]
+pub struct PersonTemplate {
+    pub person_id: String,
+    pub display_name: String,
+    pub embedding: [f32; 128],
+}
+
+#[derive(Debug, Clone)]
+pub struct FaceMatch {
+    pub person_id: String,
+    pub display_name: String,
+    pub confidence: u8,
+}
+
+#[derive(Debug, Clone)]
+pub struct FaceRecognitionFrame {
+    pub detection_confidence: u8,
+    pub matches: Vec<FaceMatch>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FaceModelManifest {
@@ -279,6 +300,47 @@ impl FaceMonitorRuntime {
         Ok(Some(PresenceDetection { confidence: (best * 100.0).round().clamp(0.0, 100.0) as u8, detected_faces: 1, faces: Vec::new() }))
     }
 
+    /// 识别模式入口：检测→逐脸提取特征→与人员模板比对。
+    /// 单脸特征提取失败只跳过该脸，不导致整帧失败。
+    pub fn recognize_frame(&self, bytes: &[u8], people: &[PersonTemplate]) -> Result<Option<FaceRecognitionFrame>, String> {
+        if !self.settings().enabled || self.detector.is_none() || bytes.is_empty() { return Ok(None); }
+        if self.busy.swap(true, Ordering::AcqRel) {
+            self.dropped_frames.fetch_add(1, Ordering::Relaxed);
+            return Ok(None);
+        }
+        self.accepted_frames.fetch_add(1, Ordering::Relaxed);
+        let result = self.recognize_bytes(bytes, people);
+        self.busy.store(false, Ordering::Release);
+        match result {
+            Ok(frame) => { if let Ok(mut error) = self.runtime_error.lock() { *error = None; } Ok(frame) }
+            Err(error) => {
+                if let Ok(mut last_error) = self.runtime_error.lock() { *last_error = Some(error.clone()); }
+                Err(error)
+            }
+        }
+    }
+
+    fn recognize_bytes(&self, bytes: &[u8], people: &[PersonTemplate]) -> Result<Option<FaceRecognitionFrame>, String> {
+        let Some(detection) = self.detect_presence(bytes)?.filter(|value| !value.faces.is_empty()) else {
+            return Ok(None);
+        };
+        if let Ok(mut last) = self.last_detection.lock() { *last = Some(detection.clone()); }
+        let image = image::load_from_memory(bytes).map_err(|error| format!("摄像头采样帧无法解码：{error}"))?.to_rgb8();
+        let scale_x = image.width() as f32 / DETECTOR_SIZE as f32;
+        let scale_y = image.height() as f32 / DETECTOR_SIZE as f32;
+        // 同一人员被多张脸命中时只保留最高分。
+        let mut matches_by_person: HashMap<String, FaceMatch> = HashMap::new();
+        for face in &detection.faces {
+            let landmarks: [(f32, f32); 5] = face.landmarks.map(|(x, y)| (x * scale_x, y * scale_y));
+            let Ok(embedding) = self.extract_embedding(&image, landmarks) else { continue; };
+            let Some(matched) = best_match(&embedding, people) else { continue; };
+            matches_by_person.entry(matched.person_id.clone())
+                .and_modify(|existing| if matched.confidence > existing.confidence { *existing = matched.clone(); })
+                .or_insert(matched);
+        }
+        Ok(Some(FaceRecognitionFrame { detection_confidence: detection.confidence, matches: matches_by_person.into_values().collect() }))
+    }
+
     pub fn accept_match(&self, key: &str, confidence: u8, min_confidence: u8, required_hits: u8, cooldown_seconds: u32, now: i64) -> bool {
         if confidence < min_confidence.min(100) || key.trim().is_empty() { return false; }
         let Ok(mut states) = self.hit_state.lock() else { return false; };
@@ -464,6 +526,37 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 pub fn normalize_embedding(embedding: &mut [f32]) {
     let norm = embedding.iter().map(|value| value * value).sum::<f32>().sqrt();
     if norm > 0.0 { for value in embedding.iter_mut() { *value /= norm; } }
+}
+
+/// 在人员模板中取余弦相似度最高者；匹配置信度 = 相似度×100（负值 clamp 到 0），
+/// 是否达到告警门限由 accept_match 的 min_confidence 把关。
+fn best_match(embedding: &[f32; 128], people: &[PersonTemplate]) -> Option<FaceMatch> {
+    let mut best: Option<(f32, &PersonTemplate)> = None;
+    for person in people {
+        let similarity = cosine_similarity(embedding, &person.embedding);
+        if best.as_ref().map_or(true, |(score, _)| similarity > *score) {
+            best = Some((similarity, person));
+        }
+    }
+    best.map(|(similarity, person)| FaceMatch {
+        person_id: person.person_id.clone(),
+        display_name: person.display_name.clone(),
+        confidence: (similarity * 100.0).round().clamp(0.0, 100.0) as u8,
+    })
+}
+
+/// 特征落库序列化：小端 f32 × 128。
+pub fn embedding_bytes(embedding: &[f32; 128]) -> Vec<u8> {
+    embedding.iter().flat_map(|value| value.to_le_bytes()).collect()
+}
+
+pub fn embedding_from_bytes(bytes: &[u8]) -> Result<[f32; 128], String> {
+    if bytes.len() != 128 * 4 { return Err(format!("人脸特征长度无效：{}", bytes.len())); }
+    let mut embedding = [0.0_f32; 128];
+    for (slot, chunk) in embedding.iter_mut().zip(bytes.chunks_exact(4)) {
+        *slot = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+    }
+    Ok(embedding)
 }
 
 fn model_state_from_dir(dir: &Path) -> Result<FaceModelState, String> {
@@ -665,6 +758,53 @@ mod tests {
         normalize_embedding(&mut embedding);
         let norm = embedding.iter().map(|value| value * value).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-6);
+    }
+
+    fn template(person_id: &str, embedding: [f32; 128]) -> PersonTemplate {
+        PersonTemplate { person_id: person_id.to_string(), display_name: format!("人员{person_id}"), embedding }
+    }
+
+    #[test]
+    fn best_match_picks_highest_similarity_and_maps_confidence() {
+        let mut identical = [0.0_f32; 128];
+        identical[0] = 1.0;
+        let mut half = [0.0_f32; 128];
+        half[0] = 0.5;
+        half[1] = (0.75_f32).sqrt();
+        let people = vec![template("a", identical), template("b", half)];
+        let matched = best_match(&identical, &people).expect("match");
+        assert_eq!(matched.person_id, "a");
+        assert_eq!(matched.confidence, 100);
+        // 与 b 的相似度为 0.5 → 置信度 50。
+        let mut query = identical;
+        query[0] = 1.0;
+        let matched = best_match(&query, &[template("b", half)]).expect("match");
+        assert_eq!(matched.confidence, 50);
+    }
+
+    #[test]
+    fn best_match_clamps_negative_similarity_to_zero() {
+        let mut positive = [0.0_f32; 128];
+        positive[0] = 1.0;
+        let mut opposite = [0.0_f32; 128];
+        opposite[0] = -1.0;
+        let matched = best_match(&positive, &[template("neg", opposite)]).expect("match");
+        assert_eq!(matched.confidence, 0);
+    }
+
+    #[test]
+    fn best_match_returns_none_without_people() {
+        let embedding = [0.0_f32; 128];
+        assert!(best_match(&embedding, &[]).is_none());
+    }
+
+    #[test]
+    fn embedding_bytes_round_trip() {
+        let mut embedding = [0.0_f32; 128];
+        for (index, value) in embedding.iter_mut().enumerate() { *value = index as f32 * 0.01 - 0.5; }
+        let restored = embedding_from_bytes(&embedding_bytes(&embedding)).expect("restore");
+        assert_eq!(embedding, restored);
+        assert!(embedding_from_bytes(&[0u8; 8]).is_err());
     }
 
     #[test]

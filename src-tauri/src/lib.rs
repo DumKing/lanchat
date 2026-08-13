@@ -21,7 +21,7 @@ use desktop_pet::{
 };
 use desktop_pet_runtime::{DesktopPetController, DesktopPetRuntimeState};
 use file_server::FileServer;
-use face_monitor::{FaceMonitorLocalSettings, FaceMonitorRuntime, FaceMonitorStatus};
+use face_monitor::{embedding_bytes, embedding_from_bytes, FaceMatch, FaceMonitorLocalSettings, FaceMonitorRuntime, FaceMonitorStatus, PersonTemplate};
 use fs2::FileExt;
 use network::{local_ip_address, Network};
 use protocol::MessageRecallFrame;
@@ -590,13 +590,67 @@ async fn submit_face_monitor_frame(
     width: u32,
     height: u32,
 ) -> Result<Option<CameraFaceAlertRecord>, String> {
-    let Some(_detection) = state.face_monitor.analyze_frame(&bytes, width, height)? else {
+    let _ = (width, height);
+    if bytes.is_empty() { return Ok(None); }
+    // 识别模型未就绪或无可用录入人员时不产生任何告警事件与数据，
+    // 错误原因通过 get_face_monitor_status 由设置页展示。
+    if !state.face_monitor.status().recognizer_ready { return Ok(None); }
+    let templates = load_recognition_templates(&state)?;
+    if templates.is_empty() { return Ok(None); }
+    let Some(recognition) = state.face_monitor.recognize_frame(&bytes, &templates)? else {
         return Ok(None);
     };
-    // 匿名“检测到人脸”告警已取消：不再产生任何告警事件与数据，
-    // 识别命中告警在后续步骤接入。
-    let _ = app;
-    Ok(None)
+    if recognition.matches.is_empty() { return Ok(None); }
+    let profile = state.storage.get_or_create_profile()?;
+    let policy = state.storage.effective_face_monitor_policy(&profile.device_id)?.unwrap_or(FaceMonitorPolicyRecord {
+        target_device_id: profile.device_id.clone(), min_confidence: 80, consecutive_hits: 2, cooldown_seconds: 60, version: 0,
+        issued_by_device_id: "local-default".to_string(), issued_by_nickname: "本机默认".to_string(), issued_at: 0,
+    });
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut first_record = None;
+    for matched in recognition.matches {
+        let gate_key = format!("camera-face-person:{}", matched.person_id);
+        if !state.face_monitor.accept_match(&gate_key, matched.confidence, policy.min_confidence, policy.consecutive_hits, policy.cooldown_seconds, now) {
+            continue;
+        }
+        let record = publish_camera_face_alert(app.clone(), &state, &profile, &policy, &matched, now).await?;
+        if first_record.is_none() { first_record = Some(record); }
+    }
+    Ok(first_record)
+}
+
+/// 加载启用中录入人员的特征模板：优先用版本匹配的已存特征，
+/// 版本不一致时用参考照片重新提取并落库；照片不可读或无人脸时清空特征并跳过。
+fn load_recognition_templates(state: &AppState) -> Result<Vec<PersonTemplate>, String> {
+    let model_version = state.face_monitor.status().model_version.unwrap_or_default();
+    let mut templates = Vec::new();
+    for person in state.storage.list_face_people()? {
+        if !person.enabled || person.deleted_at.is_some() { continue; }
+        if let (Some(saved), Some(version)) = (&person.embedding, &person.embedding_model_version) {
+            if version == &model_version {
+                if let Ok(embedding) = embedding_from_bytes(saved) {
+                    templates.push(PersonTemplate { person_id: person.person_id, display_name: person.display_name, embedding });
+                    continue;
+                }
+            }
+        }
+        let Some(photo_path) = person.photo_url.as_deref() else {
+            state.storage.update_face_person_embedding(&person.person_id, None, None).ok();
+            continue;
+        };
+        let Ok(photo_bytes) = std::fs::read(photo_path) else {
+            state.storage.update_face_person_embedding(&person.person_id, None, None).ok();
+            continue;
+        };
+        match state.face_monitor.embedding_from_photo_bytes(&photo_bytes) {
+            Ok(embedding) => {
+                state.storage.update_face_person_embedding(&person.person_id, Some(embedding_bytes(&embedding)), Some(model_version.clone())).ok();
+                templates.push(PersonTemplate { person_id: person.person_id, display_name: person.display_name, embedding });
+            }
+            Err(_) => { state.storage.update_face_person_embedding(&person.person_id, None, None).ok(); }
+        }
+    }
+    Ok(templates)
 }
 
 #[tauri::command]
@@ -642,12 +696,20 @@ fn create_local_face_person(
     let bytes = std::fs::read(&photo_path).map_err(|err| format!("读取参考照片失败：{err}"))?;
     if bytes.len() > 5 * 1024 * 1024 { return Err("参考照片不能超过 5MB".to_string()); }
     image::load_from_memory(&bytes).map_err(|err| format!("参考照片无法解码：{err}"))?;
-    state.storage.upsert_face_person(&protocol::FacePersonPolicyFrame {
+    if !state.face_monitor.status().recognizer_ready {
+        return Err("识别模型未安装，暂时无法录入识别人员".to_string());
+    }
+    // 录入即提取特征：照片中无人脸时直接拒绝录入。
+    let embedding = state.face_monitor.embedding_from_photo_bytes(&bytes)?;
+    let model_version = state.face_monitor.status().model_version;
+    let record = state.storage.upsert_face_person(&protocol::FacePersonPolicyFrame {
         person_id: person_id.to_string(), display_name: display_name.to_string(), photo_url: Some(photo_path),
         photo_sha256: Some(hex::encode(sha2::Sha256::digest(bytes))), expires_at: None, enabled: true,
         version: chrono::Utc::now().timestamp_millis(), action: "upsert".to_string(),
         issued_by_device_id: profile.device_id, issued_by_nickname: "本机录入".to_string(), issued_at: chrono::Utc::now().timestamp_millis(),
-    })
+    })?;
+    state.storage.update_face_person_embedding(&record.person_id, Some(embedding_bytes(&embedding)), model_version)?;
+    Ok(record)
 }
 
 #[tauri::command]
@@ -685,6 +747,28 @@ async fn send_camera_face_alert_feedback(
     let record = state.storage.upsert_camera_face_alert_feedback(&frame)?;
     state.network.broadcast_camera_face_alert_feedback(app.clone(), frame).await?;
     app.emit("camera_face_alert_feedback_received", &record).ok();
+    Ok(record)
+}
+
+/// 识别命中后发布具名告警：落库、局域网广播、通知前端，与狼来了告警链路完全分离。
+async fn publish_camera_face_alert(
+    app: tauri::AppHandle,
+    state: &AppState,
+    profile: &storage::Profile,
+    policy: &FaceMonitorPolicyRecord,
+    matched: &FaceMatch,
+    now: i64,
+) -> Result<CameraFaceAlertRecord, String> {
+    let frame = protocol::CameraFaceAlertFrame {
+        alert_id: Uuid::new_v4().to_string(), source_kind: "camera_face".to_string(),
+        source_device_id: profile.device_id.clone(), source_nickname: profile.nickname.clone(),
+        source_address: Some(local_ip_address()), person_id: matched.person_id.clone(),
+        person_name: matched.display_name.clone(), confidence: matched.confidence,
+        consecutive_hits: policy.consecutive_hits, policy_version: policy.version, created_at: now,
+    };
+    let record = state.storage.upsert_camera_face_alert(&frame)?;
+    state.network.broadcast_camera_face_alert(app.clone(), frame).await?;
+    app.emit("camera_face_alert_received", &record).ok();
     Ok(record)
 }
 
