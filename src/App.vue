@@ -352,6 +352,18 @@ const cameraFaceAlerts = ref<CameraFaceAlert[]>([]);
 const cameraFacePreviewUrls = ref<Record<string, string>>({});
 const activeCameraFaceAlertId = ref("");
 const cameraFaceAlertPreviewOpen = ref(false);
+const CAMERA_ALERT_POPUP_STORAGE_KEY = "lanchat.camera-alert-popup.v1";
+function readSavedCameraAlertPopup(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(CAMERA_ALERT_POPUP_STORAGE_KEY) === "1";
+}
+const cameraAlertPopupEnabled = ref(readSavedCameraAlertPopup());
+function updateCameraAlertPopup(enabled: boolean) {
+  cameraAlertPopupEnabled.value = enabled;
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(CAMERA_ALERT_POPUP_STORAGE_KEY, enabled ? "1" : "0");
+  }
+}
 const cameraLivePreviewEnabled = ref(false);
 const cameraLivePreviewVideo = ref<HTMLVideoElement | null>(null);
 const cameraDeviceOptions = ref<{ label: string; value: string }[]>([]);
@@ -5369,7 +5381,10 @@ function attachLocalCameraFacePreview(record: CameraFaceAlert, sample: CameraFra
   }
   cameraFacePreviewUrls.value = next;
   activeCameraFaceAlertId.value = record.alertId;
-  cameraFaceAlertPreviewOpen.value = true;
+  // 告警弹窗默认关闭，仅在调试开关打开时自动弹出检测画面。
+  if (cameraAlertPopupEnabled.value) {
+    cameraFaceAlertPreviewOpen.value = true;
+  }
   void notifyIncomingActivity();
 }
 
@@ -7126,6 +7141,13 @@ async function closeWindow() {
                     <div v-if="cameraLivePreviewEnabled" class="camera-live-preview">
                       <video ref="cameraLivePreviewVideo" autoplay muted playsinline></video>
                       <span>本机实时检测画面</span>
+                    </div>
+                    <div class="setting-switch-row compact-setting-row">
+                      <div>
+                        <strong>告警时弹出检测画面</strong>
+                        <p>默认关闭。打开后识别告警会自动弹出当前检测画面，供调试观察；关闭时仍可在告警列表手动查看。</p>
+                      </div>
+                      <NSwitch :value="cameraAlertPopupEnabled" @update:value="updateCameraAlertPopup" />
                     </div>
                     <NFormItem label="采样频率" :show-feedback="false">
                       <NInputNumber
