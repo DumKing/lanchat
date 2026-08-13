@@ -9,6 +9,16 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 const DETECTOR_SIZE: u32 = 640;
+const RECOGNIZER_SIZE: u32 = 112;
+
+/// arcface 112×112 对齐模板（左眼、右眼、鼻尖、左嘴角、右嘴角）。
+const ALIGN_TEMPLATE: [(f32, f32); 5] = [
+    (38.2946, 51.6963),
+    (73.5318, 51.5014),
+    (56.0252, 71.7366),
+    (41.5493, 92.3655),
+    (70.7299, 92.2041),
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -213,7 +223,11 @@ impl FaceMonitorRuntime {
 
     fn detect_presence(&self, bytes: &[u8]) -> Result<Option<PresenceDetection>, String> {
         let image = image::load_from_memory(bytes).map_err(|error| format!("摄像头采样帧无法解码：{error}"))?.to_rgb8();
-        let resized = image::imageops::resize(&image, DETECTOR_SIZE, DETECTOR_SIZE, FilterType::Triangle);
+        self.detect_in_rgb(&image)
+    }
+
+    fn detect_in_rgb(&self, image: &image::RgbImage, ) -> Result<Option<PresenceDetection>, String> {
+        let resized = image::imageops::resize(image, DETECTOR_SIZE, DETECTOR_SIZE, FilterType::Triangle);
         let mut input = Array4::<f32>::zeros((1, 3, DETECTOR_SIZE as usize, DETECTOR_SIZE as usize));
         for y in 0..DETECTOR_SIZE as usize {
             for x in 0..DETECTOR_SIZE as usize {
@@ -276,6 +290,47 @@ impl FaceMonitorRuntime {
         state.consecutive_hits = 0;
         true
     }
+
+    /// 对已对齐到原图坐标空间的关键点提取 SFace 128 维特征（L2 归一化）。
+    pub fn extract_embedding(&self, image: &image::RgbImage, landmarks: [(f32, f32); 5]) -> Result<[f32; 128], String> {
+        let recognizer = self.recognizer.as_ref().ok_or_else(|| "识别模型未就绪".to_string())?;
+        let aligned = align_face_112(image, landmarks);
+        let mut input = Array4::<f32>::zeros((1, 3, RECOGNIZER_SIZE as usize, RECOGNIZER_SIZE as usize));
+        for y in 0..RECOGNIZER_SIZE as usize {
+            for x in 0..RECOGNIZER_SIZE as usize {
+                let pixel = aligned.get_pixel(x as u32, y as u32);
+                // SFace follows OpenCV DNN BGR input order and uses 0..255 values.
+                input[[0, 0, y, x]] = f32::from(pixel[2]);
+                input[[0, 1, y, x]] = f32::from(pixel[1]);
+                input[[0, 2, y, x]] = f32::from(pixel[0]);
+            }
+        }
+        let mut session = recognizer.lock().map_err(|_| "人脸识别器被占用".to_string())?;
+        let outputs = session.run(ort::inputs![ort::value::TensorRef::from_array_view(&input)
+            .map_err(|error| format!("构造识别输入失败：{error}"))?]).map_err(|error| format!("人脸识别推理失败：{error}"))?;
+        let (_, tensor) = outputs[0].try_extract_tensor::<f32>().map_err(|error| format!("读取识别结果失败：{error}"))?;
+        if tensor.len() != 128 { return Err(format!("识别模型输出维数异常：{}", tensor.len())); }
+        let mut embedding = [0.0_f32; 128];
+        embedding.copy_from_slice(tensor);
+        normalize_embedding(&mut embedding);
+        Ok(embedding)
+    }
+
+    /// 人员参考照片入口：解码图片→检测人脸→取最高分脸→提取特征。
+    pub fn embedding_from_photo_bytes(&self, bytes: &[u8]) -> Result<[f32; 128], String> {
+        if self.detector.is_none() { return Err("人脸检测模型未就绪".to_string()); }
+        let photo = image::load_from_memory(bytes).map_err(|error| format!("参考照片无法解码：{error}"))?.to_rgb8();
+        let (origin_width, origin_height) = (photo.width() as f32, photo.height() as f32);
+        let detection = self.detect_in_rgb(&photo)?.filter(|value| !value.faces.is_empty())
+            .ok_or_else(|| "参考照片中未检测到人脸".to_string())?;
+        let face = detection.faces.iter().max_by(|a, b| a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal))
+            .ok_or_else(|| "参考照片中未检测到人脸".to_string())?;
+        // 检测在 640×640 拉伸空间进行，关键点按各轴比例换算回原图坐标。
+        let scale_x = origin_width / DETECTOR_SIZE as f32;
+        let scale_y = origin_height / DETECTOR_SIZE as f32;
+        let landmarks: [(f32, f32); 5] = face.landmarks.map(|(x, y)| (x * scale_x, y * scale_y));
+        self.extract_embedding(&photo, landmarks)
+    }
 }
 
 fn normalize_score(value: f32) -> f32 {
@@ -329,6 +384,86 @@ fn nms_faces(mut faces: Vec<DetectedFace>, iou_threshold: f32, top_k: usize) -> 
         if kept.len() >= top_k { break; }
     }
     kept
+}
+
+/// 按 5 关键点把人脸区域相似变换对齐到 112×112 模板。
+/// YuNet 关键点顺序为被识者视角（右眼、左眼、鼻尖、右嘴角、左嘴角），
+/// 被识者右侧对应画面小 x（左侧），与模板同下标点一一配对。
+fn align_face_112(image: &image::RgbImage, landmarks: [(f32, f32); 5]) -> image::RgbImage {
+    let count = landmarks.len() as f32;
+    let (mean_x, mean_y) = landmarks.iter().fold((0.0_f32, 0.0_f32), |(sx, sy), (x, y)| (sx + x, sy + y));
+    let (mean_x, mean_y) = (mean_x / count, mean_y / count);
+    let (mean_tx, mean_ty) = ALIGN_TEMPLATE.iter().fold((0.0_f32, 0.0_f32), |(sx, sy), (x, y)| (sx + x, sy + y));
+    let (mean_tx, mean_ty) = (mean_tx / count, mean_ty / count);
+    let mut denom = 0.0_f32;
+    let mut sum_a = 0.0_f32;
+    let mut sum_b = 0.0_f32;
+    for ((x, y), (tx, ty)) in landmarks.iter().zip(ALIGN_TEMPLATE.iter()) {
+        let (dx, dy) = (x - mean_x, y - mean_y);
+        let (dtx, dty) = (tx - mean_tx, ty - mean_ty);
+        denom += dx * dx + dy * dy;
+        sum_a += dx * dtx + dy * dty;
+        sum_b += dy * dtx - dx * dty;
+    }
+    // 退化关键点（全部重合）时直接拉伸整图作为降级对齐。
+    if denom < 1e-6 { return image::imageops::resize(image, RECOGNIZER_SIZE, RECOGNIZER_SIZE, FilterType::Triangle); }
+    let (a, b) = (sum_a / denom, sum_b / denom);
+    let norm = a * a + b * b;
+    if norm < 1e-9 { return image::imageops::resize(image, RECOGNIZER_SIZE, RECOGNIZER_SIZE, FilterType::Triangle); }
+    let (tx, ty) = (mean_tx - a * mean_x + b * mean_y, mean_ty - b * mean_x - a * mean_y);
+    let inv = 1.0 / norm;
+    let mut output = image::RgbImage::new(RECOGNIZER_SIZE, RECOGNIZER_SIZE);
+    for v in 0..RECOGNIZER_SIZE {
+        for u in 0..RECOGNIZER_SIZE {
+            let du = u as f32 - tx;
+            let dv = v as f32 - ty;
+            let x = (a * du + b * dv) * inv;
+            let y = (a * dv - b * du) * inv;
+            output.put_pixel(u, v, image::Rgb(sample_bilinear_rgb(image, x, y)));
+        }
+    }
+    output
+}
+
+fn sample_bilinear_rgb(image: &image::RgbImage, x: f32, y: f32) -> [u8; 3] {
+    let x0 = x.floor() as i64;
+    let y0 = y.floor() as i64;
+    let fx = x - x.floor();
+    let fy = y - y.floor();
+    let pixel = |px: i64, py: i64| -> [f32; 3] {
+        if px < 0 || py < 0 || px >= i64::from(image.width()) || py >= i64::from(image.height()) { return [0.0, 0.0, 0.0]; }
+        let value = image.get_pixel(px as u32, py as u32);
+        [f32::from(value[0]), f32::from(value[1]), f32::from(value[2])]
+    };
+    let top_left = pixel(x0, y0);
+    let top_right = pixel(x0 + 1, y0);
+    let bottom_left = pixel(x0, y0 + 1);
+    let bottom_right = pixel(x0 + 1, y0 + 1);
+    let mut result = [0_u8; 3];
+    for channel in 0..3 {
+        let top = top_left[channel] * (1.0 - fx) + top_right[channel] * fx;
+        let bottom = bottom_left[channel] * (1.0 - fx) + bottom_right[channel] * fx;
+        result[channel] = (top * (1.0 - fy) + bottom * fy).round().clamp(0.0, 255.0) as u8;
+    }
+    result
+}
+
+pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    let mut dot = 0.0_f32;
+    let mut norm_a = 0.0_f32;
+    let mut norm_b = 0.0_f32;
+    for (x, y) in a.iter().zip(b.iter()) {
+        dot += x * y;
+        norm_a += x * x;
+        norm_b += y * y;
+    }
+    if norm_a <= 0.0 || norm_b <= 0.0 { return 0.0; }
+    dot / (norm_a.sqrt() * norm_b.sqrt())
+}
+
+pub fn normalize_embedding(embedding: &mut [f32]) {
+    let norm = embedding.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if norm > 0.0 { for value in embedding.iter_mut() { *value /= norm; } }
 }
 
 fn model_state_from_dir(dir: &Path) -> Result<FaceModelState, String> {
@@ -490,5 +625,73 @@ mod tests {
         let face = |offset: f32, score: f32| DetectedFace { x1: offset, y1: offset, w: 10.0, h: 10.0, landmarks: [(0.0, 0.0); 5], score };
         let faces = (0..8).map(|i| face(i as f32 * 40.0, 0.5 + i as f32 * 0.01)).collect();
         assert_eq!(nms_faces(faces, 0.35, 5).len(), 5);
+    }
+
+    #[test]
+    fn align_face_112_outputs_fixed_size_for_non_degenerate_points() {
+        let image = image::RgbImage::from_pixel(320, 240, image::Rgb([128, 96, 64]));
+        // 把模板点放大 2 倍并平移，模拟原图坐标空间的关键点。
+        let landmarks: [(f32, f32); 5] = ALIGN_TEMPLATE.map(|(x, y)| (x * 2.0 + 40.0, y * 2.0 + 30.0));
+        let aligned = align_face_112(&image, landmarks);
+        assert_eq!(aligned.width(), 112);
+        assert_eq!(aligned.height(), 112);
+        // 纯色图对齐后中心区域仍应接近原色。
+        let center = aligned.get_pixel(56, 56);
+        assert!((i32::from(center[0]) - 128).abs() <= 2);
+    }
+
+    #[test]
+    fn align_face_112_falls_back_for_degenerate_points() {
+        let image = image::RgbImage::from_pixel(64, 64, image::Rgb([10, 20, 30]));
+        let landmarks = [(32.0, 32.0); 5];
+        let aligned = align_face_112(&image, landmarks);
+        assert_eq!((aligned.width(), aligned.height()), (112, 112));
+    }
+
+    #[test]
+    fn cosine_similarity_matches_expected_angles() {
+        let same = cosine_similarity(&[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0]);
+        assert!((same - 1.0).abs() < 1e-4);
+        let orthogonal = cosine_similarity(&[1.0, 0.0], &[0.0, 1.0]);
+        assert!(orthogonal.abs() < 1e-4);
+        let opposite = cosine_similarity(&[1.0, 2.0], &[-1.0, -2.0]);
+        assert!((opposite + 1.0).abs() < 1e-4);
+        assert_eq!(cosine_similarity(&[0.0, 0.0], &[1.0, 1.0]), 0.0);
+    }
+
+    #[test]
+    fn normalize_embedding_yields_unit_norm() {
+        let mut embedding = [3.0_f32, -4.0, 0.0, 12.0];
+        normalize_embedding(&mut embedding);
+        let norm = embedding.iter().map(|value| value * value).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn bundled_onnx_recognizer_outputs_128_dim_embedding() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/object-models");
+        let mut recognizer = ort::session::Session::builder().unwrap().commit_from_file(root.join("face-recognizer.onnx")).unwrap();
+        let input = Array4::<f32>::zeros((1, 3, 112, 112));
+        let outputs = recognizer.run(ort::inputs![ort::value::TensorRef::from_array_view(&input).unwrap()]).unwrap();
+        let (_, tensor) = outputs[0].try_extract_tensor::<f32>().unwrap();
+        assert_eq!(tensor.len(), 128);
+    }
+
+    #[test]
+    fn faceless_photo_reports_missing_face_smoke() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources");
+        let runtime = FaceMonitorRuntime::from_resource_dirs(Some(root));
+        assert!(runtime.status().recognizer_ready);
+        // 确定性伪随机噪声图，不可能包含人脸。
+        let mut noise = image::RgbImage::new(240, 240);
+        let mut seed = 12_345_u32;
+        for pixel in noise.pixels_mut() {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *pixel = image::Rgb([(seed >> 8) as u8, (seed >> 16) as u8, (seed >> 24) as u8]);
+        }
+        let mut png = Vec::new();
+        noise.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        let error = runtime.embedding_from_photo_bytes(&png).unwrap_err();
+        assert!(error.contains("未检测到人脸"), "unexpected error: {error}");
     }
 }
