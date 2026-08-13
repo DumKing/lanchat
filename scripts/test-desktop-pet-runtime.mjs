@@ -36,7 +36,7 @@ assert.match(runtime, /active_clip_duration/, "运行时应让随机动作在配
 assert.match(runtime, /sequence_target_count/, "运行时应按状态配置随机动作数量");
 assert.match(runtime, /sequence_interval/, "运行时应支持动作间随机停顿");
 assert.match(runtime, /disco_movement_mode/, "原生运行时应接收线性或跳跃蹦迪移动方式");
-assert.match(runtime, /pet_response\.dragged\(\)/, "拖动桌宠时应切换到 Move 动作");
+assert.match(runtime, /pet_press_dragged[\s\S]{0,300}ViewportCommand::StartDrag/, "拖动桌宠时应切换到 Move 动作");
 assert.match(runtime, /emit_action\("open_main_window"/, "普通状态单击桌宠应请求打开主程序");
 assert.match(runtime, /alert_active[\s\S]{0,500}emit_action\("stop_visuals"/, "告警状态单击桌宠应停止告警而不是打开主程序");
 assert.doesNotMatch(runtime, /\.weight\b/, "运行时动作选择不应读取资源权重");

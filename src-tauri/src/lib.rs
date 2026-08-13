@@ -3,6 +3,7 @@ mod debug_log;
 mod desktop_pet;
 mod desktop_pet_runtime;
 mod file_server;
+mod face_monitor;
 mod identity;
 mod network;
 mod protocol;
@@ -20,6 +21,7 @@ use desktop_pet::{
 };
 use desktop_pet_runtime::{DesktopPetController, DesktopPetRuntimeState};
 use file_server::FileServer;
+use face_monitor::{embedding_bytes, embedding_from_bytes, FaceMatch, FaceMonitorLocalSettings, FaceMonitorRuntime, FaceMonitorStatus, PersonTemplate};
 use fs2::FileExt;
 use network::{local_ip_address, Network};
 use protocol::MessageRecallFrame;
@@ -38,8 +40,8 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use storage::{
-    AdminNotificationRecord, ChannelMember, ChannelMemberSeed, Conversation, Message, MessageType,
-    Peer, Profile, SimulationAudit, Storage, DEFAULT_GROUP_ID,
+    AdminNotificationRecord, CameraFaceAlertRecord, ChannelMember, ChannelMemberSeed, Conversation, FaceMonitorPolicyRecord,
+    FacePersonRecord, Message, MessageType, Peer, Profile, SimulationAudit, Storage, DEFAULT_GROUP_ID,
 };
 use tauri::image::Image;
 use tokio::io::AsyncWriteExt;
@@ -366,18 +368,24 @@ async fn send_external_push_alert(
         return Err("外部推送机器人 Webhook 必须使用 https:// 地址".to_string());
     }
     let content = render_external_push_alert_text(&config.template, &frame);
-    let payload = if config.kind == "dingtalk" {
+    let payload = external_push_payload(&config.kind, config.mention_all, &content);
+    post_external_push_webhook(&config.name, webhook, &payload).await
+}
+
+/// 钉钉/企业微信机器人 text 消息体，狼来了与人脸识别告警共用。
+fn external_push_payload(kind: &str, mention_all: bool, content: &str) -> serde_json::Value {
+    if kind == "dingtalk" {
         serde_json::json!({
             "msgtype": "text",
             "text": {
                 "content": content,
             },
             "at": {
-                "isAtAll": config.mention_all,
+                "isAtAll": mention_all,
             }
         })
     } else {
-        let mentioned_list = if config.mention_all {
+        let mentioned_list = if mention_all {
             vec!["@all"]
         } else {
             Vec::new()
@@ -389,19 +397,21 @@ async fn send_external_push_alert(
                 "mentioned_list": mentioned_list,
             }
         })
-    };
+    }
+}
+
+async fn post_external_push_webhook(name: &str, webhook: &str, payload: &serde_json::Value) -> Result<(), String> {
     let response = reqwest::Client::new()
         .post(webhook)
-        .json(&payload)
+        .json(payload)
         .send()
         .await
-        .map_err(|error| format!("外部推送「{}」发送失败：{error}", config.name))?;
+        .map_err(|error| format!("外部推送「{name}」发送失败：{error}"))?;
     let status = response.status();
     let body = response.text().await.unwrap_or_else(|_| String::new());
     if !status.is_success() {
         return Err(format!(
-            "外部推送「{}」发送失败：HTTP {status}",
-            config.name
+            "外部推送「{name}」发送失败：HTTP {status}"
         ));
     }
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
@@ -414,10 +424,63 @@ async fn send_external_push_alert(
                 .get("errmsg")
                 .and_then(|item| item.as_str())
                 .unwrap_or("未知错误");
-            return Err(format!("外部推送「{}」发送失败：{message}", config.name));
+            return Err(format!("外部推送「{name}」发送失败：{message}"));
         }
     }
     Ok(())
+}
+
+/// 人脸识别告警的推送文案：与狼来了模板渲染完全分离，固定多行具名格式。
+fn render_camera_face_push_text(frame: &protocol::CameraFaceAlertFrame) -> String {
+    let source_ip = frame.source_address.as_deref().unwrap_or("未知 IP");
+    format!(
+        "[人脸识别告警]\n检测到 {} · 置信度 {}% ·\n来源：{}（{}） · {}\n@所有人",
+        frame.person_name,
+        frame.confidence,
+        frame.source_nickname,
+        source_ip,
+        format_alert_time(frame.created_at)
+    )
+}
+
+/// 人脸识别告警的独立外部推送：不走可信度阈值，不复用狼来了模板。
+async fn send_camera_face_external_push(
+    config: ExternalPushConfig,
+    frame: protocol::CameraFaceAlertFrame,
+) -> Result<(), String> {
+    if !config.enabled {
+        return Ok(());
+    }
+    let webhook = config.webhook.trim();
+    if webhook.is_empty() {
+        return Ok(());
+    }
+    if !webhook.starts_with("https://") {
+        return Err("外部推送机器人 Webhook 必须使用 https:// 地址".to_string());
+    }
+    let content = render_camera_face_push_text(&frame);
+    let payload = external_push_payload(&config.kind, config.mention_all, &content);
+    post_external_push_webhook(&config.name, webhook, &payload).await
+}
+
+#[cfg(test)]
+mod camera_face_push_tests {
+    use super::*;
+
+    #[test]
+    fn camera_face_push_text_names_person_and_source() {
+        let frame = protocol::CameraFaceAlertFrame {
+            alert_id: "alert-1".to_string(), source_kind: "camera_face".to_string(),
+            source_device_id: "device-1".to_string(), source_nickname: "监控机".to_string(),
+            source_address: Some("192.168.1.10".to_string()), person_id: "person-1".to_string(),
+            person_name: "张三".to_string(), confidence: 87, consecutive_hits: 2,
+            policy_version: 3, created_at: 1_723_000_000_000,
+        };
+        let text = render_camera_face_push_text(&frame);
+        assert!(text.starts_with("[人脸识别告警]\n检测到 张三 · 置信度 87% ·\n"));
+        assert!(text.contains("来源：监控机（192.168.1.10）"));
+        assert!(text.ends_with("@所有人"));
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -536,6 +599,7 @@ struct AppState {
     desktop_pet_send_hotkey: Arc<Mutex<Option<Shortcut>>>,
     desktop_pet_stop_hotkey: Arc<Mutex<Option<Shortcut>>>,
     super_admin_session: Arc<Mutex<bool>>,
+    face_monitor: Arc<FaceMonitorRuntime>,
 }
 
 fn ensure_full_client(state: &AppState, capability: &str) -> Result<(), String> {
@@ -564,6 +628,328 @@ fn platform_info_value() -> PlatformInfo {
 #[tauri::command]
 fn get_platform_info() -> PlatformInfo {
     platform_info_value()
+}
+
+#[tauri::command]
+fn get_face_monitor_status(state: State<'_, AppState>) -> FaceMonitorStatus {
+    state.face_monitor.status()
+}
+
+#[tauri::command]
+fn update_face_monitor_local_settings(
+    state: State<'_, AppState>,
+    settings: FaceMonitorLocalSettings,
+) -> FaceMonitorLocalSettings {
+    state.face_monitor.update_settings(settings)
+}
+
+#[tauri::command]
+async fn submit_face_monitor_frame(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    bytes: Vec<u8>,
+    width: u32,
+    height: u32,
+) -> Result<Option<CameraFaceAlertRecord>, String> {
+    let _ = (width, height);
+    if bytes.is_empty() { return Ok(None); }
+    // 识别模型未就绪或无可用录入人员时不产生任何告警事件与数据，
+    // 错误原因通过 get_face_monitor_status 由设置页展示。
+    if !state.face_monitor.status().recognizer_ready { return Ok(None); }
+    let templates = load_recognition_templates(&state)?;
+    if templates.is_empty() { return Ok(None); }
+    let Some(recognition) = state.face_monitor.recognize_frame(&bytes, &templates)? else {
+        return Ok(None);
+    };
+    if recognition.matches.is_empty() { return Ok(None); }
+    let profile = state.storage.get_or_create_profile()?;
+    let policy = state.storage.effective_face_monitor_policy(&profile.device_id)?.unwrap_or(FaceMonitorPolicyRecord {
+        target_device_id: profile.device_id.clone(), min_confidence: 60, consecutive_hits: 1, cooldown_seconds: 60, version: 0,
+        issued_by_device_id: "local-default".to_string(), issued_by_nickname: "本机默认".to_string(), issued_at: 0,
+    });
+    let now = chrono::Utc::now().timestamp_millis();
+    let mut first_record = None;
+    for matched in recognition.matches {
+        let gate_key = format!("camera-face-person:{}", matched.person_id);
+        if !state.face_monitor.accept_match(&gate_key, matched.confidence, policy.min_confidence, policy.consecutive_hits, policy.cooldown_seconds, now) {
+            continue;
+        }
+        let record = publish_camera_face_alert(app.clone(), &state, &profile, &policy, &matched, now).await?;
+        if first_record.is_none() { first_record = Some(record); }
+    }
+    Ok(first_record)
+}
+
+/// 加载启用中录入人员的特征模板：优先用版本匹配的已存特征，
+/// 版本不一致时用参考照片重新提取并落库；照片不可读或无人脸时清空特征并跳过。
+fn load_recognition_templates(state: &AppState) -> Result<Vec<PersonTemplate>, String> {
+    let model_version = state.face_monitor.status().model_version.unwrap_or_default();
+    let mut templates = Vec::new();
+    for person in state.storage.list_face_people()? {
+        if !person.enabled || person.deleted_at.is_some() { continue; }
+        if let (Some(saved), Some(version)) = (&person.embedding, &person.embedding_model_version) {
+            if version == &model_version {
+                if let Ok(embedding) = embedding_from_bytes(saved) {
+                    templates.push(PersonTemplate { person_id: person.person_id, display_name: person.display_name, embedding });
+                    continue;
+                }
+            }
+        }
+        let Some(photo_path) = person.photo_url.as_deref() else {
+            state.storage.update_face_person_embedding(&person.person_id, None, None).ok();
+            continue;
+        };
+        let Ok(photo_bytes) = std::fs::read(photo_path) else {
+            state.storage.update_face_person_embedding(&person.person_id, None, None).ok();
+            continue;
+        };
+        match state.face_monitor.embedding_from_photo_bytes(&photo_bytes) {
+            Ok(embedding) => {
+                state.storage.update_face_person_embedding(&person.person_id, Some(embedding_bytes(&embedding)), Some(model_version.clone())).ok();
+                templates.push(PersonTemplate { person_id: person.person_id, display_name: person.display_name, embedding });
+            }
+            Err(_) => { state.storage.update_face_person_embedding(&person.person_id, None, None).ok(); }
+        }
+    }
+    Ok(templates)
+}
+
+#[tauri::command]
+fn list_face_people(state: State<'_, AppState>) -> Result<Vec<FacePersonRecord>, String> {
+    state.storage.list_face_people()
+}
+
+#[tauri::command]
+fn delete_face_person_local(state: State<'_, AppState>, person_id: String) -> Result<(), String> {
+    state.storage.delete_face_person_local(person_id.trim())
+}
+
+#[tauri::command]
+fn save_face_reference_photo(
+    app: tauri::AppHandle,
+    bytes: Vec<u8>,
+) -> Result<String, String> {
+    if bytes.is_empty() || bytes.len() > 5 * 1024 * 1024 {
+        return Err("参考照片必须是 5MB 以内的有效图片".to_string());
+    }
+    image::load_from_memory(&bytes).map_err(|err| format!("参考照片无法解码：{err}"))?;
+    let root = app.path().app_data_dir().map_err(|err| format!("读取应用数据目录失败：{err}"))?
+        .join("face-reference-uploads");
+    std::fs::create_dir_all(&root).map_err(|err| format!("创建参考照片目录失败：{err}"))?;
+    let path = root.join(format!("{}.jpg", Uuid::new_v4()));
+    std::fs::write(&path, bytes).map_err(|err| format!("保存参考照片失败：{err}"))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn create_local_face_person(
+    state: State<'_, AppState>,
+    person_id: String,
+    display_name: String,
+    photo_path: String,
+) -> Result<FacePersonRecord, String> {
+    let profile = state.storage.get_or_create_profile()?;
+    let person_id = person_id.trim();
+    let display_name = display_name.trim();
+    if person_id.is_empty() || display_name.is_empty() || photo_path.trim().is_empty() {
+        return Err("请填写人员名称并提供参考照片".to_string());
+    }
+    let bytes = std::fs::read(&photo_path).map_err(|err| format!("读取参考照片失败：{err}"))?;
+    if bytes.len() > 5 * 1024 * 1024 { return Err("参考照片不能超过 5MB".to_string()); }
+    image::load_from_memory(&bytes).map_err(|err| format!("参考照片无法解码：{err}"))?;
+    if !state.face_monitor.status().recognizer_ready {
+        return Err("识别模型未安装，暂时无法录入识别人员".to_string());
+    }
+    // 录入即提取特征：照片中无人脸时直接拒绝录入。
+    let embedding = state.face_monitor.embedding_from_photo_bytes(&bytes)?;
+    let model_version = state.face_monitor.status().model_version;
+    let record = state.storage.upsert_face_person(&protocol::FacePersonPolicyFrame {
+        person_id: person_id.to_string(), display_name: display_name.to_string(), photo_url: Some(photo_path),
+        photo_sha256: Some(hex::encode(sha2::Sha256::digest(bytes))), expires_at: None, enabled: true,
+        version: chrono::Utc::now().timestamp_millis(), action: "upsert".to_string(),
+        issued_by_device_id: profile.device_id, issued_by_nickname: "本机录入".to_string(), issued_at: chrono::Utc::now().timestamp_millis(),
+    })?;
+    state.storage.update_face_person_embedding(&record.person_id, Some(embedding_bytes(&embedding)), model_version)?;
+    Ok(record)
+}
+
+#[tauri::command]
+fn get_effective_face_monitor_policy(
+    state: State<'_, AppState>,
+) -> Result<Option<FaceMonitorPolicyRecord>, String> {
+    let profile = state.storage.get_or_create_profile()?;
+    state.storage.effective_face_monitor_policy(&profile.device_id)
+}
+
+#[tauri::command]
+fn list_camera_face_alerts(state: State<'_, AppState>) -> Result<Vec<CameraFaceAlertRecord>, String> {
+    state.storage.list_camera_face_alerts(100)
+}
+
+#[tauri::command]
+async fn send_camera_face_alert_feedback(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    alert_id: String,
+    source_device_id: String,
+    result: String,
+) -> Result<CameraFaceAlertRecord, String> {
+    let result = result.trim().to_ascii_lowercase();
+    if !matches!(result.as_str(), "real" | "false") { return Err("反馈结果无效".to_string()); }
+    let profile = state.storage.get_or_create_profile()?;
+    let frame = protocol::CameraFaceAlertFeedbackFrame {
+        alert_id,
+        source_device_id,
+        responder_device_id: profile.device_id,
+        responder_nickname: profile.nickname,
+        result,
+        created_at: chrono::Utc::now().timestamp_millis(),
+    };
+    let record = state.storage.upsert_camera_face_alert_feedback(&frame)?;
+    state.network.broadcast_camera_face_alert_feedback(app.clone(), frame).await?;
+    app.emit("camera_face_alert_feedback_received", &record).ok();
+    Ok(record)
+}
+
+/// 识别命中后发布具名告警：落库、局域网广播、通知前端，与狼来了告警链路完全分离。
+async fn publish_camera_face_alert(
+    app: tauri::AppHandle,
+    state: &AppState,
+    profile: &storage::Profile,
+    policy: &FaceMonitorPolicyRecord,
+    matched: &FaceMatch,
+    now: i64,
+) -> Result<CameraFaceAlertRecord, String> {
+    let frame = protocol::CameraFaceAlertFrame {
+        alert_id: Uuid::new_v4().to_string(), source_kind: "camera_face".to_string(),
+        source_device_id: profile.device_id.clone(), source_nickname: profile.nickname.clone(),
+        source_address: Some(local_ip_address()), person_id: matched.person_id.clone(),
+        person_name: matched.display_name.clone(), confidence: matched.confidence,
+        consecutive_hits: policy.consecutive_hits, policy_version: policy.version, created_at: now,
+    };
+    let record = state.storage.upsert_camera_face_alert(&frame)?;
+    state.network.broadcast_camera_face_alert(app.clone(), frame.clone()).await?;
+    app.emit("camera_face_alert_received", &record).ok();
+    // 人脸识别告警的独立外部推送：不走可信度阈值，只在产生端执行。
+    let settings = state.desktop_pet.settings();
+    if settings.external_push_enabled {
+        for config in settings
+            .external_push_configs
+            .into_iter()
+            .filter(|item| item.enabled && !item.webhook.trim().is_empty())
+        {
+            let notify_frame = frame.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = send_camera_face_external_push(config, notify_frame).await {
+                    eprintln!("{error}");
+                }
+            });
+        }
+    }
+    Ok(record)
+}
+
+#[tauri::command]
+async fn send_face_monitor_policy(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    target_device_id: String,
+    min_confidence: u8,
+    consecutive_hits: u8,
+    cooldown_seconds: u32,
+    version: i64,
+) -> Result<FaceMonitorPolicyRecord, String> {
+    ensure_super_admin_session(&state)?;
+    let target = target_device_id.trim();
+    if target.is_empty() {
+        return Err("请选择策略接收设备".to_string());
+    }
+    let profile = state.storage.get_or_create_profile()?;
+    let frame = protocol::FaceMonitorPolicyFrame {
+        target_device_id: target.to_string(),
+        min_confidence: min_confidence.min(100),
+        consecutive_hits: consecutive_hits.clamp(1, 20),
+        cooldown_seconds: cooldown_seconds.clamp(5, 86_400),
+        version,
+        issued_by_device_id: profile.device_id.clone(),
+        issued_by_nickname: profile.nickname.clone(),
+        issued_at: chrono::Utc::now().timestamp_millis(),
+    };
+    if target == "*" {
+        for peer in state.storage.list_peers()?.into_iter().filter(|peer| peer.online) {
+            let _ = state.network.send_face_monitor_policy(app.clone(), &peer.device_id, frame.clone()).await;
+        }
+    } else if target != profile.device_id {
+        if !state.network.send_face_monitor_policy(app.clone(), target, frame.clone()).await? {
+            return Err("目标设备不在线，识别策略未送达".to_string());
+        }
+    }
+    let record = state.storage.upsert_face_monitor_policy(&frame)?;
+    app.emit("face_monitor_policy_received", &record).ok();
+    Ok(record)
+}
+
+#[tauri::command]
+async fn send_face_person_policy(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    target_device_id: String,
+    person_id: String,
+    display_name: String,
+    photo_path: Option<String>,
+    expires_at: Option<i64>,
+    enabled: bool,
+    action: String,
+    version: i64,
+) -> Result<FacePersonRecord, String> {
+    ensure_super_admin_session(&state)?;
+    let target = target_device_id.trim();
+    let person_id = person_id.trim();
+    let display_name = display_name.trim();
+    let action = action.trim().to_ascii_lowercase();
+    if target.is_empty() || person_id.is_empty() || display_name.is_empty() {
+        return Err("请填写人员名称、人员标识和下发目标".to_string());
+    }
+    if !matches!(action.as_str(), "upsert" | "disable" | "delete") {
+        return Err("人员规则操作无效".to_string());
+    }
+    let profile = state.storage.get_or_create_profile()?;
+    let (photo_url, photo_sha256) = if action == "upsert" {
+        let path = photo_path.ok_or_else(|| "请选择人员参考照片".to_string())?;
+        let path = PathBuf::from(path);
+        let metadata = std::fs::metadata(&path).map_err(|err| format!("读取人员照片失败：{err}"))?;
+        if !metadata.is_file() || metadata.len() > 5 * 1024 * 1024 {
+            return Err("人员照片必须是 5MB 以内的本地文件".to_string());
+        }
+        let bytes = std::fs::read(&path).map_err(|err| format!("读取人员照片失败：{err}"))?;
+        let meta = state.file_server.share_file_with_options(path, Some("image/*".to_string()), None)?;
+        (Some(meta.url), Some(hex::encode(sha2::Sha256::digest(bytes))))
+    } else {
+        (None, None)
+    };
+    let frame = protocol::FacePersonPolicyFrame {
+        person_id: person_id.to_string(),
+        display_name: display_name.to_string(),
+        photo_url,
+        photo_sha256,
+        expires_at,
+        enabled,
+        version: version.max(1),
+        action,
+        issued_by_device_id: profile.device_id.clone(),
+        issued_by_nickname: profile.nickname.clone(),
+        issued_at: chrono::Utc::now().timestamp_millis(),
+    };
+    if target == "*" {
+        for peer in state.storage.list_peers()?.into_iter().filter(|peer| peer.online) {
+            let _ = state.network.send_face_person_policy(app.clone(), &peer.device_id, frame.clone()).await;
+        }
+    } else if target != profile.device_id && !state.network.send_face_person_policy(app.clone(), target, frame.clone()).await? {
+        return Err("目标设备不在线，人员照片未送达".to_string());
+    }
+    let record = state.storage.upsert_face_person(&frame)?;
+    app.emit("face_person_policy_received", &record).ok();
+    Ok(record)
 }
 
 fn local_app_version_info() -> AppVersionInfo {
@@ -3237,6 +3623,8 @@ pub fn run() {
             network.start(app.handle().clone())?;
             let file_server = FileServer::new();
             file_server.start();
+              let face_model_resource_dir = app.path().resource_dir().ok();
+            let face_monitor = Arc::new(FaceMonitorRuntime::from_resource_dirs(face_model_resource_dir));
             let desktop_pet_controller = DesktopPetController::start(app.handle().clone());
             let pet_settings = desktop_pet.settings();
             desktop_pet_controller.set_enabled(pet_settings.enabled);
@@ -3256,6 +3644,7 @@ pub fn run() {
                 desktop_pet_send_hotkey: Arc::new(Mutex::new(None)),
                 desktop_pet_stop_hotkey: Arc::new(Mutex::new(None)),
                 super_admin_session: Arc::new(Mutex::new(false)),
+                face_monitor,
             });
             Ok(())
         })
@@ -3269,6 +3658,18 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_platform_info,
+            get_face_monitor_status,
+            update_face_monitor_local_settings,
+            submit_face_monitor_frame,
+            list_face_people,
+            delete_face_person_local,
+            save_face_reference_photo,
+            create_local_face_person,
+            get_effective_face_monitor_policy,
+            send_face_monitor_policy,
+            send_face_person_policy,
+            list_camera_face_alerts,
+            send_camera_face_alert_feedback,
             get_app_version_info,
             refresh_update_proxy,
             check_for_update,
