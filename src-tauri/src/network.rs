@@ -6,7 +6,7 @@ use crate::protocol::{
     decode_frame, encode_frame, AckFrame, AdminAlertModeFrame, AdminAlertPushPolicyFrame,
     AdminChannelControlFrame, AdminDiscoModeFrame, AdminNicknameFrame, CallSignalFrame,
     ChannelMemberFrame, ChannelNoticeFrame, ChatMessageFrame, GameFrame, HelloFrame, NudgeFrame,
-    PeerStatusFrame, PrivateChannelInviteFrame, QuickAlertFeedbackFrame, QuickAlertFrame,
+    CameraFaceAlertFeedbackFrame, CameraFaceAlertFrame, FaceMonitorPolicyFrame, FacePersonPolicyFrame, PeerStatusFrame, PrivateChannelInviteFrame, QuickAlertFeedbackFrame, QuickAlertFrame,
     QuickAlertTrustResetFrame, WireFrame,
 };
 use crate::storage::{
@@ -15,7 +15,9 @@ use crate::storage::{
 };
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
@@ -26,6 +28,36 @@ use uuid::Uuid;
 
 const SERVICE_TYPE: &str = "_lanchat._tcp.local.";
 const PROTOCOL_VERSION: u16 = 1;
+const FACE_REFERENCE_MAX_BYTES: usize = 5 * 1024 * 1024;
+
+async fn localize_face_reference_photo(
+    app: &AppHandle,
+    frame: &FacePersonPolicyFrame,
+) -> Result<FacePersonPolicyFrame, String> {
+    if frame.action != "upsert" {
+        return Ok(frame.clone());
+    }
+    let Some(url) = frame.photo_url.as_deref().filter(|value| value.starts_with("http://") || value.starts_with("https://")) else {
+        return Ok(frame.clone());
+    };
+    let response = reqwest::get(url).await.map_err(|err| format!("下载人员参考照片失败：{err}"))?;
+    if !response.status().is_success() { return Err(format!("下载人员参考照片失败：HTTP {}", response.status())); }
+    let bytes = response.bytes().await.map_err(|err| format!("读取人员参考照片失败：{err}"))?;
+    if bytes.is_empty() || bytes.len() > FACE_REFERENCE_MAX_BYTES { return Err("人员参考照片超过 5MB 或内容为空".to_string()); }
+    image::load_from_memory(&bytes).map_err(|err| format!("人员参考照片无法解码：{err}"))?;
+    let actual = hex::encode(sha2::Sha256::digest(&bytes));
+    if let Some(expected) = frame.photo_sha256.as_deref() {
+        if !actual.eq_ignore_ascii_case(expected) { return Err("人员参考照片校验失败".to_string()); }
+    }
+    let directory = app.path().app_data_dir().map_err(|err| format!("读取应用数据目录失败：{err}"))?.join("face-reference-library");
+    std::fs::create_dir_all(&directory).map_err(|err| format!("创建人员照片目录失败：{err}"))?;
+    let target: PathBuf = directory.join(format!("{}-v{}.jpg", frame.person_id, frame.version));
+    std::fs::write(&target, &bytes).map_err(|err| format!("保存人员参考照片失败：{err}"))?;
+    let mut local = frame.clone();
+    local.photo_url = Some(target.to_string_lossy().to_string());
+    local.photo_sha256 = Some(actual);
+    Ok(local)
+}
 const BUILD_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
     "+",
@@ -644,6 +676,46 @@ impl Network {
         Ok(frame)
     }
 
+    pub async fn send_face_person_policy(
+        &self,
+        app: AppHandle,
+        target_device_id: &str,
+        frame: FacePersonPolicyFrame,
+    ) -> Result<bool, String> {
+        let target = normalize_device_id(target_device_id);
+        let delivered = self
+            .send_direct_frame(app.clone(), &target, WireFrame::FacePersonPolicy(frame))
+            .await?;
+        emit_debug_log(
+            &app,
+            if delivered { "info" } else { "warn" },
+            "face-monitor",
+            "人员照片规则已下发",
+            Some(target),
+        );
+        Ok(delivered)
+    }
+
+    pub async fn send_face_monitor_policy(
+        &self,
+        app: AppHandle,
+        target_device_id: &str,
+        frame: FaceMonitorPolicyFrame,
+    ) -> Result<bool, String> {
+        let target = normalize_device_id(target_device_id);
+        let delivered = self
+            .send_direct_frame(app.clone(), &target, WireFrame::FaceMonitorPolicy(frame))
+            .await?;
+        emit_debug_log(
+            &app,
+            if delivered { "info" } else { "warn" },
+            "face-monitor",
+            "摄像头识别策略已下发",
+            Some(target),
+        );
+        Ok(delivered)
+    }
+
     pub async fn send_admin_notification_frame(
         &self,
         app: AppHandle,
@@ -788,6 +860,22 @@ impl Network {
             "快捷告警已广播",
             Some(format!("{} delivered={delivered}", frame.alert_id)),
         );
+        Ok(())
+    }
+
+    pub async fn broadcast_camera_face_alert(&self, app: AppHandle, frame: CameraFaceAlertFrame) -> Result<(), String> {
+        let wire = WireFrame::CameraFaceAlert(frame.clone());
+        let senders = self.senders.lock().map_err(|_| "连接表已损坏".to_string())?;
+        let delivered = senders.values().filter(|sender| sender.sender.try_send(wire.clone()).is_ok()).count();
+        emit_debug_log(&app, if delivered > 0 { "info" } else { "warn" }, "face-monitor", "自动识别告警已广播", Some(format!("{} delivered={delivered}", frame.alert_id)));
+        Ok(())
+    }
+
+    pub async fn broadcast_camera_face_alert_feedback(&self, app: AppHandle, frame: CameraFaceAlertFeedbackFrame) -> Result<(), String> {
+        let wire = WireFrame::CameraFaceAlertFeedback(frame.clone());
+        let senders = self.senders.lock().map_err(|_| "连接表已损坏".to_string())?;
+        for sender in senders.values() { let _ = sender.sender.try_send(wire.clone()); }
+        emit_debug_log(&app, "info", "face-monitor", "自动识别告警反馈已广播", Some(frame.alert_id));
         Ok(())
     }
 
@@ -1554,6 +1642,49 @@ impl Network {
                             read_app
                                 .emit("admin_alert_push_policy_received", frame)
                                 .ok();
+                        }
+                    }
+                    Ok(WireFrame::CameraFaceAlert(frame)) => {
+                        if let Ok(record) = read_storage.upsert_camera_face_alert(&frame) {
+                            read_app.emit("camera_face_alert_received", record).ok();
+                        }
+                    }
+                    Ok(WireFrame::CameraFaceAlertFeedback(frame)) => {
+                        if let Ok(record) = read_storage.upsert_camera_face_alert_feedback(&frame) {
+                            read_app.emit("camera_face_alert_feedback_received", record).ok();
+                        }
+                    }
+                    Ok(WireFrame::FacePersonPolicy(frame)) => {
+                        let frame = match localize_face_reference_photo(&read_app, &frame).await {
+                            Ok(frame) => frame,
+                            Err(err) => {
+                                emit_debug_log(&read_app, "error", "face-monitor", "处理人员参考照片失败", Some(err));
+                                continue;
+                            }
+                        };
+                        match read_storage.upsert_face_person(&frame) {
+                            Ok(person) => {
+                                emit_debug_log(
+                                    &read_app,
+                                    "info",
+                                    "face-monitor",
+                                    "收到指定人员规则",
+                                    Some(format!("{} v{}", person.display_name, person.version)),
+                                );
+                                read_app.emit("face_person_policy_received", person).ok();
+                            }
+                            Err(err) => emit_debug_log(&read_app, "error", "face-monitor", "保存指定人员规则失败", Some(err)),
+                        }
+                    }
+                    Ok(WireFrame::FaceMonitorPolicy(frame)) => {
+                        if frame.target_device_id == "*" || normalize_device_id(&frame.target_device_id) == local_device_id {
+                            match read_storage.upsert_face_monitor_policy(&frame) {
+                                Ok(policy) => {
+                                    emit_debug_log(&read_app, "info", "face-monitor", "收到摄像头识别策略", Some(format!("{} v{}", policy.target_device_id, policy.version)));
+                                    read_app.emit("face_monitor_policy_received", policy).ok();
+                                }
+                                Err(err) => emit_debug_log(&read_app, "error", "face-monitor", "保存摄像头识别策略失败", Some(err)),
+                            }
                         }
                     }
                     Ok(WireFrame::AdminNickname(frame)) => {

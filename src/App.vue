@@ -42,11 +42,12 @@ import {
 } from "naive-ui";
 import { storeToRefs } from "pinia";
 import { api } from "./services/tauri-api";
+import { cameraMediaCoordinator } from "./services/cameraMediaCoordinator";
 import ChatComposerInput from "./components/ChatComposerInput.vue";
 import { DEFAULT_GROUP_ID, useLanChatStore } from "./stores/lanchat";
 import { useDesktopPetStore } from "./stores/desktopPet";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, ExternalPushConfig, ExternalPushKind, PetPackageSource, PetStateKind, PetStatePlaybackConfig } from "./types/desktop-pet";
-import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AppVersionInfo, CallSignal, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Nudge, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, SimulationMeta, TrayAttentionItem, UpdateCheckResult } from "./types/lanchat";
+import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AppVersionInfo, CallSignal, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Nudge, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, SimulationMeta, TrayAttentionItem, UpdateCheckResult, UpdateGithubTokenInfo } from "./types/lanchat";
 import { DDZ_TURN_TIMEOUT_MS, canBeat, dealHands, evaluatePlay, isTurnTimedOut, playLabel, sortCards, turnRemainingSeconds, type DdzCard, type DdzPhase, type DdzPlay } from "./games/doudizhu";
 import { GOMOKU_TURN_TIMEOUT_MS, chooseAutoGomokuPoint, cloneGomokuBoard, createGomokuBoard, gomokuStoneLabel, gomokuTurnRemainingSeconds, isGomokuTurnTimedOut, placeGomokuStone, type GomokuBoard, type GomokuPhase, type GomokuPoint, type GomokuStone } from "./games/gomoku";
 import { cloneXiangqiBoard, createXiangqiBoard, createXiangqiDisplayGrid, isLegalXiangqiMove, moveXiangqiPiece, otherXiangqiSide, resignXiangqiSide, undoXiangqiMove, xiangqiPieceLabel, xiangqiSideLabel, type XiangqiBoard, type XiangqiPhase, type XiangqiPiece, type XiangqiPoint, type XiangqiSide } from "./games/xiangqi";
@@ -57,6 +58,7 @@ import { createGameRoomShell, gameDefinitionOf, gameRegistry, type GameRoomShell
 import { alertTemperature, alertTruthScore, senderCredibility } from "./utils/alertCredibility";
 import { detectMentionKind, trayConversationTitle, type MentionKind } from "./utils/messageMentions";
 import { peerDisplayName, peerOriginalName, sameDeviceId, sortPeersForDisplay } from "./utils/peerPresentation";
+import { DEFAULT_CAMERA_MONITOR_SETTINGS, type CameraFaceAlert, type CameraFrameSample, type CameraMonitorSettings, type CameraMonitorStatus, type FaceMonitorPolicy, type FaceMonitorRuntimeStatus, type FacePersonPolicy } from "./types/face-monitor";
 type UiThemeKey = "theme-dingtalk" | "theme-work" | "theme-lan" | "theme-light";
 type MainSection = "chat" | "devices" | "games" | "alerts" | "settings";
 type RecipientPickerMode = "gameInvite" | "privateChannelCreate" | "privateChannelInvite";
@@ -341,8 +343,37 @@ const platformInfo = ref<PlatformInfo | null>(null);
 const nicknameDraft = ref("");
 const portDraft = ref(18145);
 const avatarDraft = ref("");
+const faceMonitorSettings = ref<CameraMonitorSettings>({ ...DEFAULT_CAMERA_MONITOR_SETTINGS });
+const faceMonitorMediaStatus = ref<CameraMonitorStatus>(cameraMediaCoordinator.getStatus());
+const faceMonitorRuntimeStatus = ref<FaceMonitorRuntimeStatus | null>(null);
+const faceMonitorPolicy = ref<FaceMonitorPolicy | null>(null);
+const facePeople = ref<FacePersonPolicy[]>([]);
+const cameraFaceAlerts = ref<CameraFaceAlert[]>([]);
+const cameraFacePreviewUrls = ref<Record<string, string>>({});
+const activeCameraFaceAlertId = ref("");
+const cameraFaceAlertPreviewOpen = ref(false);
+const CAMERA_ALERT_POPUP_STORAGE_KEY = "lanchat.camera-alert-popup.v1";
+function readSavedCameraAlertPopup(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(CAMERA_ALERT_POPUP_STORAGE_KEY) === "1";
+}
+const cameraAlertPopupEnabled = ref(readSavedCameraAlertPopup());
+function updateCameraAlertPopup(enabled: boolean) {
+  cameraAlertPopupEnabled.value = enabled;
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(CAMERA_ALERT_POPUP_STORAGE_KEY, enabled ? "1" : "0");
+  }
+}
+const cameraLivePreviewEnabled = ref(false);
+const cameraLivePreviewVideo = ref<HTMLVideoElement | null>(null);
+const cameraDeviceOptions = ref<{ label: string; value: string }[]>([]);
+const faceMonitorSaving = ref(false);
+let unlistenFaceMonitorMediaStatus: (() => void) | null = null;
+let unlistenFaceMonitorFrames: (() => void) | null = null;
+let faceMonitorStatusTimer: number | null = null;
 const profileAvatarInput = ref<HTMLInputElement | null>(null);
 const adminNotificationImageInput = ref<HTMLInputElement | null>(null);
+const adminNotificationHistoryOpen = ref(false);
 const AVATAR_MAX_BYTES = 5 * 1024 * 1024;
 const canRepairWindowsNetwork = computed(() => platformInfo.value?.windowsFirewallRepairSupported ?? true);
 const networkRepairDescription = computed(() => {
@@ -397,10 +428,43 @@ const deviceSearch = ref("");
 const selectedPeerId = ref("");
 const peerNoteDraft = ref("");
 const previewMediaPaths = ref<Record<string, string>>({});
+const avatarBlobUrls = ref<Record<string, string>>({});
+const avatarBlobUrlOrder = new Map<string, number>();
+const avatarBlobUrlPending = new Set<string>();
+const imagePreviewBlobUrls = new Map<string, string>();
 const previewMediaCacheInfo = ref<PreviewMediaCacheInfo | null>(null);
 const previewMediaCacheClearing = ref(false);
 const imagePreviewMessage = ref<Message | null>(null);
 const imagePreviewScale = ref(1);
+const VISIBLE_MESSAGE_WINDOW = 60;
+const visibleMessageEnd = ref(0);
+const hasMoreEarlierMessages = ref(true);
+const messagePaneFollowingLatest = ref(true);
+const memoryDiagnostic = ref({
+  jsHeapBytes: null as number | null,
+  jsHeapLimitBytes: null as number | null,
+  cachedConversations: 0,
+  cachedMessages: 0,
+  visibleMessages: 0,
+  avatarBytes: 0,
+  previewCacheBytes: 0,
+});
+const memoryDiagnosticConversationRows = computed(() => Object.entries(messagesByConversation.value)
+  .map(([conversationId, items]) => ({
+    conversationId,
+    title: conversations.value.find((conversation) => conversation.id === conversationId)?.title ?? conversationId,
+    count: items.length,
+  }))
+  .sort((left, right) => right.count - left.count)
+  .slice(0, 5));
+const memoryDiagnosticAvatarRows = computed(() => [
+  ...(profile.value ? [{ name: profile.value.nickname || "本机", avatar: profile.value.avatar }] : []),
+  ...peers.value.map((peer) => ({ name: peerDisplayName(peer), avatar: peer.avatar })),
+]
+  .map((entry) => ({ name: entry.name, bytes: base64ByteLength(entry.avatar) }))
+  .filter((entry) => entry.bytes > 0)
+  .sort((left, right) => right.bytes - left.bytes)
+  .slice(0, 5));
 const operationNotice = ref("");
 let operationNoticeTimer: ReturnType<typeof setTimeout> | undefined;
 let desktopPetRuntimeRevision = 0;
@@ -419,6 +483,22 @@ const adminAlertModeDraft = ref<PetAlertMode>("normal");
 const adminAlertPushPolicyTargetId = ref<string | null>("*");
 const adminAlertPushPolicyDraft = ref(50);
 const adminAlertPushPolicyLockAfterIssue = ref(false);
+const faceAdminPersonId = ref("");
+const faceAdminPersonName = ref("");
+const faceAdminPhotoPath = ref<string | null>(null);
+const faceAdminTargetDeviceId = ref("*");
+const faceAdminMinConfidence = ref(80);
+const faceAdminConsecutiveHits = ref(2);
+const faceAdminCooldownSeconds = ref(60);
+const faceAdminIssuing = ref(false);
+const localFacePersonName = ref("");
+const localFacePhotoPath = ref<string | null>(null);
+const localFacePhotoPreview = ref("");
+const localFacePhotoInput = ref<HTMLInputElement | null>(null);
+const localFaceCaptureOpen = ref(false);
+const localFaceCaptureVideo = ref<HTMLVideoElement | null>(null);
+let localFaceCaptureStream: MediaStream | null = null;
+const facePersonDetail = ref<FacePersonPolicy | null>(null);
 type CallMedia = "audio" | "video";
 type CallSession = { callId: string; peerDeviceId: string; peerNickname: string; media: CallMedia; status: "incoming" | "outgoing" | "connected" | "failed"; error?: string };
 type DetachedCallWindow = {
@@ -427,6 +507,7 @@ type DetachedCallWindow = {
   status: HTMLElement;
   remoteVideo: HTMLVideoElement | null;
   localVideo: HTMLVideoElement | null;
+  remoteAudio: HTMLAudioElement | null;
 };
 const callSession = ref<CallSession | null>(null);
 const callPanelExpanded = ref(false);
@@ -438,6 +519,7 @@ const callPanelStyle = computed(() => callPanelPosition.value
 const incomingCallSignal = ref<CallSignal | null>(null);
 const localCallVideo = ref<HTMLVideoElement | null>(null);
 const remoteCallVideo = ref<HTMLVideoElement | null>(null);
+const remoteCallAudio = ref<HTMLAudioElement | null>(null);
 const callMuted = ref(false);
 const callCameraOn = ref(true);
 const callActionInProgress = ref(false);
@@ -474,10 +556,18 @@ const appVersionInfo = ref<AppVersionInfo | null>(null);
 const updateInfo = ref<UpdateCheckResult | null>(readSavedUpdateInfo());
 const updateChecking = ref(false);
 const updateError = ref("");
+const updateGithubTokenInfo = ref<UpdateGithubTokenInfo | null>(null);
+const updateGithubTokenDraft = ref("");
+const updateGithubTokenSaving = ref(false);
 const updateReminderOpen = ref(false);
 const nativeUpdateInstalling = ref(false);
 const nativeUpdateProgress = ref({ downloaded: 0, total: 0, phase: "idle" as "idle" | "downloading" | "installing" });
 const forceUpdateRequired = computed(() => updateInfo.value?.forceRequired === true);
+const visibleMessages = computed(() => {
+  const end = visibleMessageEnd.value || activeMessages.value.length;
+  return activeMessages.value.slice(Math.max(0, end - VISIBLE_MESSAGE_WINDOW), end);
+});
+const hasLaterMessages = computed(() => (visibleMessageEnd.value || activeMessages.value.length) < activeMessages.value.length);
 const nativeUpdateProgressPercent = computed(() => {
   if (nativeUpdateProgress.value.total <= 0) return nativeUpdateInstalling.value ? 0 : 100;
   return Math.min(100, Math.round((nativeUpdateProgress.value.downloaded / nativeUpdateProgress.value.total) * 100));
@@ -499,13 +589,31 @@ const visibleAdminAnnouncement = computed(() => {
   if (!deviceId) return null;
   return adminNotifications.value.find((item) => item.target_device_id === deviceId && item.display_mode === "dismissible" && !dismissedAdminNotificationIds.value.includes(item.notification_id)) ?? null;
 });
+const pendingAdminNotificationCount = computed(() => {
+  const deviceId = profile.value?.device_id;
+  if (!deviceId) return 0;
+  return adminNotifications.value.filter((item) => {
+    if (item.target_device_id !== deviceId) return false;
+    if (item.display_mode === "requires_confirmation") {
+      return ["pending", "rejected", "expired_locked"].includes(item.status);
+    }
+    return item.display_mode === "dismissible" && !dismissedAdminNotificationIds.value.includes(item.notification_id);
+  }).length;
+});
+const recipientAdminNotifications = computed(() => {
+  const deviceId = profile.value?.device_id;
+  if (!deviceId) return [];
+  return adminNotifications.value
+    .filter((item) => item.target_device_id === deviceId)
+    .sort((left, right) => right.created_at - left.created_at);
+});
 const adminNotificationTargetOptions = computed(() => onlinePeers.value.map((peer) => ({
   label: `${peerDisplayName(peer)} · ${peer.address} · ${peer.device_id}`,
   value: peer.device_id,
 })));
 const UPDATE_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
 const activeSection = ref<MainSection>("chat");
-const settingsCategory = ref<"basic" | "pet" | "admin">("basic");
+const settingsCategory = ref<"basic" | "camera" | "pet" | "admin">("basic");
 const listPaneCollapsed = ref(false);
 type ResizePaneKind = "list" | "group";
 type PaneResizeState = { kind: ResizePaneKind; startX: number; startWidth: number };
@@ -1304,6 +1412,59 @@ function scheduleAutomaticUpdateChecks() {
     void checkUpdates(false);
   }, UPDATE_CHECK_INTERVAL_MS);
 }
+function isMessagePaneAtBottom() {
+  const pane = messagePane.value;
+  if (!pane) return true;
+  return pane.scrollHeight - pane.scrollTop - pane.clientHeight < 32;
+}
+
+async function saveUpdateGithubToken() {
+  const token = updateGithubTokenDraft.value.trim();
+  if (!token) return;
+  updateGithubTokenSaving.value = true;
+  try {
+    updateGithubTokenInfo.value = await api.saveUpdateGithubToken(token);
+    updateGithubTokenDraft.value = "";
+    updateError.value = "";
+  } catch (err) {
+    updateError.value = `保存 GitHub Token 失败：${stringifyError(err)}`;
+  } finally {
+    updateGithubTokenSaving.value = false;
+  }
+}
+
+async function clearUpdateGithubToken() {
+  updateGithubTokenSaving.value = true;
+  try {
+    updateGithubTokenInfo.value = await api.clearUpdateGithubToken();
+    updateError.value = "";
+  } catch (err) {
+    updateError.value = `清除 GitHub Token 失败：${stringifyError(err)}`;
+  } finally {
+    updateGithubTokenSaving.value = false;
+  }
+}
+async function loadEarlierMessages() {
+  if (!hasMoreEarlierMessages.value) return;
+  const loaded = await store.loadEarlierMessages(activeConversationId.value);
+  if (loaded === 0) {
+    hasMoreEarlierMessages.value = false;
+    return;
+  }
+  visibleMessageEnd.value = Math.min(activeMessages.value.length, visibleMessageEnd.value + loaded);
+  await nextTick();
+  if (messagePane.value) messagePane.value.scrollTop = messagePane.value.scrollHeight;
+}
+async function jumpToLatestMessages() {
+  visibleMessageEnd.value = activeMessages.value.length;
+  await scrollActiveChatToBottom();
+}
+function handleMessagePaneScroll() {
+  messagePaneFollowingLatest.value = isMessagePaneAtBottom();
+  if (messagePane.value?.scrollTop !== undefined && messagePane.value.scrollTop < 24) {
+    void loadEarlierMessages();
+  }
+}
 async function installNativeUpdate(force = false) {
   if (nativeUpdateInstalling.value) return;
   nativeUpdateInstalling.value = true;
@@ -1370,9 +1531,11 @@ async function openReleasePage() {
 onMounted(async () => {
   platformInfo.value = await api.getPlatformInfo().catch(() => null);
   appVersionInfo.value = await api.getAppVersionInfo().catch(() => null);
+  updateGithubTokenInfo.value = await api.getUpdateGithubTokenInfo().catch(() => null);
   await store.initialize();
   await restoreSavedSuperAdminSession();
   previewMediaCacheInfo.value = await api.getPreviewMediaCacheInfo().catch(() => null);
+  await refreshMemoryDiagnostic();
   await desktopPetStore.initialize();
   if (desktopPetSettings.value) {
     petAlertEnabled.value = desktopPetSettings.value.enabled;
@@ -1382,6 +1545,7 @@ onMounted(async () => {
   nicknameDraft.value = profile.value?.nickname ?? "";
   portDraft.value = profile.value?.listen_port ?? 18145;
   avatarDraft.value = profile.value?.avatar ?? "";
+  await initializeFaceMonitor();
   scheduleAutomaticUpdateChecks();
   await api.setDesktopPetEnabled(petAlertEnabled.value).catch(() => undefined);
   await registerDesktopPetSendHotkey();
@@ -1418,6 +1582,10 @@ onMounted(async () => {
     unlistenDesktopPetRegistry = await listen<DesktopPetRegistrySnapshot>("desktop_pet_registry_changed", (event) => {
       desktopPetStore.applySnapshot(event.payload);
     });
+    await listen("face_person_policy_received", () => { void refreshFaceMonitorRules(); });
+    await listen("face_monitor_policy_received", () => { void refreshFaceMonitorRules(); });
+    await listen<CameraFaceAlert>("camera_face_alert_received", (event) => { upsertCameraFaceAlert(event.payload); });
+    await listen<CameraFaceAlert>("camera_face_alert_feedback_received", (event) => { upsertCameraFaceAlert(event.payload); });
   } catch {
     // 浏览器预览时没有 Tauri 事件通道。
   }
@@ -1431,7 +1599,26 @@ onMounted(async () => {
   }
 });
 onUnmounted(() => {
+  store.stopRuntime();
+  Object.values(avatarBlobUrls.value).forEach((url) => URL.revokeObjectURL(url));
+  imagePreviewBlobUrls.forEach((url) => URL.revokeObjectURL(url));
+  imagePreviewBlobUrls.clear();
+  Object.values(cameraFacePreviewUrls.value).forEach((url) => URL.revokeObjectURL(url));
+  cameraFacePreviewUrls.value = {};
   clearCallSession();
+  unlistenFaceMonitorMediaStatus?.();
+  unlistenFaceMonitorMediaStatus = null;
+  unlistenFaceMonitorFrames?.();
+  unlistenFaceMonitorFrames = null;
+  if (cameraLivePreviewVideo.value) cameraLivePreviewVideo.value.srcObject = null;
+  cameraMediaCoordinator.releasePreview();
+  cameraMediaCoordinator.dispose();
+  if (localFacePhotoPreview.value) URL.revokeObjectURL(localFacePhotoPreview.value);
+  closeLocalFaceCapture();
+  if (faceMonitorStatusTimer !== null && typeof window !== "undefined") {
+    window.clearTimeout(faceMonitorStatusTimer);
+    faceMonitorStatusTimer = null;
+  }
   stopCallPanelDrag();
   stopPaneResize();
   unlistenTrayOpenTarget?.();
@@ -1492,12 +1679,15 @@ watch([peers, profile], () => {
   if (changed) alertRecords.value = next;
 }, { deep: true });
 watch(activeMessages, (messages) => {
-  void scrollActiveChatToBottom();
-  for (const message of messages) {
-    void cacheImagePreview(message);
+  if (messagePaneFollowingLatest.value) {
+    visibleMessageEnd.value = messages.length;
+    void scrollActiveChatToBottom();
   }
 });
 watch(() => activeConversationId.value, () => {
+  hasMoreEarlierMessages.value = true;
+  messagePaneFollowingLatest.value = true;
+  visibleMessageEnd.value = activeMessages.value.length;
   void scrollActiveChatToBottom();
 });
 watch(activeSection, (section) => {
@@ -3736,6 +3926,15 @@ function callSignalFrame(callId: string, kind: CallSignal["kind"], media: CallMe
     created_at: Date.now(),
   } satisfies CallSignal;
 }
+async function ensureCallMediaPlaying(element: HTMLMediaElement | null, role: "远端音频" | "远端视频") {
+  if (!element) return;
+  try {
+    await element.play();
+  } catch (error) {
+    // 某些 WebView 会在流切换时暂时拒绝自动播放。下一次用户操作或流更新会再次尝试。
+    console.debug(`${role}等待用户播放许可`, error);
+  }
+}
 async function attachCallStreams() {
   await nextTick();
   if (localCallVideo.value && callLocalStream) {
@@ -3743,6 +3942,11 @@ async function attachCallStreams() {
   }
   if (remoteCallVideo.value && callRemoteStream) {
     remoteCallVideo.value.srcObject = callRemoteStream;
+    void ensureCallMediaPlaying(remoteCallVideo.value, "远端视频");
+  }
+  if (remoteCallAudio.value && callRemoteStream) {
+    remoteCallAudio.value.srcObject = callRemoteStream;
+    void ensureCallMediaPlaying(remoteCallAudio.value, "远端音频");
   }
   syncDetachedCallWindow();
 }
@@ -3771,7 +3975,14 @@ function syncDetachedCallWindow() {
   current.title.textContent = `${session.media === "video" ? "视频" : "语音"}通话 · ${session.peerNickname}`;
   current.status.textContent = callStatusLabel(session);
   if (current.localVideo && callLocalStream) current.localVideo.srcObject = callLocalStream;
-  if (current.remoteVideo && callRemoteStream) current.remoteVideo.srcObject = callRemoteStream;
+  if (current.remoteVideo && callRemoteStream) {
+    current.remoteVideo.srcObject = callRemoteStream;
+    void ensureCallMediaPlaying(current.remoteVideo, "远端视频");
+  }
+  if (current.remoteAudio && callRemoteStream) {
+    current.remoteAudio.srcObject = callRemoteStream;
+    void ensureCallMediaPlaying(current.remoteAudio, "远端音频");
+  }
 }
 async function openDetachedCallWindow() {
   const session = callSession.value;
@@ -3809,11 +4020,18 @@ async function openDetachedCallWindow() {
     shell.append(header);
     let remoteVideo: HTMLVideoElement | null = null;
     let localVideo: HTMLVideoElement | null = null;
+    let remoteAudio: HTMLAudioElement | null = null;
+    remoteAudio = doc.createElement("audio");
+    remoteAudio.autoplay = true;
+    remoteAudio.controls = false;
+    remoteAudio.style.cssText = "position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;";
+    shell.append(remoteAudio);
     if (session.media === "video") {
       const videoStage = doc.createElement("section");
       videoStage.style.cssText = "position:relative;flex:1;min-height:0;border-radius:8px;overflow:hidden;background:#1d2735;";
       remoteVideo = doc.createElement("video");
       remoteVideo.autoplay = true;
+      remoteVideo.muted = true;
       remoteVideo.playsInline = true;
       remoteVideo.style.cssText = "display:block;width:100%;height:100%;background:#1d2735;object-fit:cover;";
       localVideo = doc.createElement("video");
@@ -3844,7 +4062,7 @@ async function openDetachedCallWindow() {
     controls.append(hangup);
     shell.append(controls);
     doc.body.append(shell);
-    detachedCallWindow = { window: popup, title, status, remoteVideo, localVideo };
+    detachedCallWindow = { window: popup, title, status, remoteVideo, localVideo, remoteAudio };
     popup.addEventListener("pagehide", () => {
       if (detachedCallWindow?.window === popup) detachedCallWindow = null;
     }, { once: true });
@@ -3875,12 +4093,14 @@ function releaseCallMedia() {
   callDisconnectTimer = undefined;
   callPeerConnection?.close();
   callPeerConnection = null;
-  callLocalStream?.getTracks().forEach((track) => track.stop());
+  if (callSession.value) cameraMediaCoordinator.releaseCall(callSession.value.media);
   callLocalStream = null;
+  callRemoteStream?.getTracks().forEach((track) => track.stop());
   callRemoteStream = null;
   queuedCallCandidates = [];
   if (localCallVideo.value) localCallVideo.value.srcObject = null;
   if (remoteCallVideo.value) remoteCallVideo.value.srcObject = null;
+  if (remoteCallAudio.value) remoteCallAudio.value.srcObject = null;
   closeDetachedCallWindow();
 }
 function createCallPeerConnection(session: CallSession) {
@@ -3919,9 +4139,8 @@ function createCallPeerConnection(session: CallSession) {
   return peerConnection;
 }
 async function prepareLocalCallMedia(media: CallMedia) {
-  if (!navigator.mediaDevices?.getUserMedia) throw new Error("当前环境不支持语音或视频通话");
   try {
-    callLocalStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: media === "video" });
+    callLocalStream = await cameraMediaCoordinator.acquireForCall(media);
   } catch (error) {
     throw new Error(formatCallMediaPermissionError(error, media));
   }
@@ -4141,23 +4360,26 @@ function stopPetAlertVisuals() {
   nowTick.value = Date.now();
   void syncDesktopPetRuntime();
 }
+const facePetAlert = ref<{ alertId: string; personName: string; confidence: number; sourceNickname: string; sourceAddress: string | null; createdAt: number; until: number } | null>(null);
+const activeFacePetAlert = computed(() => (facePetAlert.value && facePetAlert.value.until > nowTick.value) ? facePetAlert.value : null);
 async function syncDesktopPetRuntime() {
   const alert = activePetAlert.value;
+  const face = !alert ? activeFacePetAlert.value : null;
   const runtimeState: DesktopPetRuntimeState = {
     revision: ++desktopPetRuntimeRevision,
     enabled: petAlertEnabled.value,
     pending_count: pendingAlertCount.value,
     temperature: Number(petAlertProbability.value),
-    latest_alert_id: alert?.alertId ?? null,
-    latest_sender: alert?.senderNickname ?? null,
-    latest_sender_address: alert?.senderAddress ?? null,
-    latest_content: alert ? `${alert.content}${simulationLabel(alert.simulation) ? ` · ${simulationLabel(alert.simulation)}` : ""}` : null,
-    latest_created_at: alert?.createdAt ?? null,
+    latest_alert_id: alert?.alertId ?? face?.alertId ?? null,
+    latest_sender: alert?.senderNickname ?? (face ? "【人脸识别】" : null),
+    latest_sender_address: alert?.senderAddress ?? face?.sourceAddress ?? null,
+    latest_content: alert ? `${alert.content}${simulationLabel(alert.simulation) ? ` · ${simulationLabel(alert.simulation)}` : ""}` : (face ? `检测到 ${face.personName} · 置信度 ${face.confidence}%` : null),
+    latest_created_at: alert?.createdAt ?? face?.createdAt ?? null,
     incoming_call_id: petAlertEnabled.value && callSession.value?.status === "incoming" ? callSession.value.callId : null,
     incoming_call_sender: petAlertEnabled.value && callSession.value?.status === "incoming" ? callSession.value.peerNickname : null,
     incoming_call_media: petAlertEnabled.value && callSession.value?.status === "incoming" ? callSession.value.media : null,
     feedbackable: !!latestPendingAlert.value,
-    flashing: !!alert,
+    flashing: !!alert || !!face,
     disco: discoModeActive.value && !!alert,
     theme_accent: currentTheme.value.accent,
     random_move_enabled: desktopPetSettings.value?.randomMoveEnabled ?? true,
@@ -4309,6 +4531,10 @@ function dismissAdminAnnouncement(notification: AdminNotification) {
   dismissedAdminNotificationIds.value = [...dismissedAdminNotificationIds.value, notification.notification_id].slice(-200);
   window.localStorage.setItem("lanchat-dismissed-admin-notifications", JSON.stringify(dismissedAdminNotificationIds.value));
 }
+async function openAdminNotificationHistory() {
+  await store.refreshAdminNotifications();
+  adminNotificationHistoryOpen.value = true;
+}
 async function decideAdminNotification(notification: AdminNotification, decision: "approved" | "rejected" | "revoked") {
   try { await store.decideAdminNotification(notification.notification_id, decision); } catch (err) { store.error = String(err); }
 }
@@ -4318,6 +4544,22 @@ function adminNotificationTargetDetail(notification: AdminNotification) {
 function openAdminNotificationDetail(notification: AdminNotification) {
   adminNotificationDetail.value = notification;
   adminNotificationDetailOpen.value = true;
+}
+function isAdminNotificationIssuer(notification: AdminNotification) {
+  return notification.issued_by_device_id === profile.value?.device_id;
+}
+function isAdminNotificationRecipient(notification: AdminNotification) {
+  return notification.target_device_id === profile.value?.device_id;
+}
+async function submitAdminNotificationFromDetail() {
+  if (!adminNotificationDetail.value) return;
+  await submitBlockingAdminNotification(adminNotificationDetail.value);
+  adminNotificationDetailOpen.value = false;
+}
+function dismissAdminNotificationFromDetail() {
+  if (!adminNotificationDetail.value) return;
+  dismissAdminAnnouncement(adminNotificationDetail.value);
+  adminNotificationDetailOpen.value = false;
 }
 async function decideAdminNotificationFromDetail(decision: "approved" | "rejected" | "revoked") {
   if (!adminNotificationDetail.value) return;
@@ -4813,8 +5055,12 @@ function avatarLabel(value: string | undefined | null, fallback?: string) {
 function avatarImage(value: string | undefined | null) {
   const trimmed = value?.trim() ?? "";
   if (!trimmed) return undefined;
-  if (trimmed.startsWith("data:image/") || trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://") || trimmed.startsWith("blob:")) {
     return trimmed;
+  }
+  if (trimmed.startsWith("data:image/")) {
+    void cacheAvatarBlobUrl(trimmed);
+    return avatarBlobUrls.value[trimmed] ?? undefined;
   }
   const payload = trimmed.includes(",") ? trimmed.split(",").pop()?.trim() ?? "" : trimmed;
   if (!payload || !/^[A-Za-z0-9+/=_-]+$/.test(payload)) return undefined;
@@ -4825,7 +5071,67 @@ function avatarImage(value: string | undefined | null) {
       : payload.startsWith("UklGR")
         ? "image/webp"
         : "image/png";
-  return `data:${mime};base64,${payload}`;
+  const dataUrl = `data:${mime};base64,${payload}`;
+  void cacheAvatarBlobUrl(dataUrl);
+  return avatarBlobUrls.value[dataUrl] ?? undefined;
+}
+
+async function cacheAvatarBlobUrl(dataUrl: string) {
+  if (avatarBlobUrls.value[dataUrl] || avatarBlobUrlPending.has(dataUrl)) return;
+  avatarBlobUrlPending.add(dataUrl);
+  try {
+    const response = await fetch(dataUrl);
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const next = { ...avatarBlobUrls.value, [dataUrl]: url };
+    avatarBlobUrlOrder.set(dataUrl, Date.now());
+    while (Object.keys(next).length > 80) {
+      const oldest = [...avatarBlobUrlOrder.entries()].sort((a, b) => a[1] - b[1])[0]?.[0];
+      if (!oldest) break;
+      const oldUrl = next[oldest];
+      if (oldUrl) URL.revokeObjectURL(oldUrl);
+      delete next[oldest];
+      avatarBlobUrlOrder.delete(oldest);
+    }
+    avatarBlobUrls.value = next;
+  } catch {
+    // 无法转成 Blob URL 时回退为首字母头像，避免重复解码大 Base64。
+  } finally {
+    avatarBlobUrlPending.delete(dataUrl);
+  }
+}
+
+async function compressAvatarImage(file: File) {
+  const sourceUrl = URL.createObjectURL(file);
+  try {
+    const source = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("无法解码头像图片"));
+      image.src = sourceUrl;
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = 256;
+    canvas.height = 256;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("当前环境不支持头像压缩");
+    const scale = Math.max(256 / source.naturalWidth, 256 / source.naturalHeight);
+    const width = source.naturalWidth * scale;
+    const height = source.naturalHeight * scale;
+    context.drawImage(source, (256 - width) / 2, (256 - height) / 2, width, height);
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((result) => result ? resolve(result) : reject(new Error("头像压缩失败")), "image/webp", 0.82);
+    });
+    if (blob.size > 160 * 1024) throw new Error("头像压缩后仍然过大，请换一张更简单的图片");
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => typeof reader.result === "string" ? resolve(reader.result) : reject(new Error("读取压缩头像失败"));
+      reader.onerror = () => reject(new Error("读取压缩头像失败"));
+      reader.readAsDataURL(blob);
+    });
+  } finally {
+    URL.revokeObjectURL(sourceUrl);
+  }
 }
 function peerAvatar(deviceId: string | undefined | null) {
   if (!deviceId) return undefined;
@@ -4846,7 +5152,7 @@ function clearProfileAvatar() {
   avatarDraft.value = "";
   if (profileAvatarInput.value) profileAvatarInput.value.value = "";
 }
-function handleProfileAvatarSelected(event: Event) {
+async function handleProfileAvatarSelected(event: Event) {
   const input = event.target as HTMLInputElement | null;
   const file = input?.files?.[0];
   if (!file) return;
@@ -4860,20 +5166,38 @@ function handleProfileAvatarSelected(event: Event) {
     input.value = "";
     return;
   }
-  const reader = new FileReader();
-  reader.onload = () => {
-    avatarDraft.value = typeof reader.result === "string" ? reader.result : "";
-  };
-  reader.onerror = () => {
-    store.error = "读取头像图片失败";
-  };
-  reader.readAsDataURL(file);
+  try {
+    avatarDraft.value = await compressAvatarImage(file);
+  } catch (err) {
+    store.error = stringifyError(err);
+  } finally {
+    input.value = "";
+  }
 }
 function formatFileSize(size?: number | null) {
   if (!size) return "0 B";
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+function base64ByteLength(value: string | null | undefined) {
+  const payload = value?.split(",").pop()?.replace(/\s/g, "") ?? "";
+  if (!payload) return 0;
+  return Math.max(0, Math.floor((payload.length * 3) / 4) - (payload.endsWith("==") ? 2 : payload.endsWith("=") ? 1 : 0));
+}
+async function refreshMemoryDiagnostic() {
+  previewMediaCacheInfo.value = await api.getPreviewMediaCacheInfo().catch(() => previewMediaCacheInfo.value);
+  const performanceWithMemory = performance as Performance & { memory?: { usedJSHeapSize: number; jsHeapSizeLimit: number } };
+  const messages = Object.values(messagesByConversation.value);
+  memoryDiagnostic.value = {
+    jsHeapBytes: performanceWithMemory.memory?.usedJSHeapSize ?? null,
+    jsHeapLimitBytes: performanceWithMemory.memory?.jsHeapSizeLimit ?? null,
+    cachedConversations: messages.length,
+    cachedMessages: messages.reduce((sum, items) => sum + items.length, 0),
+    visibleMessages: visibleMessages.value.length,
+    avatarBytes: [profile.value?.avatar, ...peers.value.map((peer) => peer.avatar)].reduce((sum, avatar) => sum + base64ByteLength(avatar), 0),
+    previewCacheBytes: previewMediaCacheInfo.value?.totalBytes ?? 0,
+  };
 }
 function fileExtension(name?: string) {
   return name?.split(".").pop()?.toLowerCase() ?? "";
@@ -4885,7 +5209,16 @@ function isImageFile(message: Message) {
 }
 function imagePreviewSource(message: Message) {
   const cachedPath = previewMediaPaths.value[message.id];
-  return cachedPath ? convertFileSrc(cachedPath) : message.file_meta?.url ?? "";
+  if (!cachedPath) return message.file_meta?.url ?? "";
+  const cachedUrl = imagePreviewBlobUrls.get(message.id);
+  if (cachedUrl) return cachedUrl;
+  const url = convertFileSrc(cachedPath);
+  imagePreviewBlobUrls.set(message.id, url);
+  return url;
+}
+function imageThumbnailSource(message: Message) {
+  const url = message.file_meta?.url ?? "";
+  return url ? `${url}${url.includes("?") ? "&" : "?"}thumbnail=1` : "";
 }
 async function openImagePreview(message: Message) {
   imagePreviewScale.value = 1;
@@ -4907,6 +5240,7 @@ async function cacheImagePreview(message: Message) {
   try {
     const path = await api.cachePreviewMedia(message.id, message.file_meta.url, message.file_meta.name);
     previewMediaPaths.value = { ...previewMediaPaths.value, [message.id]: path };
+    previewMediaCacheInfo.value = await api.getPreviewMediaCacheInfo().catch(() => previewMediaCacheInfo.value);
   } catch {
     // 预览缓存失败时继续使用发送方的临时文件服务地址。
   }
@@ -4915,6 +5249,8 @@ async function clearImagePreviewCache() {
   previewMediaCacheClearing.value = true;
   try {
     previewMediaCacheInfo.value = await api.clearPreviewMediaCache();
+    imagePreviewBlobUrls.forEach((url) => URL.revokeObjectURL(url));
+    imagePreviewBlobUrls.clear();
     previewMediaPaths.value = {};
   } catch (err) {
     store.error = stringifyError(err);
@@ -4941,6 +5277,334 @@ async function requestCallDevicePermission(media: CallMedia) {
     showOperationSuccess(media === "video" ? "麦克风和摄像头权限已授权" : "麦克风权限已授权");
   } catch (error) {
     store.error = formatCallMediaPermissionError(error, media);
+  }
+}
+
+const FACE_MONITOR_SETTINGS_STORAGE_KEY = "lanchat.face-monitor-settings.v1";
+
+function readSavedFaceMonitorSettings(): CameraMonitorSettings {
+  if (typeof window === "undefined") return { ...DEFAULT_CAMERA_MONITOR_SETTINGS };
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(FACE_MONITOR_SETTINGS_STORAGE_KEY) ?? "{}");
+    return {
+      ...DEFAULT_CAMERA_MONITOR_SETTINGS,
+      enabled: Boolean(saved.enabled),
+      deviceId: typeof saved.deviceId === "string" ? saved.deviceId : null,
+      pauseDuringCall: Boolean(saved.pauseDuringCall),
+      sampleFps: Math.max(1, Math.min(5, Number(saved.sampleFps) || DEFAULT_CAMERA_MONITOR_SETTINGS.sampleFps)),
+    };
+  } catch {
+    return { ...DEFAULT_CAMERA_MONITOR_SETTINGS };
+  }
+}
+
+function saveFaceMonitorSettingsLocally(settings: CameraMonitorSettings) {
+  if (typeof window !== "undefined") {
+    window.localStorage.setItem(FACE_MONITOR_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  }
+}
+
+async function updateCameraLivePreview(enabled: boolean) {
+  cameraLivePreviewEnabled.value = enabled;
+  if (!enabled) {
+    if (cameraLivePreviewVideo.value) cameraLivePreviewVideo.value.srcObject = null;
+    cameraMediaCoordinator.releasePreview();
+    return;
+  }
+  try {
+    const stream = await cameraMediaCoordinator.acquirePreview();
+    await nextTick();
+    if (cameraLivePreviewVideo.value) {
+      cameraLivePreviewVideo.value.srcObject = stream;
+      await cameraLivePreviewVideo.value.play().catch(() => undefined);
+    }
+  } catch (error) {
+    cameraLivePreviewEnabled.value = false;
+    faceMonitorMediaStatus.value = { ...faceMonitorMediaStatus.value, lastError: formatCallMediaPermissionError(error, "video") };
+  }
+}
+
+async function refreshCameraDeviceOptions() {
+  if (!navigator.mediaDevices?.enumerateDevices) return;
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    cameraDeviceOptions.value = devices
+      .filter((device) => device.kind === "videoinput")
+      .map((device, index) => ({ label: device.label || `摄像头 ${index + 1}`, value: device.deviceId }));
+  } catch (error) {
+    faceMonitorMediaStatus.value = { ...faceMonitorMediaStatus.value, lastError: stringifyError(error) };
+  }
+}
+
+async function refreshFaceMonitorRuntimeStatus() {
+  faceMonitorRuntimeStatus.value = await api.getFaceMonitorStatus().catch(() => faceMonitorRuntimeStatus.value);
+  cameraMediaCoordinator.setSamplingAllowed(Boolean(faceMonitorRuntimeStatus.value?.modelReady));
+}
+
+async function refreshFaceMonitorRules() {
+  const [policy, people] = await Promise.all([
+    api.getEffectiveFaceMonitorPolicy().catch(() => null),
+    api.listFacePeople().catch(() => []),
+  ]);
+  faceMonitorPolicy.value = policy;
+  facePeople.value = people;
+}
+
+async function refreshCameraFaceAlerts() {
+  cameraFaceAlerts.value = await api.listCameraFaceAlerts().catch(() => cameraFaceAlerts.value);
+}
+
+function upsertCameraFaceAlert(record: CameraFaceAlert) {
+  cameraFaceAlerts.value = [record, ...cameraFaceAlerts.value.filter((item) => item.alertId !== record.alertId)]
+    .sort((left, right) => right.createdAt - left.createdAt)
+    .slice(0, 100);
+  // 识别告警独立驱动桌宠 30 秒，不进入狼来了队列，也不显示反馈按钮。
+  facePetAlert.value = {
+    alertId: record.alertId,
+    personName: record.personName,
+    confidence: record.confidence,
+    sourceNickname: record.sourceNickname,
+    sourceAddress: record.sourceAddress ?? null,
+    createdAt: record.createdAt,
+    until: Date.now() + 30_000,
+  };
+  nowTick.value = Date.now();
+  void syncDesktopPetRuntime();
+}
+
+// Camera evidence is an ephemeral local Blob URL. It is never saved to SQLite
+// and is deliberately absent from the LAN alert frame.
+function attachLocalCameraFacePreview(record: CameraFaceAlert, sample: CameraFrameSample) {
+  const previous = cameraFacePreviewUrls.value[record.alertId];
+  if (previous) URL.revokeObjectURL(previous);
+  const previewUrl = URL.createObjectURL(new Blob([sample.bytes], { type: sample.mimeType }));
+  const next = { ...cameraFacePreviewUrls.value, [record.alertId]: previewUrl };
+  const entries = Object.entries(next);
+  while (entries.length > 8) {
+    const [expiredId, expiredUrl] = entries.shift() ?? [];
+    if (expiredId && expiredUrl) {
+      URL.revokeObjectURL(expiredUrl);
+      delete next[expiredId];
+    }
+  }
+  cameraFacePreviewUrls.value = next;
+  activeCameraFaceAlertId.value = record.alertId;
+  // 告警弹窗默认关闭，仅在调试开关打开时自动弹出检测画面。
+  if (cameraAlertPopupEnabled.value) {
+    cameraFaceAlertPreviewOpen.value = true;
+  }
+  void notifyIncomingActivity();
+}
+
+const activeCameraFaceAlert = computed(() => cameraFaceAlerts.value.find((item) => item.alertId === activeCameraFaceAlertId.value) ?? null);
+const activeCameraFacePreviewUrl = computed(() => activeCameraFaceAlert.value ? cameraFacePreviewUrls.value[activeCameraFaceAlert.value.alertId] ?? "" : "");
+
+function closeCameraFaceAlertPreview() {
+  cameraFaceAlertPreviewOpen.value = false;
+}
+
+async function feedbackCameraFaceAlert(record: CameraFaceAlert, result: "real" | "false") {
+  try {
+    upsertCameraFaceAlert(await api.sendCameraFaceAlertFeedback(record.alertId, record.sourceDeviceId, result));
+  } catch (error) {
+    store.error = stringifyError(error);
+  }
+}
+
+function scheduleFaceMonitorRuntimeStatusRefresh() {
+  if (faceMonitorStatusTimer !== null || typeof window === "undefined") return;
+  faceMonitorStatusTimer = window.setTimeout(() => {
+    faceMonitorStatusTimer = null;
+    void refreshFaceMonitorRuntimeStatus();
+  }, 2000);
+}
+
+async function updateFaceMonitorSettings(next: Partial<CameraMonitorSettings>) {
+  const settings: CameraMonitorSettings = {
+    ...faceMonitorSettings.value,
+    ...next,
+    sampleFps: Math.max(1, Math.min(5, Math.round(next.sampleFps ?? faceMonitorSettings.value.sampleFps))),
+  };
+  faceMonitorSaving.value = true;
+  try {
+    await cameraMediaCoordinator.updateMonitorSettings(settings);
+    const saved = await api.updateFaceMonitorLocalSettings(settings);
+    faceMonitorSettings.value = { ...settings, ...saved };
+    saveFaceMonitorSettingsLocally(faceMonitorSettings.value);
+    await refreshCameraDeviceOptions();
+    await refreshFaceMonitorRuntimeStatus();
+  } catch (error) {
+    const message = formatCallMediaPermissionError(error, "video");
+    faceMonitorMediaStatus.value = { ...faceMonitorMediaStatus.value, lastError: message };
+    store.error = message;
+  } finally {
+    faceMonitorSaving.value = false;
+  }
+}
+
+async function initializeFaceMonitor() {
+  const saved = readSavedFaceMonitorSettings();
+  faceMonitorSettings.value = saved;
+  unlistenFaceMonitorMediaStatus = cameraMediaCoordinator.subscribeStatus((status) => {
+    faceMonitorMediaStatus.value = status;
+  });
+    unlistenFaceMonitorFrames = cameraMediaCoordinator.subscribeFrames(async (sample) => {
+      if (!faceMonitorRuntimeStatus.value?.modelReady) return;
+      const alert = await api.submitFaceMonitorFrame(sample).catch(() => null);
+      if (alert) {
+        upsertCameraFaceAlert(alert);
+        attachLocalCameraFacePreview(alert, sample);
+      }
+      scheduleFaceMonitorRuntimeStatusRefresh();
+    });
+  try {
+    await cameraMediaCoordinator.updateMonitorSettings(saved);
+    const normalized = await api.updateFaceMonitorLocalSettings(saved);
+    faceMonitorSettings.value = { ...saved, ...normalized };
+    saveFaceMonitorSettingsLocally(faceMonitorSettings.value);
+  } catch (error) {
+    faceMonitorMediaStatus.value = { ...cameraMediaCoordinator.getStatus(), lastError: formatCallMediaPermissionError(error, "video") };
+  }
+  await refreshCameraDeviceOptions();
+  await refreshFaceMonitorRuntimeStatus();
+  await refreshFaceMonitorRules();
+  await refreshCameraFaceAlerts();
+}
+
+const facePolicyTargetOptions = computed(() => [
+  { label: "所有在线设备", value: "*" },
+  ...peers.value.filter((peer) => peer.online).map((peer) => ({ label: `${peerDisplayName(peer)} · ${peer.address}`, value: peer.device_id })),
+]);
+
+async function chooseFaceReferencePhoto() {
+  const selected = await openFileDialog({ multiple: false, directory: false, filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "webp", "bmp"] }] });
+  const path = Array.isArray(selected) ? selected[0] : selected;
+  if (typeof path === "string" && path) faceAdminPhotoPath.value = path;
+}
+
+function triggerLocalFacePhotoSelect() {
+  localFacePhotoInput.value?.click();
+}
+
+function facePersonImageSource(person: FacePersonPolicy) {
+  const source = person.photoUrl?.trim();
+  if (!source) return "";
+  return /^https?:\/\//i.test(source) || source.startsWith("data:") ? source : convertFileSrc(source);
+}
+
+async function handleLocalFacePhotoSelected(event: Event) {
+  const file = (event.target as HTMLInputElement).files?.[0];
+  if (!file) return;
+  await saveLocalFacePhoto(file);
+  (event.target as HTMLInputElement).value = "";
+}
+
+async function saveLocalFacePhoto(file: Blob) {
+  if (file.size > 5 * 1024 * 1024) {
+    store.error = "参考照片不能超过 5MB";
+    return;
+  }
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    localFacePhotoPath.value = await api.saveFaceReferencePhoto(bytes);
+    if (localFacePhotoPreview.value) URL.revokeObjectURL(localFacePhotoPreview.value);
+    localFacePhotoPreview.value = URL.createObjectURL(file);
+  } catch (error) {
+    store.error = stringifyError(error);
+  }
+}
+
+async function openLocalFaceCapture() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    store.error = "当前环境不支持摄像头拍照";
+    return;
+  }
+  try {
+    localFaceCaptureStream = await cameraMediaCoordinator.acquirePreview();
+    localFaceCaptureOpen.value = true;
+    await nextTick();
+    if (localFaceCaptureVideo.value) {
+      localFaceCaptureVideo.value.srcObject = localFaceCaptureStream;
+      await localFaceCaptureVideo.value.play();
+    }
+  } catch (error) {
+    store.error = formatCallMediaPermissionError(error, "video");
+  }
+}
+
+function closeLocalFaceCapture() {
+  localFaceCaptureStream = null;
+  cameraMediaCoordinator.releasePreview();
+  if (localFaceCaptureVideo.value) localFaceCaptureVideo.value.srcObject = null;
+  localFaceCaptureOpen.value = false;
+}
+
+async function captureLocalFacePhoto() {
+  const video = localFaceCaptureVideo.value;
+  if (!video?.videoWidth || !video.videoHeight) return;
+  const canvas = document.createElement("canvas");
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext("2d")?.drawImage(video, 0, 0);
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.9));
+  if (blob) await saveLocalFacePhoto(blob);
+  closeLocalFaceCapture();
+}
+
+async function createLocalFacePerson() {
+  if (!localFacePersonName.value.trim() || !localFacePhotoPath.value) {
+    store.error = "请填写人员名称并上传或拍摄参考照片";
+    return;
+  }
+  try {
+    await api.createLocalFacePerson(crypto.randomUUID(), localFacePersonName.value.trim(), localFacePhotoPath.value);
+    localFacePersonName.value = "";
+    await refreshFaceMonitorRules();
+    showOperationSuccess("本机识别人员已添加");
+  } catch (error) {
+    store.error = stringifyError(error);
+  }
+}
+
+async function deleteLocalFacePerson(person: FacePersonPolicy) {
+  try {
+    await api.deleteFacePersonLocal(person.personId);
+    if (facePersonDetail.value?.personId === person.personId) facePersonDetail.value = null;
+    await refreshFaceMonitorRules();
+  } catch (error) {
+    store.error = stringifyError(error);
+  }
+}
+
+async function issueFacePersonPolicy() {
+  if (!faceAdminPersonName.value.trim() || !faceAdminPhotoPath.value) {
+    store.error = "请填写人员名称并选择参考照片";
+    return;
+  }
+  faceAdminIssuing.value = true;
+  try {
+    const personId = faceAdminPersonId.value.trim() || crypto.randomUUID();
+    await api.sendFacePersonPolicy(faceAdminTargetDeviceId.value, personId, faceAdminPersonName.value.trim(), faceAdminPhotoPath.value, null, true, "upsert", Date.now());
+    faceAdminPersonId.value = personId;
+    showOperationSuccess("指定人员照片已下发到在线目标设备");
+    await refreshFaceMonitorRules();
+  } catch (error) {
+    store.error = stringifyError(error);
+  } finally {
+    faceAdminIssuing.value = false;
+  }
+}
+
+async function issueFaceMonitorPolicy() {
+  faceAdminIssuing.value = true;
+  try {
+    await api.sendFaceMonitorPolicy(faceAdminTargetDeviceId.value, faceAdminMinConfidence.value, faceAdminConsecutiveHits.value, faceAdminCooldownSeconds.value, Date.now());
+    showOperationSuccess("摄像头识别策略已下发到在线目标设备");
+    await refreshFaceMonitorRules();
+  } catch (error) {
+    store.error = stringifyError(error);
+  } finally {
+    faceAdminIssuing.value = false;
   }
 }
 async function chooseAndSendFile() {
@@ -5087,6 +5751,23 @@ async function closeWindow() {
           </div>
         </div>
       </NModal>
+      <NModal
+        :show="cameraFaceAlertPreviewOpen"
+        preset="card"
+        class="camera-face-alert-modal"
+        :mask-closable="true"
+        @update:show="(visible) => { if (!visible) closeCameraFaceAlertPreview(); }"
+      >
+        <div v-if="activeCameraFaceAlert" class="camera-face-alert-detail">
+          <NTag type="warning" :bordered="false">摄像头人脸识别告警</NTag>
+          <h2>检测到 {{ activeCameraFaceAlert.personName }}</h2>
+          <p>本机摄像头画面识别命中 {{ activeCameraFaceAlert.personName }}，置信度 {{ activeCameraFaceAlert.confidence }}%。</p>
+          <img v-if="activeCameraFacePreviewUrl" :src="activeCameraFacePreviewUrl" alt="本机临时检测画面" />
+          <NAlert v-else type="info" :show-icon="false">该告警的临时画面已释放；画面不会保存或通过局域网传输。</NAlert>
+          <NText depth="3">{{ formatDateTime(activeCameraFaceAlert.createdAt) }} · 临时画面仅保留在本次运行内存中。</NText>
+          <NSpace justify="end"><NButton type="primary" @click="closeCameraFaceAlertPreview">我知道了</NButton></NSpace>
+        </div>
+      </NModal>
       <Teleport to="body">
         <aside
           v-if="callSession"
@@ -5097,6 +5778,7 @@ async function closeWindow() {
           aria-label="语音或视频通话"
         >
           <div v-if="callSession" class="private-call-panel">
+            <audio ref="remoteCallAudio" class="remote-call-audio" autoplay></audio>
             <div class="private-call-title" @mousedown="startCallPanelDrag">
               <div class="private-call-summary">
                 <strong>{{ callSession.status === 'incoming' ? `${callSession.peerNickname} 邀请${callSession.media === 'video' ? '视频' : '语音'}通话` : `${callSession.media === 'video' ? '视频' : '语音'}通话 · ${callSession.peerNickname}` }}</strong>
@@ -5106,7 +5788,7 @@ async function closeWindow() {
               <button class="private-call-toggle" type="button" :title="callPanelExpanded ? '收起画面' : '展开画面'" @click="callPanelExpanded = !callPanelExpanded">{{ callPanelExpanded ? '⌃' : '⌄' }}</button>
             </div>
           <div v-if="callPanelExpanded" class="private-call-videos" :class="{ audio: callSession.media === 'audio' }">
-            <video v-if="callSession.media === 'video'" ref="remoteCallVideo" autoplay playsinline></video>
+            <video v-if="callSession.media === 'video'" ref="remoteCallVideo" autoplay muted playsinline></video>
             <video v-if="callSession.media === 'video'" ref="localCallVideo" autoplay muted playsinline></video>
             <div v-else class="private-call-audio-profile">
               <img v-if="avatarImage(peerAvatar(callSession.peerDeviceId))" :src="avatarImage(peerAvatar(callSession.peerDeviceId))" class="private-call-audio-avatar-image" alt="对方头像" />
@@ -5201,12 +5883,14 @@ async function closeWindow() {
           <div class="simulation-actions"><NButton @click="adminNotificationModalOpen = false">取消</NButton><NButton type="warning" :loading="adminNotificationSending" @click="submitAdminNotification">下发</NButton></div>
         </div>
       </NModal>
-      <NModal v-model:show="adminNotificationDetailOpen" preset="card" title="通知审核详情" class="admin-notification-announcement">
+      <NModal v-model:show="adminNotificationDetailOpen" preset="card" :title="adminNotificationDetail && isAdminNotificationIssuer(adminNotificationDetail) ? '通知审核详情' : '公告通知详情'" class="admin-notification-announcement">
         <div v-if="adminNotificationDetail" class="admin-notification-lock-content">
           <div class="admin-notification-detail-device"><img v-if="avatarImage(adminNotificationTargetDetail(adminNotificationDetail)?.avatar)" class="avatar-image large-avatar" :src="avatarImage(adminNotificationTargetDetail(adminNotificationDetail)?.avatar)" alt="设备头像" /><NAvatar v-else :size="48" class="peer-avatar">{{ firstLetter(adminNotificationTargetDetail(adminNotificationDetail)?.nickname ?? '?') }}</NAvatar><div><strong>{{ adminNotificationTargetDetail(adminNotificationDetail)?.nickname ?? '未知设备' }}</strong><small>IP：{{ adminNotificationTargetDetail(adminNotificationDetail)?.address ?? '未知' }}</small><small>MAC：{{ adminNotificationDetail.target_device_id }}</small></div></div>
           <NTag :type="adminNotificationDetail.status === 'submitted' ? 'warning' : 'default'">{{ adminNotificationDetail.status }}</NTag><h2>{{ adminNotificationDetail.title }}</h2><p>{{ adminNotificationDetail.content }}</p><img v-if="adminNotificationDetail.support_url && /^(https?:|asset:|data:image)/.test(adminNotificationDetail.support_url)" :src="adminNotificationDetail.support_url" alt="通知配图" /><NText depth="3">下发时间：{{ formatTime(adminNotificationDetail.created_at) }}</NText>
-          <NSpace v-if="adminNotificationDetail.display_mode === 'requires_confirmation' && adminNotificationDetail.status === 'submitted'"><NButton type="success" @click="decideAdminNotificationFromDetail('approved')">通过</NButton><NButton type="error" @click="decideAdminNotificationFromDetail('rejected')">拒绝</NButton></NSpace>
-          <NButton v-else-if="adminNotificationDetail.display_mode === 'requires_confirmation' && ['pending','rejected','expired_locked'].includes(adminNotificationDetail.status)" tertiary type="warning" @click="decideAdminNotificationFromDetail('revoked')">撤销并放行</NButton>
+          <NSpace v-if="isAdminNotificationIssuer(adminNotificationDetail) && adminNotificationDetail.display_mode === 'requires_confirmation' && adminNotificationDetail.status === 'submitted'"><NButton type="success" @click="decideAdminNotificationFromDetail('approved')">通过</NButton><NButton type="error" @click="decideAdminNotificationFromDetail('rejected')">拒绝</NButton></NSpace>
+          <NButton v-else-if="isAdminNotificationIssuer(adminNotificationDetail) && adminNotificationDetail.display_mode === 'requires_confirmation' && ['pending','rejected','expired_locked'].includes(adminNotificationDetail.status)" tertiary type="warning" @click="decideAdminNotificationFromDetail('revoked')">撤销并放行</NButton>
+          <NButton v-else-if="isAdminNotificationRecipient(adminNotificationDetail) && adminNotificationDetail.display_mode === 'requires_confirmation' && ['pending','rejected'].includes(adminNotificationDetail.status)" type="primary" @click="submitAdminNotificationFromDetail">重新提交确认</NButton>
+          <NButton v-else-if="isAdminNotificationRecipient(adminNotificationDetail) && adminNotificationDetail.display_mode === 'dismissible' && !dismissedAdminNotificationIds.includes(adminNotificationDetail.notification_id)" type="primary" @click="dismissAdminNotificationFromDetail">我知道了</NButton>
         </div>
       </NModal>
       <NModal :show="!!blockingAdminNotification" preset="card" class="admin-notification-lock" :mask-closable="false" :closable="false">
@@ -5214,6 +5898,21 @@ async function closeWindow() {
       </NModal>
       <NModal :show="!!visibleAdminAnnouncement" preset="card" class="admin-notification-announcement" :mask-closable="true" @update:show="(visible) => { if (!visible && visibleAdminAnnouncement) dismissAdminAnnouncement(visibleAdminAnnouncement); }">
         <div v-if="visibleAdminAnnouncement" class="admin-notification-lock-content"><NTag type="info">超管公告</NTag><h2>{{ visibleAdminAnnouncement.title }}</h2><p>{{ visibleAdminAnnouncement.content }}</p><img v-if="visibleAdminAnnouncement.support_url && /^(https?:|asset:|data:image)/.test(visibleAdminAnnouncement.support_url)" :src="visibleAdminAnnouncement.support_url" alt="公告图片" /><NText depth="3">{{ visibleAdminAnnouncement.issued_by_nickname }} · {{ formatTime(visibleAdminAnnouncement.created_at) }}</NText><NButton type="primary" @click="dismissAdminAnnouncement(visibleAdminAnnouncement)">我知道了</NButton></div>
+      </NModal>
+      <NModal v-model:show="adminNotificationHistoryOpen" preset="card" title="历史公告" class="admin-notification-history-modal">
+        <div class="admin-notification-history-list">
+          <NEmpty v-if="recipientAdminNotifications.length === 0" description="暂无收到的公告通知" />
+          <article v-for="notification in recipientAdminNotifications" :key="notification.notification_id" class="admin-notification-history-item" role="button" tabindex="0" @click="openAdminNotificationDetail(notification)" @keydown.enter="openAdminNotificationDetail(notification)">
+            <header>
+              <strong>{{ notification.title }}</strong>
+              <NTag size="small" :bordered="false" :type="notification.display_mode === 'requires_confirmation' ? 'warning' : 'info'">
+                {{ notification.display_mode === 'requires_confirmation' ? '需确认' : '公告' }}
+              </NTag>
+            </header>
+            <p>{{ notification.content }}</p>
+            <footer>{{ notification.issued_by_nickname }} · {{ formatTime(notification.created_at) }} · {{ notification.status }}</footer>
+          </article>
+        </div>
       </NModal>
       <div class="desktop-frame">
         <header class="app-titlebar" @mousedown="startWindowDrag">
@@ -5283,6 +5982,16 @@ async function closeWindow() {
                 <span v-if="navExpanded" class="nav-label">添加设备</span>
               </button>
               <div class="rail-spacer"></div>
+              <NTooltip trigger="hover" placement="right">
+                <template #trigger>
+                  <button class="rail-action rail-notification-bell" title="历史公告" @click="openAdminNotificationHistory">
+                    <span class="nav-icon nav-bell-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M18 10a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 22h4" /></svg></span>
+                    <span v-if="navExpanded" class="nav-label">公告通知</span>
+                    <span v-if="pendingAdminNotificationCount > 0" class="nav-notification-dot"></span>
+                  </button>
+                </template>
+                历史公告
+              </NTooltip>
               <NTooltip trigger="hover" placement="right">
                 <template #trigger>
                   <button
@@ -5504,15 +6213,17 @@ async function closeWindow() {
                   </p>
                 </div>
               </header>
-              <div ref="messagePane" class="messages-pane">
+              <div ref="messagePane" class="messages-pane" @scroll.passive="handleMessagePaneScroll">
                 <NSpin :show="loading">
+                  <button v-if="hasMoreEarlierMessages" class="message-history-loader" type="button" @click="loadEarlierMessages">加载更早消息</button>
+                  <button v-if="hasLaterMessages" class="message-history-loader latest" type="button" @click="jumpToLatestMessages">回到最新消息</button>
                   <NEmpty v-if="!loading && activeMessages.length === 0" description="还没有消息" class="empty-state">
                     <template #extra>
                       <span>选择在线设备单聊，或在局域网频道里发第一句。</span>
                     </template>
                   </NEmpty>
                   <article
-                    v-for="message in activeMessages"
+                    v-for="message in visibleMessages"
                     :key="message.id"
                     :id="`message-${message.id}`"
                     class="message-row"
@@ -5571,7 +6282,7 @@ async function closeWindow() {
                             </p>
                           </template>
                           <div v-else-if="message.file_meta" class="file-message">
-                            <img v-if="isImageFile(message)" class="file-preview-image" :src="imagePreviewSource(message)" :alt="message.file_meta.name" title="点击放大查看" @click="openImagePreview(message)" @load="cacheImagePreview(message)" />
+                            <img v-if="isImageFile(message)" class="file-preview-image" :src="imageThumbnailSource(message)" :alt="message.file_meta.name" title="点击放大查看" loading="lazy" decoding="async" @click="openImagePreview(message)" />
                             <audio v-else-if="isAudioFile(message)" class="voice-player" controls :src="message.file_meta.url"></audio>
                             <a v-else class="file-info file-link" :href="message.file_meta.url">
                               <strong>{{ message.file_meta.name }}</strong>
@@ -6322,6 +7033,14 @@ async function closeWindow() {
                   </button>
                   <button
                     type="button"
+                    :class="{ active: settingsCategory === 'camera' }"
+                    :aria-current="settingsCategory === 'camera' ? 'page' : undefined"
+                    @click="settingsCategory = 'camera'"
+                  >
+                    摄像头检测
+                  </button>
+                  <button
+                    type="button"
                     :class="{ active: settingsCategory === 'pet' }"
                     :aria-current="settingsCategory === 'pet' ? 'page' : undefined"
                     @click="settingsCategory = 'pet'"
@@ -6339,9 +7058,11 @@ async function closeWindow() {
                   </button>
                 </nav>
                 <div class="settings-content">
-                  <div class="workspace-header">
-                    <h2 class="settings-title">设置<button class="settings-secret-trigger" type="button" aria-label="设置" @click="handleSuperAdminTap">✦</button></h2>
-                    <p>{{ settingsCategory === 'basic' ? '管理本机资料、网络、主题和语言。' : settingsCategory === 'pet' ? '管理桌宠资源、行为与告警能力。' : '下发公告并审核设备提交的确认。' }}</p>
+                  <div class="workspace-header settings-header">
+                    <div class="settings-heading-row">
+                      <h2 class="settings-title">设置<button class="settings-secret-trigger" type="button" aria-label="设置" @click="handleSuperAdminTap">✦</button></h2>
+                    </div>
+                    <p>{{ settingsCategory === 'basic' ? '管理本机资料、网络、主题和语言。' : settingsCategory === 'camera' ? '管理本机人脸出现检测、临时画面提示和检测策略。' : settingsCategory === 'pet' ? '管理桌宠资源、行为与告警能力。' : '下发公告并审核设备提交的确认。' }}</p>
                   </div>
                   <div class="settings-grid">
                 <NCard v-if="settingsCategory === 'basic' && profile" title="本机资料" size="small">
@@ -6392,6 +7113,127 @@ async function closeWindow() {
                     </NSpace>
                   </NSpace>
                 </NCard>
+                <NCard v-if="settingsCategory === 'camera'" class="camera-face-settings-card" title="摄像头自动告警" size="small">
+                  <NSpace vertical>
+                    <div class="setting-switch-row">
+                      <div>
+                        <strong>本机摄像头人脸识别告警</strong>
+                        <p>将画面中出现的人脸与本机录入人员的参考照片比对，命中后自动产生具名告警；不保存、不上传摄像头画面。视频通话与检测共用同一摄像头，不会重复占用。</p>
+                      </div>
+                      <NSwitch :value="faceMonitorSettings.enabled" :loading="faceMonitorSaving" @update:value="(value) => updateFaceMonitorSettings({ enabled: value })" />
+                    </div>
+                    <NFormItem label="摄像头" :show-feedback="false">
+                      <NSelect
+                        :value="faceMonitorSettings.deviceId ?? null"
+                        :options="cameraDeviceOptions"
+                        placeholder="使用系统默认摄像头"
+                        clearable
+                        :disabled="faceMonitorSaving"
+                        @update:value="(value) => updateFaceMonitorSettings({ deviceId: value || null })"
+                      />
+                    </NFormItem>
+                    <div class="setting-switch-row compact-setting-row">
+                      <div>
+                        <strong>视频通话期间暂停识别</strong>
+                        <p>关闭时，视频通话期间自动降到每秒 1 帧。</p>
+                      </div>
+                      <NSwitch :value="faceMonitorSettings.pauseDuringCall" :disabled="!faceMonitorSettings.enabled || faceMonitorSaving" @update:value="(value) => updateFaceMonitorSettings({ pauseDuringCall: value })" />
+                    </div>
+                    <div class="setting-switch-row compact-setting-row">
+                      <div>
+                        <strong>显示实时检测画面</strong>
+                        <p>仅在此页面显示本机摄像头预览，不会录制、保存或发送。</p>
+                      </div>
+                      <NSwitch :value="cameraLivePreviewEnabled" :disabled="faceMonitorSaving" @update:value="updateCameraLivePreview" />
+                    </div>
+                    <div v-if="cameraLivePreviewEnabled" class="camera-live-preview">
+                      <video ref="cameraLivePreviewVideo" autoplay muted playsinline></video>
+                      <span>本机实时检测画面</span>
+                    </div>
+                    <div class="setting-switch-row compact-setting-row">
+                      <div>
+                        <strong>告警时弹出检测画面</strong>
+                        <p>默认关闭。打开后识别告警会自动弹出当前检测画面，供调试观察；关闭时仍可在告警列表手动查看。</p>
+                      </div>
+                      <NSwitch :value="cameraAlertPopupEnabled" @update:value="updateCameraAlertPopup" />
+                    </div>
+                    <NFormItem label="采样频率" :show-feedback="false">
+                      <NInputNumber
+                        :value="faceMonitorSettings.sampleFps"
+                        :min="1"
+                        :max="5"
+                        :step="1"
+                        :disabled="!faceMonitorSettings.enabled || faceMonitorSaving"
+                        style="width: 132px"
+                        @update:value="(value) => updateFaceMonitorSettings({ sampleFps: value ?? 2 })"
+                      />
+                    </NFormItem>
+                    <div class="update-info-grid">
+                      <span>摄像头状态</span><strong>{{ faceMonitorMediaStatus.cameraActive ? '已就绪' : '未启用' }}</strong>
+                      <span>当前采样</span><strong>{{ faceMonitorMediaStatus.sampling ? `${faceMonitorMediaStatus.sampleFps} 帧/秒` : '未采样' }}</strong>
+                      <span>视频通话</span><strong>{{ faceMonitorMediaStatus.callUsingCamera ? '共用摄像头中' : '未占用' }}</strong>
+                      <span>模型状态</span><strong>{{ faceMonitorRuntimeStatus?.modelReady ? '检测中' : '未启用' }}</strong>
+                      <span>识别模型</span><strong>{{ faceMonitorRuntimeStatus?.recognizerReady ? '就绪' : '不可用' }}</strong>
+                      <span>模型版本</span><strong>{{ faceMonitorRuntimeStatus?.modelVersion || '-' }}</strong>
+                      <span>模型资源</span><strong>{{ faceMonitorRuntimeStatus?.modelAssetsReady ? '校验通过' : '未安装' }}</strong>
+                      <span>最近置信度</span><strong>{{ faceMonitorRuntimeStatus?.lastDetectionScore ? `${faceMonitorRuntimeStatus.lastDetectionScore}%` : '-' }}</strong>
+                    </div>
+                    <div v-if="faceMonitorPolicy" class="update-info-grid">
+                      <span>生效阈值</span><strong>{{ faceMonitorPolicy.minConfidence }}%</strong>
+                      <span>连续命中</span><strong>{{ faceMonitorPolicy.consecutiveHits }} 次</strong>
+                      <span>重复冷却</span><strong>{{ faceMonitorPolicy.cooldownSeconds }} 秒</strong>
+                      <span>策略来源</span><strong>{{ faceMonitorPolicy.issuedByNickname }}</strong>
+                    </div>
+                    <NText v-else depth="3">当前使用本机默认策略：60% 置信度、连续 1 次、冷却 60 秒。</NText>
+                    <NAlert v-if="faceMonitorSettings.enabled && faceMonitorRuntimeStatus && !faceMonitorRuntimeStatus.recognizerReady" type="warning" :show-icon="false">
+                      {{ faceMonitorRuntimeStatus.lastError || '识别模型不可用，摄像头监控不会产生告警。' }}
+                    </NAlert>
+                    <NAlert v-else-if="faceMonitorSettings.enabled && !facePeople.some((person) => person.enabled && !person.deletedAt && person.hasEmbedding)" type="warning" :show-icon="false">
+                      尚未录入可用的识别人员，摄像头监控不会产生告警。请先在下方上传参考照片或拍照录入。
+                    </NAlert>
+                    <div v-if="facePeople.length" class="face-monitor-people">
+                      <strong>已保存的指定人员</strong>
+                      <NText v-for="person in facePeople" :key="person.personId" depth="3">
+                        {{ person.displayName }} · {{ person.enabled && !person.deletedAt ? '已启用' : '已停用' }} · v{{ person.version }}
+                      </NText>
+                    </div>
+                    <div class="face-monitor-people">
+                      <strong>本机识别人员</strong>
+                      <NText depth="3">照片和人员特征保存在本机，特征不出本机；录入后参与摄像头人脸识别比对。</NText>
+                      <NFormItem label="人员名称" :show-feedback="false"><NInput v-model:value="localFacePersonName" maxlength="32" placeholder="例如：访客张三" /></NFormItem>
+                      <input ref="localFacePhotoInput" class="hidden-file-input" type="file" accept="image/*" @change="handleLocalFacePhotoSelected" />
+                      <NSpace>
+                        <NButton size="small" secondary @click="triggerLocalFacePhotoSelect">上传本地照片</NButton>
+                        <NButton size="small" secondary @click="openLocalFaceCapture">摄像头拍照</NButton>
+                        <NButton size="small" type="primary" :disabled="!localFacePersonName.trim() || !localFacePhotoPath" @click="createLocalFacePerson">保存人员</NButton>
+                      </NSpace>
+                      <img v-if="localFacePhotoPreview" class="face-person-preview-thumb" :src="localFacePhotoPreview" alt="待添加人员照片" />
+                      <NText v-if="facePeople.length === 0" depth="3">尚未保存人员配置。</NText>
+                      <div v-for="person in facePeople" :key="person.personId" class="face-monitor-alert-row">
+                        <NText>{{ person.displayName }} · {{ person.enabled && !person.deletedAt ? '已启用' : '已删除/停用' }}</NText>
+                        <NSpace :size="6">
+                          <NTag size="small" :bordered="false" :type="person.hasEmbedding ? 'success' : 'warning'">{{ person.hasEmbedding ? '特征已提取' : '特征不可用' }}</NTag>
+                          <NButton size="tiny" quaternary @click="facePersonDetail = person">查看</NButton><NButton size="tiny" quaternary type="error" @click="deleteLocalFacePerson(person)">删除本机配置</NButton>
+                        </NSpace>
+                      </div>
+                    </div>
+                    <div class="face-monitor-people">
+                      <strong>摄像头人脸识别告警（独立于狼来了）</strong>
+                      <NText v-if="cameraFaceAlerts.length === 0" depth="3">暂无人脸识别告警记录。</NText>
+                      <div v-for="alert in cameraFaceAlerts.slice(0, 5)" :key="alert.alertId" class="face-monitor-alert-row">
+                        <NText>{{ alert.sourceNickname }} 检测到 {{ alert.personName }} · {{ alert.confidence }}%</NText>
+                        <NSpace :size="6">
+                          <NButton v-if="cameraFacePreviewUrls[alert.alertId]" size="tiny" quaternary @click="activeCameraFaceAlertId = alert.alertId; cameraFaceAlertPreviewOpen = true">查看本机画面</NButton>
+                          <NButton size="tiny" secondary type="success" @click="feedbackCameraFaceAlert(alert, 'real')">真实 {{ alert.feedbackReal }}</NButton>
+                          <NButton size="tiny" secondary type="error" @click="feedbackCameraFaceAlert(alert, 'false')">虚假 {{ alert.feedbackFalse }}</NButton>
+                        </NSpace>
+                      </div>
+                    </div>
+                    <NAlert v-if="faceMonitorMediaStatus.lastError" type="warning" :show-icon="false">{{ faceMonitorMediaStatus.lastError }}</NAlert>
+                    <NAlert v-if="faceMonitorRuntimeStatus?.lastError" type="info" :show-icon="false">{{ faceMonitorRuntimeStatus.lastError }}</NAlert>
+                    <NText depth="3">检测与识别模型仅从本机安装包资源目录读取并进行摘要校验；人员特征不出本机，摄像头帧不会保存或通过局域网传输。</NText>
+                  </NSpace>
+                </NCard>
                 <NCard v-if="settingsCategory === 'basic'" title="图片缓存" size="small">
                   <NSpace vertical>
                     <NText depth="3">带预览能力的图片会自动下载到本机缓存，聊天历史仍可在发送方离线后查看。</NText>
@@ -6433,10 +7275,47 @@ async function closeWindow() {
                     </NSpace>
                   </NSpace>
                 </NCard>
+                <NCard v-if="settingsCategory === 'basic'" title="GitHub API Token" size="small">
+                  <NSpace vertical>
+                    <NText depth="3">配置仅用于读取 LanChat 的 GitHub Release，减少匿名 API 限流。Token 会保存在系统凭据库，不会同步到局域网设备。</NText>
+                    <NAlert v-if="updateGithubTokenInfo?.configured" type="success" :show-icon="false">
+                      {{ updateGithubTokenInfo.maskedValue || 'GitHub Token 已配置' }}
+                    </NAlert>
+                    <NInput v-model:value="updateGithubTokenDraft" type="password" show-password-on="click" placeholder="粘贴 GitHub Fine-grained Token（仅需 Contents: Read）" @keyup.enter="saveUpdateGithubToken" />
+                    <NSpace>
+                      <NButton type="primary" :disabled="!updateGithubTokenDraft.trim()" :loading="updateGithubTokenSaving" @click="saveUpdateGithubToken">保存 Token</NButton>
+                      <NButton v-if="updateGithubTokenInfo?.configured" secondary type="error" :loading="updateGithubTokenSaving" @click="clearUpdateGithubToken">清除 Token</NButton>
+                    </NSpace>
+                  </NSpace>
+                </NCard>
                 <NCard v-if="settingsCategory === 'admin' && superAdminEnabled" title="下发超管通知" size="small">
                   <NSpace vertical>
                     <NText depth="3">指定设备会直连送达；全员模式会为每台在线设备独立创建一条通知，便于逐人审核。</NText>
                     <NButton type="warning" @click="openAdminNotificationModal">下发通知</NButton>
+                  </NSpace>
+                </NCard>
+                <NCard v-if="settingsCategory === 'admin' && superAdminEnabled" title="摄像头人脸出现检测策略" size="small">
+                  <NSpace vertical>
+                    <NText depth="3">仅下发检测阈值、连续命中次数和冷却时间，不会远程开启对方摄像头，也不会传输摄像头画面或照片。</NText>
+                    <NFormItem label="下发目标" :show-feedback="false">
+                      <NSelect v-model:value="faceAdminTargetDeviceId" :options="facePolicyTargetOptions" filterable />
+                    </NFormItem>
+                    <NText depth="3">指定人员照片下发入口会保留，当前不参与检测或告警；后续切换为普通图像识别后再启用。</NText>
+                    <NFormItem label="人员名称" :show-feedback="false">
+                      <NInput v-model:value="faceAdminPersonName" maxlength="32" placeholder="例如：值班人员" />
+                    </NFormItem>
+                    <NSpace>
+                      <NButton secondary @click="chooseFaceReferencePhoto">选择参考照片</NButton>
+                      <NText depth="3">{{ faceAdminPhotoPath ? '已选择本地照片' : '尚未选择照片' }}</NText>
+                    </NSpace>
+                    <NButton type="primary" secondary :loading="faceAdminIssuing" @click="issueFacePersonPolicy">保存下发草稿</NButton>
+                    <NText depth="3">策略：置信度、连续命中和冷却时间由超管下发；目标设备仍由自己决定是否开启摄像头。</NText>
+                    <NSpace align="center">
+                      <NFormItem label="置信度" :show-feedback="false"><NInputNumber v-model:value="faceAdminMinConfidence" :min="1" :max="100" style="width: 100px" /></NFormItem>
+                      <NFormItem label="连续命中" :show-feedback="false"><NInputNumber v-model:value="faceAdminConsecutiveHits" :min="1" :max="20" style="width: 100px" /></NFormItem>
+                      <NFormItem label="冷却秒数" :show-feedback="false"><NInputNumber v-model:value="faceAdminCooldownSeconds" :min="5" :max="86400" style="width: 110px" /></NFormItem>
+                    </NSpace>
+                    <NButton secondary type="warning" :loading="faceAdminIssuing" @click="issueFaceMonitorPolicy">下发检测策略</NButton>
                   </NSpace>
                 </NCard>
                 <NCard v-if="settingsCategory === 'admin' && superAdminEnabled" title="超管通知审核" size="small">
@@ -6776,6 +7655,27 @@ async function closeWindow() {
                     </div>
                   </NSpace>
                 </NCard>
+                <NCard v-if="settingsCategory === 'basic'" title="内存诊断" size="small">
+                  <NSpace vertical>
+                    <NText depth="3">用于定位消息、头像或图片缓存导致的内存上升。JS 堆数据仅在 WebView2 支持时显示。</NText>
+                    <div class="update-info-grid">
+                      <span>JS 堆</span><strong>{{ memoryDiagnostic.jsHeapBytes === null ? '当前环境未提供' : `${formatFileSize(memoryDiagnostic.jsHeapBytes)} / ${formatFileSize(memoryDiagnostic.jsHeapLimitBytes)}` }}</strong>
+                      <span>消息缓存</span><strong>{{ memoryDiagnostic.cachedConversations }} 个会话 · {{ memoryDiagnostic.cachedMessages }} 条</strong>
+                      <span>当前消息节点</span><strong>{{ memoryDiagnostic.visibleMessages }} 条</strong>
+                      <span>头像 Base64</span><strong>{{ formatFileSize(memoryDiagnostic.avatarBytes) }}</strong>
+                      <span>图片缓存</span><strong>{{ formatFileSize(memoryDiagnostic.previewCacheBytes) }}</strong>
+                    </div>
+                    <div v-if="memoryDiagnosticConversationRows.length" class="memory-diagnostic-rows">
+                      <span>消息最多</span>
+                      <strong v-for="row in memoryDiagnosticConversationRows" :key="row.conversationId">{{ row.title }} · {{ row.count }} 条</strong>
+                    </div>
+                    <div v-if="memoryDiagnosticAvatarRows.length" class="memory-diagnostic-rows">
+                      <span>头像最大</span>
+                      <strong v-for="row in memoryDiagnosticAvatarRows" :key="row.name">{{ row.name }} · {{ formatFileSize(row.bytes) }}</strong>
+                    </div>
+                    <NButton secondary type="primary" @click="refreshMemoryDiagnostic">刷新诊断</NButton>
+                  </NSpace>
+                </NCard>
                 <NCard v-if="settingsCategory === 'basic'" title="外观" size="small">
                   <NSpace vertical>
                     <NFormItem label="主题" :show-feedback="false">
@@ -6890,7 +7790,7 @@ async function closeWindow() {
             <NButton block type="primary" @click="createGameRoom">创建房间</NButton>
           </div>
         </NModal>
-        <NModal v-model:show="superAdminAuthOpen" preset="card" title="超级管理员验证" class="super-admin-auth-modal">
+      <NModal v-model:show="superAdminAuthOpen" preset="card" title="超级管理员验证" class="super-admin-auth-modal">
           <NSpace vertical>
             <NFormItem label="密码" :show-feedback="false">
               <NInput
@@ -6905,7 +7805,23 @@ async function closeWindow() {
             <NAlert v-if="superAdminPasswordError" type="error" :show-icon="false">{{ superAdminPasswordError }}</NAlert>
             <NButton block type="primary" @click="confirmSuperAdminPassword">验证并开启</NButton>
           </NSpace>
-        </NModal>
+      </NModal>
+      <NModal v-model:show="localFaceCaptureOpen" preset="card" title="摄像头采集参考照片" class="face-capture-modal" @after-leave="closeLocalFaceCapture">
+        <NSpace vertical>
+          <video ref="localFaceCaptureVideo" class="face-capture-video" autoplay muted playsinline></video>
+          <NText depth="3">请让人脸位于画面中央、光线充足。拍摄结果仅保存到本机人员库。</NText>
+          <NSpace justify="end"><NButton secondary @click="closeLocalFaceCapture">取消</NButton><NButton type="primary" @click="captureLocalFacePhoto">拍照使用</NButton></NSpace>
+        </NSpace>
+      </NModal>
+      <NModal :show="!!facePersonDetail" preset="card" title="识别人员详情" class="face-person-detail-modal" @update:show="(value) => { if (!value) facePersonDetail = null; }">
+        <NSpace v-if="facePersonDetail" vertical>
+          <img v-if="facePersonImageSource(facePersonDetail)" class="face-person-detail-image" :src="facePersonImageSource(facePersonDetail)" alt="参考照片" />
+          <strong>{{ facePersonDetail.displayName }}</strong>
+          <NText depth="3">来源：{{ facePersonDetail.issuedByNickname }} · 版本：{{ facePersonDetail.version }}</NText>
+          <NText depth="3">状态：{{ facePersonDetail.enabled && !facePersonDetail.deletedAt ? '已启用' : '已删除/停用' }}</NText>
+          <NSpace justify="end"><NButton secondary @click="facePersonDetail = null">关闭</NButton><NButton type="error" @click="deleteLocalFacePerson(facePersonDetail)">删除本机配置</NButton></NSpace>
+        </NSpace>
+      </NModal>
         <NModal v-model:show="recipientPickerOpen" preset="card" :title="recipientPickerTitle" class="recipient-picker-modal">
           <div class="recipient-picker">
             <NFormItem v-if="recipientPickerMode === 'privateChannelCreate'" label="频道名称" :show-feedback="false">
@@ -7040,6 +7956,18 @@ async function closeWindow() {
 .private-call-audio-avatar-image { width: 102px; height: 102px; border: 4px solid #e6f4ff; border-radius: 50%; object-fit: cover; box-shadow: 0 8px 20px rgba(22, 119, 255, 0.18); }
 .private-call-audio-profile strong { color: #1f2937; font-size: 17px; }
 .private-call-audio-profile span { color: #768397; font-size: 12px; }
+.face-monitor-people { display: grid; gap: 9px; padding-top: 4px; }
+.face-monitor-alert-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 34px; padding: 7px 9px; border: 1px solid var(--panel-border); border-radius: 7px; background: var(--input-bg); }
+.face-monitor-alert-row > :first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.face-person-preview-thumb { display: block; width: 80px; height: 80px; border: 1px solid var(--panel-border); border-radius: 8px; object-fit: cover; }
+.face-capture-video { display: block; width: min(480px, 80vw); max-height: 58vh; border-radius: 8px; background: #101820; object-fit: contain; }
+.camera-face-alert-modal { width: min(720px, calc(100vw - 32px)); }
+.camera-face-alert-detail { display: grid; gap: 12px; }
+.camera-face-alert-detail h2, .camera-face-alert-detail p { margin: 0; }
+.camera-face-alert-detail > img { display: block; width: 100%; max-height: min(62vh, 480px); border-radius: 8px; background: #111827; object-fit: contain; }
+.camera-live-preview { position: relative; overflow: hidden; width: min(100%, 720px); aspect-ratio: 16 / 9; border: 1px solid var(--panel-border); border-radius: 8px; background: #111827; }
+.camera-live-preview video { display: block; width: 100%; height: 100%; object-fit: cover; }
+.camera-live-preview span { position: absolute; left: 10px; bottom: 8px; padding: 3px 7px; border-radius: 4px; background: rgba(0, 0, 0, 0.56); color: #fff; font-size: 12px; }
 </style>
 
 

@@ -1,7 +1,11 @@
 use crate::file_server::FileMeta;
 use crate::identity::{normalize_device_id, resolve_device_id, resolve_profile_device_id};
 use crate::network::local_ip_address;
-use crate::protocol::{AdminNotificationDecisionFrame, AdminNotificationFrame, SimulationMeta};
+use crate::protocol::{
+    AdminNotificationDecisionFrame, AdminNotificationFrame, CameraFaceAlertFeedbackFrame,
+    CameraFaceAlertFrame, FaceMonitorPolicyFrame,
+    FacePersonPolicyFrame, SimulationMeta,
+};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -89,6 +93,58 @@ pub struct PrivateChannelRecord {
     pub channel_key: String,
     pub key_version: u32,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FacePersonRecord {
+    pub person_id: String,
+    pub display_name: String,
+    pub photo_url: Option<String>,
+    pub photo_sha256: Option<String>,
+    pub expires_at: Option<i64>,
+    pub enabled: bool,
+    pub version: i64,
+    pub issued_by_device_id: String,
+    pub issued_by_nickname: String,
+    pub issued_at: i64,
+    pub deleted_at: Option<i64>,
+    #[serde(skip_serializing)]
+    pub embedding: Option<Vec<u8>>,
+    pub embedding_model_version: Option<String>,
+    #[serde(default)]
+    pub has_embedding: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FaceMonitorPolicyRecord {
+    pub target_device_id: String,
+    pub min_confidence: u8,
+    pub consecutive_hits: u8,
+    pub cooldown_seconds: u32,
+    pub version: i64,
+    pub issued_by_device_id: String,
+    pub issued_by_nickname: String,
+    pub issued_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraFaceAlertRecord {
+    pub alert_id: String,
+    pub source_kind: String,
+    pub source_device_id: String,
+    pub source_nickname: String,
+    pub source_address: Option<String>,
+    pub person_id: String,
+    pub person_name: String,
+    pub confidence: u8,
+    pub consecutive_hits: u8,
+    pub policy_version: i64,
+    pub created_at: i64,
+    pub feedback_real: u32,
+    pub feedback_false: u32,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
@@ -312,8 +368,55 @@ impl Storage {
                 updated_at INTEGER NOT NULL,
                 PRIMARY KEY(channel_id, device_id)
             );
+            CREATE TABLE IF NOT EXISTS face_people (
+                person_id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                photo_url TEXT,
+                photo_sha256 TEXT,
+                expires_at INTEGER,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                version INTEGER NOT NULL,
+                issued_by_device_id TEXT NOT NULL,
+                issued_by_nickname TEXT NOT NULL,
+                issued_at INTEGER NOT NULL,
+                deleted_at INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS face_monitor_policies (
+                target_device_id TEXT PRIMARY KEY,
+                min_confidence INTEGER NOT NULL,
+                consecutive_hits INTEGER NOT NULL,
+                cooldown_seconds INTEGER NOT NULL,
+                version INTEGER NOT NULL,
+                issued_by_device_id TEXT NOT NULL,
+                issued_by_nickname TEXT NOT NULL,
+                issued_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS camera_face_alerts (
+                alert_id TEXT PRIMARY KEY,
+                source_device_id TEXT NOT NULL,
+                source_nickname TEXT NOT NULL,
+                source_address TEXT,
+                person_id TEXT NOT NULL,
+                person_name TEXT NOT NULL,
+                confidence INTEGER NOT NULL,
+                consecutive_hits INTEGER NOT NULL,
+                policy_version INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS camera_face_alert_feedbacks (
+                alert_id TEXT NOT NULL,
+                responder_device_id TEXT NOT NULL,
+                responder_nickname TEXT NOT NULL,
+                result TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY(alert_id, responder_device_id)
+            );
             CREATE INDEX IF NOT EXISTS idx_messages_conversation_created
                 ON messages(conversation_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_face_people_active
+                ON face_people(enabled, expires_at, deleted_at);
+            CREATE INDEX IF NOT EXISTS idx_camera_face_alerts_created
+                ON camera_face_alerts(created_at DESC);
             ",
         )
         .map_err(|err| format!("初始化本地数据库失败：{err}"))?;
@@ -332,6 +435,9 @@ impl Storage {
         ensure_column(&conn, "messages", "simulation_operator_nickname", "TEXT")?;
         ensure_column(&conn, "messages", "simulation_display_label", "INTEGER")?;
         ensure_column(&conn, "messages", "simulation_created_at", "INTEGER")?;
+        ensure_column(&conn, "face_people", "embedding", "BLOB")?;
+        ensure_column(&conn, "face_people", "embedding_model_version", "TEXT")?;
+        ensure_column(&conn, "camera_face_alerts", "source_kind", "TEXT NOT NULL DEFAULT 'camera_face_presence'")?;
         ensure_column(&conn, "profile", "avatar", "TEXT")?;
         ensure_column(
             &conn,
@@ -378,6 +484,142 @@ impl Storage {
             "INTEGER NOT NULL DEFAULT 0",
         )?;
         Ok(())
+    }
+
+    pub fn upsert_face_person(&self, frame: &FacePersonPolicyFrame) -> Result<FacePersonRecord, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let current = conn.query_row(
+            "SELECT version FROM face_people WHERE person_id=?1",
+            params![frame.person_id],
+            |row| row.get::<_, i64>(0),
+        ).optional().map_err(|err| format!("读取人员规则版本失败：{err}"))?;
+        if current.is_some_and(|version| version > frame.version) {
+            return Self::read_face_person(&conn, &frame.person_id);
+        }
+        let action = frame.action.trim().to_ascii_lowercase();
+        let enabled = frame.enabled && action == "upsert";
+        let deleted_at = (action == "delete").then(|| chrono::Utc::now().timestamp_millis());
+        conn.execute(
+            "INSERT INTO face_people (person_id,display_name,photo_url,photo_sha256,expires_at,enabled,version,issued_by_device_id,issued_by_nickname,issued_at,deleted_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+             ON CONFLICT(person_id) DO UPDATE SET display_name=excluded.display_name,photo_url=excluded.photo_url,photo_sha256=excluded.photo_sha256,expires_at=excluded.expires_at,enabled=excluded.enabled,version=excluded.version,issued_by_device_id=excluded.issued_by_device_id,issued_by_nickname=excluded.issued_by_nickname,issued_at=excluded.issued_at,deleted_at=excluded.deleted_at",
+            params![frame.person_id, frame.display_name, frame.photo_url, frame.photo_sha256, frame.expires_at, enabled as i32, frame.version, frame.issued_by_device_id, frame.issued_by_nickname, frame.issued_at, deleted_at],
+        ).map_err(|err| format!("保存人员规则失败：{err}"))?;
+        Self::read_face_person(&conn, &frame.person_id)
+    }
+
+    pub fn list_face_people(&self) -> Result<Vec<FacePersonRecord>, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let mut stmt = conn.prepare("SELECT person_id,display_name,photo_url,photo_sha256,expires_at,enabled,version,issued_by_device_id,issued_by_nickname,issued_at,deleted_at,embedding,embedding_model_version FROM face_people WHERE deleted_at IS NULL ORDER BY issued_at DESC")
+            .map_err(|err| format!("读取人员规则失败：{err}"))?;
+        let rows = stmt.query_map([], Self::face_person_from_row).map_err(|err| format!("读取人员规则失败：{err}"))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|err| format!("读取人员规则失败：{err}"))
+    }
+
+    /// 仅在本机更新人脸特征，特征不参与局域网同步。
+    pub fn update_face_person_embedding(&self, person_id: &str, embedding: Option<Vec<u8>>, model_version: Option<String>) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let changed = conn.execute(
+            "UPDATE face_people SET embedding=?1, embedding_model_version=?2 WHERE person_id=?3",
+            params![embedding.as_deref(), model_version, person_id],
+        ).map_err(|err| format!("保存人脸特征失败：{err}"))?;
+        if changed == 0 { return Err("未找到识别人员".to_string()); }
+        Ok(())
+    }
+
+    /// A target device can always stop monitoring a person locally. This is not
+    /// broadcast, so it cannot alter another device's authorised rule set.
+    pub fn delete_face_person_local(&self, person_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let changed = conn.execute(
+            "UPDATE face_people SET enabled=0, deleted_at=?1 WHERE person_id=?2",
+            params![chrono::Utc::now().timestamp_millis(), person_id],
+        ).map_err(|err| format!("删除本机识别人员失败：{err}"))?;
+        if changed == 0 { return Err("未找到识别人员".to_string()); }
+        Ok(())
+    }
+
+    pub fn upsert_face_monitor_policy(&self, frame: &FaceMonitorPolicyFrame) -> Result<FaceMonitorPolicyRecord, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let current = conn.query_row("SELECT version FROM face_monitor_policies WHERE target_device_id=?1", params![frame.target_device_id], |row| row.get::<_, i64>(0))
+            .optional().map_err(|err| format!("读取识别策略版本失败：{err}"))?;
+        if current.is_some_and(|version| version > frame.version) {
+            return Self::read_face_monitor_policy(&conn, &frame.target_device_id);
+        }
+        conn.execute(
+            "INSERT INTO face_monitor_policies (target_device_id,min_confidence,consecutive_hits,cooldown_seconds,version,issued_by_device_id,issued_by_nickname,issued_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+             ON CONFLICT(target_device_id) DO UPDATE SET min_confidence=excluded.min_confidence,consecutive_hits=excluded.consecutive_hits,cooldown_seconds=excluded.cooldown_seconds,version=excluded.version,issued_by_device_id=excluded.issued_by_device_id,issued_by_nickname=excluded.issued_by_nickname,issued_at=excluded.issued_at",
+            params![frame.target_device_id, frame.min_confidence.min(100), frame.consecutive_hits.clamp(1, 20), frame.cooldown_seconds.clamp(5, 86_400), frame.version, frame.issued_by_device_id, frame.issued_by_nickname, frame.issued_at],
+        ).map_err(|err| format!("保存识别策略失败：{err}"))?;
+        Self::read_face_monitor_policy(&conn, &frame.target_device_id)
+    }
+
+    pub fn effective_face_monitor_policy(&self, device_id: &str) -> Result<Option<FaceMonitorPolicyRecord>, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        conn.query_row(
+            "SELECT target_device_id,min_confidence,consecutive_hits,cooldown_seconds,version,issued_by_device_id,issued_by_nickname,issued_at FROM face_monitor_policies WHERE target_device_id IN (?1, '*') ORDER BY CASE WHEN target_device_id=?1 THEN 0 ELSE 1 END LIMIT 1",
+            params![device_id],
+            Self::face_monitor_policy_from_row,
+        ).optional().map_err(|err| format!("读取识别策略失败：{err}"))
+    }
+
+    fn read_face_person(conn: &Connection, person_id: &str) -> Result<FacePersonRecord, String> {
+        conn.query_row("SELECT person_id,display_name,photo_url,photo_sha256,expires_at,enabled,version,issued_by_device_id,issued_by_nickname,issued_at,deleted_at,embedding,embedding_model_version FROM face_people WHERE person_id=?1", params![person_id], Self::face_person_from_row)
+            .map_err(|err| format!("读取人员规则失败：{err}"))
+    }
+
+    fn face_person_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FacePersonRecord> {
+        let embedding: Option<Vec<u8>> = row.get(11)?;
+        Ok(FacePersonRecord { person_id: row.get(0)?, display_name: row.get(1)?, photo_url: row.get(2)?, photo_sha256: row.get(3)?, expires_at: row.get(4)?, enabled: row.get::<_, i32>(5)? != 0, version: row.get(6)?, issued_by_device_id: row.get(7)?, issued_by_nickname: row.get(8)?, issued_at: row.get(9)?, deleted_at: row.get(10)?, has_embedding: embedding.is_some(), embedding, embedding_model_version: row.get(12)? })
+    }
+
+    fn read_face_monitor_policy(conn: &Connection, target_device_id: &str) -> Result<FaceMonitorPolicyRecord, String> {
+        conn.query_row("SELECT target_device_id,min_confidence,consecutive_hits,cooldown_seconds,version,issued_by_device_id,issued_by_nickname,issued_at FROM face_monitor_policies WHERE target_device_id=?1", params![target_device_id], Self::face_monitor_policy_from_row)
+            .map_err(|err| format!("读取识别策略失败：{err}"))
+    }
+
+    fn face_monitor_policy_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FaceMonitorPolicyRecord> {
+        Ok(FaceMonitorPolicyRecord { target_device_id: row.get(0)?, min_confidence: row.get(1)?, consecutive_hits: row.get(2)?, cooldown_seconds: row.get(3)?, version: row.get(4)?, issued_by_device_id: row.get(5)?, issued_by_nickname: row.get(6)?, issued_at: row.get(7)? })
+    }
+
+    pub fn upsert_camera_face_alert(&self, frame: &CameraFaceAlertFrame) -> Result<CameraFaceAlertRecord, String> {
+        if !matches!(frame.source_kind.as_str(), "camera_face" | "camera_face_presence") {
+            return Err("自动识别告警来源无效".to_string());
+        }
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        conn.execute(
+            "INSERT INTO camera_face_alerts (alert_id,source_kind,source_device_id,source_nickname,source_address,person_id,person_name,confidence,consecutive_hits,policy_version,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+             ON CONFLICT(alert_id) DO NOTHING",
+            params![frame.alert_id, frame.source_kind, frame.source_device_id, frame.source_nickname, frame.source_address, frame.person_id, frame.person_name, frame.confidence.min(100), frame.consecutive_hits.max(1), frame.policy_version, frame.created_at],
+        ).map_err(|err| format!("保存自动识别告警失败：{err}"))?;
+        Self::read_camera_face_alert(&conn, &frame.alert_id)
+    }
+
+    pub fn list_camera_face_alerts(&self, limit: usize) -> Result<Vec<CameraFaceAlertRecord>, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let mut stmt = conn.prepare("SELECT a.alert_id,a.source_kind,a.source_device_id,a.source_nickname,a.source_address,a.person_id,a.person_name,a.confidence,a.consecutive_hits,a.policy_version,a.created_at,COALESCE(SUM(CASE WHEN f.result='real' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN f.result='false' THEN 1 ELSE 0 END),0) FROM camera_face_alerts a LEFT JOIN camera_face_alert_feedbacks f ON f.alert_id=a.alert_id GROUP BY a.alert_id ORDER BY a.created_at DESC LIMIT ?1")
+            .map_err(|err| format!("读取自动识别告警失败：{err}"))?;
+        let rows = stmt.query_map(params![limit.clamp(1, 200) as i64], Self::camera_face_alert_from_row).map_err(|err| format!("读取自动识别告警失败：{err}"))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|err| format!("读取自动识别告警失败：{err}"))
+    }
+
+    pub fn upsert_camera_face_alert_feedback(&self, frame: &CameraFaceAlertFeedbackFrame) -> Result<CameraFaceAlertRecord, String> {
+        if !matches!(frame.result.as_str(), "real" | "false") { return Err("自动识别告警反馈无效".to_string()); }
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        conn.execute("INSERT INTO camera_face_alert_feedbacks (alert_id,responder_device_id,responder_nickname,result,created_at) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(alert_id,responder_device_id) DO UPDATE SET responder_nickname=excluded.responder_nickname,result=excluded.result,created_at=excluded.created_at", params![frame.alert_id, frame.responder_device_id, frame.responder_nickname, frame.result, frame.created_at])
+            .map_err(|err| format!("保存自动识别告警反馈失败：{err}"))?;
+        Self::read_camera_face_alert(&conn, &frame.alert_id)
+    }
+
+    fn read_camera_face_alert(conn: &Connection, alert_id: &str) -> Result<CameraFaceAlertRecord, String> {
+        conn.query_row("SELECT a.alert_id,a.source_kind,a.source_device_id,a.source_nickname,a.source_address,a.person_id,a.person_name,a.confidence,a.consecutive_hits,a.policy_version,a.created_at,COALESCE(SUM(CASE WHEN f.result='real' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN f.result='false' THEN 1 ELSE 0 END),0) FROM camera_face_alerts a LEFT JOIN camera_face_alert_feedbacks f ON f.alert_id=a.alert_id WHERE a.alert_id=?1 GROUP BY a.alert_id", params![alert_id], Self::camera_face_alert_from_row)
+            .map_err(|err| format!("读取自动识别告警失败：{err}"))
+    }
+
+    fn camera_face_alert_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CameraFaceAlertRecord> {
+        Ok(CameraFaceAlertRecord { alert_id: row.get(0)?, source_kind: row.get(1)?, source_device_id: row.get(2)?, source_nickname: row.get(3)?, source_address: row.get(4)?, person_id: row.get(5)?, person_name: row.get(6)?, confidence: row.get(7)?, consecutive_hits: row.get(8)?, policy_version: row.get(9)?, created_at: row.get(10)?, feedback_real: row.get(11)?, feedback_false: row.get(12)? })
     }
 
     pub fn get_or_create_profile(&self) -> Result<Profile, String> {
@@ -1054,19 +1296,24 @@ impl Storage {
         .map_err(|err| format!("读取撤回消息失败：{err}"))
     }
 
-    pub fn list_messages(&self, conversation_id: &str) -> Result<Vec<Message>, String> {
-        const MESSAGE_PAGE_LIMIT: i64 = 500;
+    pub fn list_messages_page(
+        &self,
+        conversation_id: &str,
+        before_created_at: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<Message>, String> {
+        let limit = limit.clamp(1, 100);
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, conversation_id, sender_device_id, content, message_type, file_name, file_size, file_url, file_mime_type, file_duration_ms, status, simulation_operator_device_id, simulation_operator_nickname, simulation_display_label, simulation_created_at, created_at
                  FROM (SELECT id, conversation_id, sender_device_id, content, message_type, file_name, file_size, file_url, file_mime_type, file_duration_ms, status, simulation_operator_device_id, simulation_operator_nickname, simulation_display_label, simulation_created_at, created_at
-                       FROM messages WHERE conversation_id = ?1 ORDER BY created_at DESC LIMIT ?2)
+                       FROM messages WHERE conversation_id = ?1 AND (?2 IS NULL OR created_at < ?2) ORDER BY created_at DESC LIMIT ?3)
                  ORDER BY created_at ASC",
             )
             .map_err(|err| format!("读取消息失败：{err}"))?;
         let rows = stmt
-            .query_map(params![conversation_id, MESSAGE_PAGE_LIMIT], |row| {
+            .query_map(params![conversation_id, before_created_at, limit], |row| {
                 let message_type: String = row.get(4)?;
                 let status: String = row.get(10)?;
                 let file_name: Option<String> = row.get(5)?;
@@ -1098,6 +1345,11 @@ impl Storage {
             .map_err(|err| format!("读取消息失败：{err}"))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|err| format!("解析消息失败：{err}"))
+    }
+
+    #[cfg(test)]
+    pub fn list_messages(&self, conversation_id: &str) -> Result<Vec<Message>, String> {
+        self.list_messages_page(conversation_id, None, 500)
     }
 
     pub fn get_conversation(&self, conversation_id: &str) -> Result<Option<Conversation>, String> {
@@ -1707,6 +1959,83 @@ mod tests {
                 .expect("peer exists")
                 .avatar
         );
+    }
+
+    #[test]
+    fn face_monitor_policy_prefers_device_override_and_keeps_newest_versions() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage = Storage::open(&temp.path().join("lanchat.sqlite3")).expect("storage opens");
+        storage.upsert_face_monitor_policy(&FaceMonitorPolicyFrame {
+            target_device_id: "*".to_string(), min_confidence: 70, consecutive_hits: 2,
+            cooldown_seconds: 60, version: 1, issued_by_device_id: "admin".to_string(), issued_by_nickname: "管理员".to_string(), issued_at: 1,
+        }).expect("global policy");
+        storage.upsert_face_monitor_policy(&FaceMonitorPolicyFrame {
+            target_device_id: "device-a".to_string(), min_confidence: 88, consecutive_hits: 3,
+            cooldown_seconds: 90, version: 2, issued_by_device_id: "admin".to_string(), issued_by_nickname: "管理员".to_string(), issued_at: 2,
+        }).expect("device policy");
+        let effective = storage.effective_face_monitor_policy("device-a").expect("policy read").expect("policy exists");
+        assert_eq!(effective.min_confidence, 88);
+        storage.upsert_face_monitor_policy(&FaceMonitorPolicyFrame {
+            target_device_id: "device-a".to_string(), min_confidence: 10, consecutive_hits: 1,
+            cooldown_seconds: 5, version: 1, issued_by_device_id: "old".to_string(), issued_by_nickname: "旧管理员".to_string(), issued_at: 0,
+        }).expect("old policy ignored");
+        assert_eq!(storage.effective_face_monitor_policy("device-a").expect("policy read").expect("policy exists").min_confidence, 88);
+    }
+
+    #[test]
+    fn older_face_person_frame_does_not_override_newer_rule() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage = Storage::open(&temp.path().join("lanchat.sqlite3")).expect("storage opens");
+        let mut frame = FacePersonPolicyFrame {
+            person_id: "person-1".to_string(), display_name: "新名称".to_string(), photo_url: None, photo_sha256: None,
+            expires_at: None, enabled: true, version: 2, action: "upsert".to_string(), issued_by_device_id: "admin".to_string(), issued_by_nickname: "管理员".to_string(), issued_at: 2,
+        };
+        storage.upsert_face_person(&frame).expect("new person saved");
+        frame.display_name = "旧名称".to_string(); frame.version = 1;
+        assert_eq!(storage.upsert_face_person(&frame).expect("old frame ignored").display_name, "新名称");
+    }
+
+    #[test]
+    fn deleted_face_person_is_not_returned_in_visible_list() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage = Storage::open(&temp.path().join("lanchat.sqlite3")).expect("storage opens");
+        storage.upsert_face_person(&FacePersonPolicyFrame {
+            person_id: "person-1".to_string(), display_name: "临时人员".to_string(), photo_url: None, photo_sha256: None,
+            expires_at: None, enabled: true, version: 1, action: "upsert".to_string(),
+            issued_by_device_id: "local".to_string(), issued_by_nickname: "本机".to_string(), issued_at: 1,
+        }).expect("person saved");
+        storage.delete_face_person_local("person-1").expect("person deleted");
+        assert!(storage.list_face_people().expect("visible list").is_empty());
+    }
+
+    #[test]
+    fn face_people_store_embedding_and_model_version() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage = Storage::open(&temp.path().join("lanchat.sqlite3")).expect("storage opens");
+        storage.upsert_face_person(&FacePersonPolicyFrame {
+            person_id: "person-embedding".to_string(), display_name: "特征人员".to_string(), photo_url: None, photo_sha256: None,
+            expires_at: None, enabled: true, version: 1, action: "upsert".to_string(),
+            issued_by_device_id: "local".to_string(), issued_by_nickname: "本机".to_string(), issued_at: 1,
+        }).expect("person saved");
+        storage.update_face_person_embedding("person-embedding", Some(vec![1u8, 2, 3]), Some("v1".to_string())).expect("embedding saved");
+        let person = storage.list_face_people().expect("visible list").pop().expect("person present");
+        assert_eq!(person.embedding.as_deref(), Some([1u8, 2, 3].as_slice()));
+        assert_eq!(person.embedding_model_version.as_deref(), Some("v1"));
+        // 远端同步 upsert 不应覆盖本机已提取的特征。
+        storage.upsert_face_person(&FacePersonPolicyFrame {
+            person_id: "person-embedding".to_string(), display_name: "特征人员改名".to_string(), photo_url: None, photo_sha256: None,
+            expires_at: None, enabled: true, version: 2, action: "upsert".to_string(),
+            issued_by_device_id: "remote".to_string(), issued_by_nickname: "远端".to_string(), issued_at: 2,
+        }).expect("person re-synced");
+        let person = storage.list_face_people().expect("visible list").pop().expect("person present");
+        assert_eq!(person.display_name, "特征人员改名");
+        assert_eq!(person.embedding.as_deref(), Some([1u8, 2, 3].as_slice()));
+        assert_eq!(person.embedding_model_version.as_deref(), Some("v1"));
+        // 提取失败时清空特征。
+        storage.update_face_person_embedding("person-embedding", None, None).expect("embedding cleared");
+        let person = storage.list_face_people().expect("visible list").pop().expect("person present");
+        assert!(person.embedding.is_none());
+        assert!(person.embedding_model_version.is_none());
     }
 
     #[test]

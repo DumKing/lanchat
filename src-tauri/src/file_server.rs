@@ -1,6 +1,7 @@
 use crate::network::local_ip_address;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -163,6 +164,9 @@ async fn handle_connection(
     let Some(file) = file else {
         return write_status(&mut stream, 404, "Not Found").await;
     };
+    if path.contains("thumbnail=1") {
+        return write_thumbnail(&mut stream, &file.path).await;
+    }
     let mut file_handle = tokio::fs::File::open(&file.path)
         .await
         .map_err(|err| format!("读取共享文件失败：{err}"))?;
@@ -179,6 +183,47 @@ async fn handle_connection(
         .await
         .map_err(|err| format!("发送文件失败：{err}"))?;
     Ok(())
+}
+
+async fn write_thumbnail(stream: &mut TcpStream, path: &PathBuf) -> Result<(), String> {
+    let path = path.clone();
+    let bytes = tauri::async_runtime::spawn_blocking(move || create_thumbnail(&path))
+        .await
+        .map_err(|err| format!("生成图片缩略图失败：{err}"))??;
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nCache-Control: private, max-age=3600\r\nConnection: close\r\n\r\n",
+        bytes.len(),
+    );
+    stream
+        .write_all(header.as_bytes())
+        .await
+        .map_err(|err| format!("发送缩略图响应失败：{err}"))?;
+    stream
+        .write_all(&bytes)
+        .await
+        .map_err(|err| format!("发送缩略图失败：{err}"))
+}
+
+fn create_thumbnail(path: &PathBuf) -> Result<Vec<u8>, String> {
+    const MAX_SOURCE_PIXELS: u64 = 36_000_000;
+    const MAX_EDGE: u32 = 480;
+    let reader = image::ImageReader::open(path)
+        .map_err(|err| format!("读取图片失败：{err}"))?
+        .with_guessed_format()
+        .map_err(|err| format!("识别图片格式失败：{err}"))?;
+    let (width, height) = reader
+        .into_dimensions()
+        .map_err(|err| format!("读取图片尺寸失败：{err}"))?;
+    if u64::from(width) * u64::from(height) > MAX_SOURCE_PIXELS {
+        return Err("图片尺寸过大，无法生成缩略图".to_string());
+    }
+    let image = image::open(path).map_err(|err| format!("解码图片失败：{err}"))?;
+    let thumbnail = image.thumbnail(MAX_EDGE, MAX_EDGE).to_rgb8();
+    let mut output = Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(thumbnail)
+        .write_to(&mut output, image::ImageFormat::Jpeg)
+        .map_err(|err| format!("编码缩略图失败：{err}"))?;
+    Ok(output.into_inner())
 }
 
 async fn write_status(stream: &mut TcpStream, code: u16, text: &str) -> Result<(), String> {

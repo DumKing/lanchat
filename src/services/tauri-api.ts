@@ -1,12 +1,32 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AppVersionInfo, CallSignal, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Nudge, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem, UpdateCheckResult } from "../types/lanchat";
+import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AppVersionInfo, CallSignal, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Nudge, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem, UpdateCheckResult, UpdateGithubTokenInfo } from "../types/lanchat";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, PetStatePlaybackConfig } from "../types/desktop-pet";
+import type { CameraFaceAlert, CameraFrameSample, CameraMonitorSettings, FaceMonitorPolicy, FaceMonitorRuntimeStatus, FacePersonPolicy } from "../types/face-monitor";
 
 export const api = {
   getPlatformInfo: () => invoke<PlatformInfo>("get_platform_info"),
+  getFaceMonitorStatus: () => invoke<FaceMonitorRuntimeStatus>("get_face_monitor_status"),
+  updateFaceMonitorLocalSettings: (settings: CameraMonitorSettings) => invoke<CameraMonitorSettings>("update_face_monitor_local_settings", { settings }),
+  submitFaceMonitorFrame: (sample: CameraFrameSample) => invoke<CameraFaceAlert | null>("submit_face_monitor_frame", { bytes: Array.from(sample.bytes), width: sample.width, height: sample.height }),
+  listFacePeople: () => invoke<FacePersonPolicy[]>("list_face_people"),
+  deleteFacePersonLocal: (personId: string) => invoke<void>("delete_face_person_local", { personId }),
+  saveFaceReferencePhoto: (bytes: Uint8Array) => invoke<string>("save_face_reference_photo", { bytes: Array.from(bytes) }),
+  createLocalFacePerson: (personId: string, displayName: string, photoPath: string) =>
+    invoke<FacePersonPolicy>("create_local_face_person", { personId, displayName, photoPath }),
+  getEffectiveFaceMonitorPolicy: () => invoke<FaceMonitorPolicy | null>("get_effective_face_monitor_policy"),
+  sendFaceMonitorPolicy: (targetDeviceId: string, minConfidence: number, consecutiveHits: number, cooldownSeconds: number, version: number) =>
+    invoke<FaceMonitorPolicy>("send_face_monitor_policy", { targetDeviceId, minConfidence, consecutiveHits, cooldownSeconds, version }),
+  sendFacePersonPolicy: (targetDeviceId: string, personId: string, displayName: string, photoPath: string | null, expiresAt: number | null, enabled: boolean, action: "upsert" | "disable" | "delete", version: number) =>
+    invoke<FacePersonPolicy>("send_face_person_policy", { targetDeviceId, personId, displayName, photoPath, expiresAt, enabled, action, version }),
+  listCameraFaceAlerts: () => invoke<CameraFaceAlert[]>("list_camera_face_alerts"),
+  sendCameraFaceAlertFeedback: (alertId: string, sourceDeviceId: string, result: "real" | "false") =>
+    invoke<CameraFaceAlert>("send_camera_face_alert_feedback", { alertId, sourceDeviceId, result }),
   getAppVersionInfo: () => invoke<AppVersionInfo>("get_app_version_info"),
   refreshUpdateProxy: () => invoke<void>("refresh_update_proxy"),
   checkForUpdate: () => invoke<UpdateCheckResult>("check_for_update"),
+  getUpdateGithubTokenInfo: () => invoke<UpdateGithubTokenInfo>("get_update_github_token_info"),
+  saveUpdateGithubToken: (token: string) => invoke<UpdateGithubTokenInfo>("save_update_github_token", { token }),
+  clearUpdateGithubToken: () => invoke<UpdateGithubTokenInfo>("clear_update_github_token"),
   isPortableRuntime: () => invoke<boolean>("is_portable_runtime"),
   installPortableUpdate: (downloadUrl: string, sha256: string) => invoke<void>("install_portable_update", { downloadUrl, sha256 }),
   authenticateSuperAdmin: (password: string) => invoke<boolean>("authenticate_super_admin", { password }),
@@ -48,8 +68,8 @@ export const api = {
     invoke<Conversation>("accept_private_channel_invite", { invite }),
   broadcastChannelNotice: (conversationId: string, notice: string) =>
     invoke<void>("broadcast_channel_notice", { conversationId, notice }),
-  listMessages: (conversationId: string) =>
-    invoke<Message[]>("list_messages", { conversationId }),
+  listMessages: (conversationId: string, beforeCreatedAt?: number, limit = 60) =>
+    invoke<Message[]>("list_messages", { conversationId, beforeCreatedAt, limit }),
   sendMessage: (conversationId: string, content: string) =>
     invoke<Message>("send_message", { conversationId, content }),
   simulateMessage: (simulatedDeviceId: string, conversationId: string, content: string, displaySimulationLabel: boolean) =>
