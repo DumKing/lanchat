@@ -54,6 +54,19 @@ pub struct FaceMonitorStatus {
 pub struct PresenceDetection {
     pub confidence: u8,
     pub detected_faces: u8,
+    pub faces: Vec<DetectedFace>,
+}
+
+/// One decoded YuNet face in the 640×640 detector input space.
+#[derive(Debug, Clone)]
+pub struct DetectedFace {
+    pub x1: f32,
+    pub y1: f32,
+    pub w: f32,
+    pub h: f32,
+    /// 关键点顺序：右眼、左眼、鼻尖、右嘴角、左嘴角（被识者视角）。
+    pub landmarks: [(f32, f32); 5],
+    pub score: f32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -213,8 +226,33 @@ impl FaceMonitorRuntime {
         }
         let detector = self.detector.as_ref().ok_or_else(|| "人脸检测模型未就绪".to_string())?;
         let mut session = detector.lock().map_err(|_| "人脸检测器被占用".to_string())?;
+        let output_index: HashMap<String, usize> = session.outputs().iter().enumerate().map(|(index, output)| (output.name().to_string(), index)).collect();
         let outputs = session.run(ort::inputs![ort::value::TensorRef::from_array_view(&input)
             .map_err(|error| format!("构造检测输入失败：{error}"))?]).map_err(|error| format!("人脸检测推理失败：{error}"))?;
+        let strides: [f32; 3] = [8.0, 16.0, 32.0];
+        let mut decoded: [Option<(f32, [&[f32]; 4])>; 3] = [None, None, None];
+        for ((slot, stride), grid) in decoded.iter_mut().zip(strides).zip([8usize, 16, 32]) {
+            let names = [format!("cls_{grid}"), format!("obj_{grid}"), format!("bbox_{grid}"), format!("kps_{grid}")];
+            let mut tensors: [&[f32]; 4] = [&[], &[], &[], &[]];
+            let mut complete = true;
+            for (name, tensor_slot) in names.iter().zip(tensors.iter_mut()) {
+                let Some(&index) = output_index.get(name.as_str()) else { complete = false; break; };
+                let Ok((_, tensor)) = outputs[index].try_extract_tensor::<f32>() else { complete = false; break; };
+                *tensor_slot = tensor;
+            }
+            if !complete { decoded = [None, None, None]; break; }
+            *slot = Some((stride, tensors));
+        }
+        if let [Some((s0, t0)), Some((s1, t1)), Some((s2, t2))] = decoded {
+            let size = DETECTOR_SIZE as f32;
+            let faces = decode_faces([(s0, t0[0], t0[1], t0[2], t0[3]), (s1, t1[0], t1[1], t1[2], t1[3]), (s2, t2[0], t2[1], t2[2], t2[3])], size, 0.60);
+            let faces = nms_faces(faces, 0.35, 5);
+            let best = faces.iter().map(|face| face.score).fold(0.0_f32, f32::max);
+            if best < 0.60 { return Ok(None); }
+            let detected_faces = faces.len().min(255) as u8;
+            return Ok(Some(PresenceDetection { confidence: (best * 100.0).round().clamp(0.0, 100.0) as u8, detected_faces, faces }));
+        }
+        // Fallback for detectors without named stride outputs: keep presence-only behavior.
         let mut best = 0.0_f32;
         for (cls_index, object_index) in [(0usize, 3usize), (1, 4), (2, 5)] {
             let (_, cls) = outputs[cls_index].try_extract_tensor::<f32>().map_err(|error| format!("读取检测结果失败：{error}"))?;
@@ -223,9 +261,8 @@ impl FaceMonitorRuntime {
                 best = best.max(normalize_score(class_score) * normalize_score(object_score));
             }
         }
-        // YuNet emits several anchors for one face. Presence detection only needs the strongest one.
         if best < 0.60 { return Ok(None); }
-        Ok(Some(PresenceDetection { confidence: (best * 100.0).round().clamp(0.0, 100.0) as u8, detected_faces: 1 }))
+        Ok(Some(PresenceDetection { confidence: (best * 100.0).round().clamp(0.0, 100.0) as u8, detected_faces: 1, faces: Vec::new() }))
     }
 
     pub fn accept_match(&self, key: &str, confidence: u8, min_confidence: u8, required_hits: u8, cooldown_seconds: u32, now: i64) -> bool {
@@ -243,6 +280,55 @@ impl FaceMonitorRuntime {
 
 fn normalize_score(value: f32) -> f32 {
     if (0.0..=1.0).contains(&value) { value } else { 1.0 / (1.0 + (-value).exp()) }
+}
+
+/// YuNet 锚框解码：每个 stride 层按 grid cell 生成先验框，分数取 cls/obj 归一化后的几何均值。
+fn decode_faces(strides: [(f32, &[f32], &[f32], &[f32], &[f32]); 3], size: f32, min_score: f32) -> Vec<DetectedFace> {
+    let mut faces = Vec::new();
+    for (stride, cls, obj, bbox, kps) in strides {
+        let cols = (size / stride) as usize;
+        let rows = cols;
+        for r in 0..rows {
+            for c in 0..cols {
+                let idx = r * cols + c;
+                if idx >= cls.len() || idx >= obj.len() || (idx + 1) * 4 > bbox.len() || (idx + 1) * 10 > kps.len() { continue; }
+                let score = (normalize_score(cls[idx]) * normalize_score(obj[idx])).sqrt();
+                if score < min_score { continue; }
+                let cx = (c as f32 + bbox[idx * 4]) * stride;
+                let cy = (r as f32 + bbox[idx * 4 + 1]) * stride;
+                let w = bbox[idx * 4 + 2].exp() * stride;
+                let h = bbox[idx * 4 + 3].exp() * stride;
+                let mut landmarks = [(0.0_f32, 0.0_f32); 5];
+                for (n, landmark) in landmarks.iter_mut().enumerate() {
+                    *landmark = ((kps[idx * 10 + 2 * n] + c as f32) * stride, (kps[idx * 10 + 2 * n + 1] + r as f32) * stride);
+                }
+                faces.push(DetectedFace { x1: cx - w / 2.0, y1: cy - h / 2.0, w, h, landmarks, score });
+            }
+        }
+    }
+    faces
+}
+
+fn face_iou(a: &DetectedFace, b: &DetectedFace) -> f32 {
+    let x1 = a.x1.max(b.x1);
+    let y1 = a.y1.max(b.y1);
+    let x2 = (a.x1 + a.w).min(b.x1 + b.w);
+    let y2 = (a.y1 + a.h).min(b.y1 + b.h);
+    let intersection = (x2 - x1).max(0.0) * (y2 - y1).max(0.0);
+    let union = a.w * a.h + b.w * b.h - intersection;
+    if union <= 0.0 { 0.0 } else { intersection / union }
+}
+
+/// 贪心 NMS：按分数降序保留，抑制与之 IoU 超阈值的锚框，至多保留 top_k 张脸。
+fn nms_faces(mut faces: Vec<DetectedFace>, iou_threshold: f32, top_k: usize) -> Vec<DetectedFace> {
+    faces.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    let mut kept = Vec::new();
+    for face in faces {
+        if kept.iter().any(|candidate: &DetectedFace| face_iou(candidate, &face) > iou_threshold) { continue; }
+        kept.push(face);
+        if kept.len() >= top_k { break; }
+    }
+    kept
 }
 
 fn model_state_from_dir(dir: &Path) -> Result<FaceModelState, String> {
@@ -345,5 +431,64 @@ mod tests {
         let outputs = detector.run(ort::inputs![ort::value::TensorRef::from_array_view(&input).unwrap()]).unwrap();
         let (_, cls8) = outputs[0].try_extract_tensor::<f32>().unwrap();
         assert_eq!(cls8.len(), 6400);
+    }
+
+    fn stride_layer<'a>(stride: f32, cls: &'a [f32], obj: &'a [f32], bbox: &'a [f32], kps: &'a [f32]) -> (f32, &'a [f32], &'a [f32], &'a [f32], &'a [f32]) {
+        (stride, cls, obj, bbox, kps)
+    }
+
+    #[test]
+    fn decode_faces_decodes_single_anchor_by_formula() {
+        // 2×2 网格（size=16，stride=8），仅 idx=3 的锚框得分 0.9。
+        let cls = [0.0, 0.0, 0.0, 0.81];
+        let obj = [0.0, 0.0, 0.0, 1.0];
+        let mut bbox = vec![0.0_f32; 16];
+        bbox[12..16].copy_from_slice(&[0.5, 0.25, 0.0, 0.6931472]);
+        let mut kps = vec![0.0_f32; 40];
+        for n in 0..5 {
+            kps[30 + 2 * n] = n as f32 * 0.1;
+            kps[31 + 2 * n] = 0.5;
+        }
+        let layers = [stride_layer(8.0, &cls, &obj, &bbox, &kps), stride_layer(16.0, &[], &[], &[], &[]), stride_layer(32.0, &[], &[], &[], &[])];
+        let faces = decode_faces(layers, 16.0, 0.6);
+        assert_eq!(faces.len(), 1);
+        let face = &faces[0];
+        assert!((face.score - 0.9).abs() < 1e-6);
+        // cx=(1+0.5)*8=12, cy=(1+0.25)*8=10, w=8, h=exp(0.6931472)*8≈16
+        assert!((face.x1 - 8.0).abs() < 1e-3);
+        assert!((face.y1 - 2.0).abs() < 1e-3);
+        assert!((face.w - 8.0).abs() < 1e-3);
+        assert!((face.h - 16.0).abs() < 1e-2);
+        assert!((face.landmarks[0].0 - 8.0).abs() < 1e-3);
+        assert!((face.landmarks[0].1 - 12.0).abs() < 1e-3);
+        assert!((face.landmarks[4].0 - 11.2).abs() < 1e-3);
+    }
+
+    #[test]
+    fn decode_faces_filters_low_score_anchors() {
+        let cls = [0.25];
+        let obj = [0.25];
+        let bbox = [0.0, 0.0, 0.0, 0.0];
+        let kps = [0.0; 10];
+        let layers = [stride_layer(8.0, &cls, &obj, &bbox, &kps), stride_layer(16.0, &[], &[], &[], &[]), stride_layer(32.0, &[], &[], &[], &[])];
+        assert!(decode_faces(layers, 8.0, 0.6).is_empty());
+    }
+
+    #[test]
+    fn nms_faces_suppresses_overlapping_keeps_separated() {
+        let face = |x1: f32, y1: f32, score: f32| DetectedFace { x1, y1, w: 10.0, h: 10.0, landmarks: [(0.0, 0.0); 5], score };
+        let overlapping = nms_faces(vec![face(0.0, 0.0, 0.9), face(1.0, 1.0, 0.8)], 0.35, 5);
+        assert_eq!(overlapping.len(), 1);
+        assert!((overlapping[0].score - 0.9).abs() < 1e-6);
+        let separated = nms_faces(vec![face(0.0, 0.0, 0.7), face(50.0, 50.0, 0.9)], 0.35, 5);
+        assert_eq!(separated.len(), 2);
+        assert!((separated[0].score - 0.9).abs() < 1e-6);
+    }
+
+    #[test]
+    fn nms_faces_respects_top_k() {
+        let face = |offset: f32, score: f32| DetectedFace { x1: offset, y1: offset, w: 10.0, h: 10.0, landmarks: [(0.0, 0.0); 5], score };
+        let faces = (0..8).map(|i| face(i as f32 * 40.0, 0.5 + i as f32 * 0.01)).collect();
+        assert_eq!(nms_faces(faces, 0.35, 5).len(), 5);
     }
 }
