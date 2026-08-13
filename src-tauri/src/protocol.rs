@@ -25,6 +25,10 @@ pub enum WireFrame {
     AdminNotification(AdminNotificationFrame),
     AdminNotificationSubmission(AdminNotificationSubmissionFrame),
     AdminNotificationDecision(AdminNotificationDecisionFrame),
+    FacePersonPolicy(FacePersonPolicyFrame),
+    FaceMonitorPolicy(FaceMonitorPolicyFrame),
+    CameraFaceAlert(CameraFaceAlertFrame),
+    CameraFaceAlertFeedback(CameraFaceAlertFeedbackFrame),
     Ping,
     Pong,
 }
@@ -262,6 +266,69 @@ pub struct AdminAlertModeFrame {
     pub created_at: i64,
 }
 
+/// The reference image is transferred through the issuer's LAN file server,
+/// keeping the JSON-lines control channel small and bounded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FacePersonPolicyFrame {
+    pub person_id: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub photo_url: Option<String>,
+    #[serde(default)]
+    pub photo_sha256: Option<String>,
+    #[serde(default)]
+    pub expires_at: Option<i64>,
+    pub enabled: bool,
+    pub version: i64,
+    /// upsert | disable | delete
+    pub action: String,
+    pub issued_by_device_id: String,
+    pub issued_by_nickname: String,
+    pub issued_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FaceMonitorPolicyFrame {
+    /// * targets all currently online devices, otherwise a concrete device id.
+    pub target_device_id: String,
+    pub min_confidence: u8,
+    pub consecutive_hits: u8,
+    pub cooldown_seconds: u32,
+    pub version: i64,
+    pub issued_by_device_id: String,
+    pub issued_by_nickname: String,
+    pub issued_at: i64,
+}
+
+/// A metadata-only automatic alert. It intentionally contains no frame, image
+/// URL, embedding, or any other camera evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CameraFaceAlertFrame {
+    pub alert_id: String,
+    pub source_kind: String,
+    pub source_device_id: String,
+    pub source_nickname: String,
+    #[serde(default)]
+    pub source_address: Option<String>,
+    pub person_id: String,
+    pub person_name: String,
+    pub confidence: u8,
+    pub consecutive_hits: u8,
+    pub policy_version: i64,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CameraFaceAlertFeedbackFrame {
+    pub alert_id: String,
+    pub source_device_id: String,
+    pub responder_device_id: String,
+    pub responder_nickname: String,
+    /// real | false
+    pub result: String,
+    pub created_at: i64,
+}
+
 /// 超管下发给指定设备的通知。确认型通知由目标设备提交后，再由超管审核放行。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdminNotificationFrame {
@@ -353,6 +420,56 @@ mod tests {
 
         assert!(encoded.ends_with('\n'));
         assert_eq!(decode_frame(&encoded).expect("frame should decode"), frame);
+    }
+
+    #[test]
+    fn face_person_policy_round_trips_without_embedding_photo_bytes() {
+        let frame = WireFrame::FacePersonPolicy(FacePersonPolicyFrame {
+            person_id: "person-1".to_string(),
+            display_name: "测试人员".to_string(),
+            photo_url: Some("http://192.168.1.2:1234/files/a/photo.jpg".to_string()),
+            photo_sha256: Some("abc".to_string()),
+            expires_at: None,
+            enabled: true,
+            version: 2,
+            action: "upsert".to_string(),
+            issued_by_device_id: "admin".to_string(),
+            issued_by_nickname: "管理员".to_string(),
+            issued_at: 10,
+        });
+        let encoded = encode_frame(&frame).expect("face frame encodes");
+        assert!(!encoded.contains("photo_base64"));
+        assert_eq!(decode_frame(&encoded).expect("face frame decodes"), frame);
+    }
+
+    #[test]
+    fn face_monitor_policy_round_trips() {
+        let frame = WireFrame::FaceMonitorPolicy(FaceMonitorPolicyFrame {
+            target_device_id: "*".to_string(),
+            min_confidence: 82,
+            consecutive_hits: 3,
+            cooldown_seconds: 60,
+            version: 4,
+            issued_by_device_id: "admin".to_string(),
+            issued_by_nickname: "管理员".to_string(),
+            issued_at: 10,
+        });
+        let encoded = encode_frame(&frame).expect("policy frame encodes");
+        assert_eq!(decode_frame(&encoded).expect("policy frame decodes"), frame);
+    }
+
+    #[test]
+    fn camera_face_alert_round_trips_without_camera_evidence() {
+        let frame = WireFrame::CameraFaceAlert(CameraFaceAlertFrame {
+            alert_id: "face-alert-1".to_string(), source_kind: "camera_face".to_string(),
+            source_device_id: "device-a".to_string(), source_nickname: "摄像头设备".to_string(),
+            source_address: Some("192.168.1.9".to_string()), person_id: "person-1".to_string(),
+            person_name: "指定人员".to_string(), confidence: 91, consecutive_hits: 2, policy_version: 3, created_at: 10,
+        });
+        let encoded = encode_frame(&frame).expect("automatic alert encodes");
+        assert!(!encoded.contains("photo"));
+        assert!(!encoded.contains("embedding"));
+        assert_eq!(decode_frame(&encoded).expect("automatic alert decodes"), frame);
     }
 
     #[test]
