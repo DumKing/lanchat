@@ -4340,23 +4340,26 @@ function stopPetAlertVisuals() {
   nowTick.value = Date.now();
   void syncDesktopPetRuntime();
 }
+const facePetAlert = ref<{ alertId: string; personName: string; confidence: number; sourceNickname: string; sourceAddress: string | null; createdAt: number; until: number } | null>(null);
+const activeFacePetAlert = computed(() => (facePetAlert.value && facePetAlert.value.until > nowTick.value) ? facePetAlert.value : null);
 async function syncDesktopPetRuntime() {
   const alert = activePetAlert.value;
+  const face = !alert ? activeFacePetAlert.value : null;
   const runtimeState: DesktopPetRuntimeState = {
     revision: ++desktopPetRuntimeRevision,
     enabled: petAlertEnabled.value,
     pending_count: pendingAlertCount.value,
     temperature: Number(petAlertProbability.value),
-    latest_alert_id: alert?.alertId ?? null,
-    latest_sender: alert?.senderNickname ?? null,
-    latest_sender_address: alert?.senderAddress ?? null,
-    latest_content: alert ? `${alert.content}${simulationLabel(alert.simulation) ? ` · ${simulationLabel(alert.simulation)}` : ""}` : null,
-    latest_created_at: alert?.createdAt ?? null,
+    latest_alert_id: alert?.alertId ?? face?.alertId ?? null,
+    latest_sender: alert?.senderNickname ?? (face ? "【人脸识别】" : null),
+    latest_sender_address: alert?.senderAddress ?? face?.sourceAddress ?? null,
+    latest_content: alert ? `${alert.content}${simulationLabel(alert.simulation) ? ` · ${simulationLabel(alert.simulation)}` : ""}` : (face ? `检测到 ${face.personName} · 置信度 ${face.confidence}%` : null),
+    latest_created_at: alert?.createdAt ?? face?.createdAt ?? null,
     incoming_call_id: petAlertEnabled.value && callSession.value?.status === "incoming" ? callSession.value.callId : null,
     incoming_call_sender: petAlertEnabled.value && callSession.value?.status === "incoming" ? callSession.value.peerNickname : null,
     incoming_call_media: petAlertEnabled.value && callSession.value?.status === "incoming" ? callSession.value.media : null,
     feedbackable: !!latestPendingAlert.value,
-    flashing: !!alert,
+    flashing: !!alert || !!face,
     disco: discoModeActive.value && !!alert,
     theme_accent: currentTheme.value.accent,
     random_move_enabled: desktopPetSettings.value?.randomMoveEnabled ?? true,
@@ -5335,6 +5338,18 @@ function upsertCameraFaceAlert(record: CameraFaceAlert) {
   cameraFaceAlerts.value = [record, ...cameraFaceAlerts.value.filter((item) => item.alertId !== record.alertId)]
     .sort((left, right) => right.createdAt - left.createdAt)
     .slice(0, 100);
+  // 识别告警独立驱动桌宠 30 秒，不进入狼来了队列，也不显示反馈按钮。
+  facePetAlert.value = {
+    alertId: record.alertId,
+    personName: record.personName,
+    confidence: record.confidence,
+    sourceNickname: record.sourceNickname,
+    sourceAddress: record.sourceAddress ?? null,
+    createdAt: record.createdAt,
+    until: Date.now() + 30_000,
+  };
+  nowTick.value = Date.now();
+  void syncDesktopPetRuntime();
 }
 
 // Camera evidence is an ephemeral local Blob URL. It is never saved to SQLite
