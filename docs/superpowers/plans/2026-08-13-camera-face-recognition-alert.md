@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 让 LanChat 的摄像头监控把检测到的人脸与本机录入的人员参考照片做 SFace 特征比对，命中后自动产生具名告警，并驱动桌宠 Alert 与外部群推送，且与狼来了普通告警区分。
+**Goal:** 让 LanChat 的摄像头监控把检测到的人脸与本机录入的人员参考照片做 SFace 特征比对，命中后自动产生具名告警，并驱动桌宠 Alert 与外部群推送，且与狼来了普通告警区分；同时**彻底取消匿名"检测到人脸"告警**，不再产生相关事件与数据。
 
 **Architecture:** 全部识别逻辑在 Rust 后端完成，复用现有 ort 推理与模型清单校验链路：YuNet 输出从"取最强分数"升级为多锚框解码 + NMS；新增 SFace 识别模型做 128 维特征提取；特征随人员记录存入 SQLite；命中走现有 `accept_match` 门限生成 `camera_face` 具名告警。前端只补类型字段、状态展示与桌宠联动。
 
@@ -13,7 +13,7 @@
 ## 关键背景（实现者必读）
 
 - 现有运行时：`src-tauri/src/face_monitor.rs`（YuNet 存在检测、`accept_match` 门限、清单校验）。
-- 命令与告警发布：`src-tauri/src/lib.rs` 中 `submit_face_monitor_frame`（约 L585）、`publish_camera_face_presence`（约 L690）、`create_local_face_person`（约 L627）、`send_external_push_alert`（约 L356，只接受 `QuickAlertFrame`，**不要改动它**）。
+- 命令与告警发布：`src-tauri/src/lib.rs` 中 `submit_face_monitor_frame`（约 L585）、`publish_camera_face_presence`（约 L690，匿名告警已取消，在 Task 6 删除）、`create_local_face_person`（约 L627）、`send_external_push_alert`（约 L356，只接受 `QuickAlertFrame`，**不要改动它**）。
 - 存储：`src-tauri/src/storage.rs` 的 `face_people`、`camera_face_alerts` 表与 `ensure_column` 迁移机制。
 - 前端：`src/App.vue`（约 7992 行，`initializeFaceMonitor` ≈ L5407、`syncDesktopPetRuntime` ≈ L4343、`upsertCameraFaceAlert` ≈ L5334）、`src/types/face-monitor.ts`、`src/services/tauri-api.ts`。
 - YuNet ONNX 输出（已用 onnx 元数据核实）：`cls_8/cls_16/cls_32`、`obj_8/obj_16/obj_32`、`bbox_8/bbox_16/bbox_32`、`kps_8/kps_16/kps_32`，共 12 个输出；输入 `input`，640×640。
@@ -313,40 +313,29 @@ git commit -m "feat: face_people 增加人脸特征列与迁移"
 
 ---
 
-### Task 6: 告警记录增加 sourceKind 字段
+### Task 6: 移除匿名人脸出现告警链路
 
 **Files:**
-- Modify: `src-tauri/src/storage.rs`、`src-tauri/src/protocol.rs`（如记录构建处需要）、`src/types/face-monitor.ts`
-- Test: `src-tauri/src/storage.rs`
+- Modify: `src-tauri/src/lib.rs`
 
-- [ ] **Step 1: 写失败测试**
+需求变更：匿名 `camera_face_presence` 告警不再产生任何事件与数据。本任务先拆除旧链路，Task 7 再接入识别链路。
 
-```rust
-#[test]
-fn camera_face_alerts_keep_source_kind() {
-    // upsert 一条 source_kind="camera_face" 的 CameraFaceAlertFrame，
-    // list_camera_face_alerts 返回的 record.source_kind == "camera_face"；
-    // 旧帧 "camera_face_presence" 同样保留。
-}
-```
+- [ ] **Step 1: 删除匿名告警发布**
 
-`CameraFaceAlertFrame`（protocol.rs）已有 `source_kind` 字段；若没有则先补上并同步 network.rs 的序列化。
+1. 删除 `publish_camera_face_presence` 函数（约 L690）。
+2. `submit_face_monitor_frame` 中删除对它的调用；检测命中后暂改为 `Ok(None)`（Task 7 会替换为识别逻辑）。
+3. `storage.rs` 的 `upsert_camera_face_alert` 对 `camera_face_presence` 的兼容校验**保留**（历史广播帧与旧版本客户端兼容），无需改动。
 
-- [ ] **Step 2: 运行确认失败后实现**
+- [ ] **Step 2: 编译与回归**
 
-1. `CameraFaceAlertRecord` 增加 `pub source_kind: String`。
-2. `ensure_column(&conn, "camera_face_alerts", "source_kind", "TEXT NOT NULL DEFAULT 'camera_face_presence'")`。
-3. INSERT 写入 `frame.source_kind`；SELECT/`read_camera_face_alert` 读出。
-4. 前端 `src/types/face-monitor.ts` 的 `CameraFaceAlert` 增加 `sourceKind: "camera_face" | "camera_face_presence"`（Rust serde camelCase 自动映射）。
-
-Run: `cargo test --manifest-path src-tauri/Cargo.toml camera_face_alerts`
-Expected: PASS。
+Run: `cargo check --manifest-path src-tauri/Cargo.toml` 与 `cargo test --manifest-path src-tauri/Cargo.toml face_monitor`
+Expected: 无编译错误，测试 PASS。
 
 - [ ] **Step 3: 提交**
 
 ```powershell
-git add src-tauri/src/storage.rs src-tauri/src/protocol.rs src/types/face-monitor.ts
-git commit -m "feat: 摄像头告警记录携带 sourceKind 区分匿名与识别"
+git add src-tauri/src/lib.rs
+git commit -m "feat: 取消匿名人脸出现告警，不再产生相关事件与数据"
 ```
 
 ---
@@ -401,12 +390,12 @@ pub fn recognize_frame(&self, bytes: &[u8], people: &[PersonTemplate]) -> Result
         accept_match(&match.person_id, match.confidence, policy...) 通过
         → publish_camera_face_alert(app, state, &match, policy.version).await（可多个）
     返回第一个生成的记录（前端预览用；无则 None）
-否则：
-    走现有 publish_camera_face_presence 匿名路径（行为不变）
+否则（识别模型未就绪或无可用人员）：
+    返回 Ok(None)，不产生任何告警事件与数据（匿名链路已在 Task 6 移除）
 ```
 
 3. 新增 `publish_camera_face_alert`：复制 `publish_camera_face_presence` 结构，`CameraFaceAlertFrame` 填 `source_kind: "camera_face"`、`person_id/person_name` 为命中人员、`confidence` 为匹配置信度；落库、广播、`app.emit("camera_face_alert_received", &record)` 均复用。
-4. 识别模型未就绪或无人员时不做额外告警分支（匿名路径即降级），错误原因已通过 `status()` 暴露。
+4. 识别模型未就绪或无人员时不产生告警，错误原因通过 `status()` 暴露，由设置页展示。
 
 - [ ] **Step 5: 运行测试并编译**
 
@@ -522,7 +511,7 @@ git commit -m "feat: 人脸识别告警独立外部群推送"
 - [ ] **Step 2: 设置页展示**
 
 在 `App.vue` 摄像头监控设置区（搜索 `摄像头人脸出现告警` 与 `faceMonitorRuntimeStatus` 相关模板）：
-1. 状态区追加一行：识别模型未就绪时 `NAlert type="warning"` 显示 `faceMonitorRuntimeStatus.lastError`（后端在无人员时通过 status 错误文案提示"请先录入识别人员"——在 `status()` 中：`recognizer_ready` 为 false 且无其他错误时不覆盖检测错误；无人员提示由前端判断 `facePeople` 过滤启用者数量，显示"尚未录入识别人员，将按匿名人脸出现告警运行"）。
+1. 状态区追加一行：识别模型未就绪时 `NAlert type="warning"` 显示 `faceMonitorRuntimeStatus.lastError`；无启用人员时前端根据 `facePeople` 过滤启用者数量，显示"尚未录入识别人员，摄像头监控不会产生告警"。
 2. 人员列表每行显示特征徽标：`hasEmbedding` 为真 → `NTag type="success" 特征已提取`；否则 `NTag type="warning" 特征不可用`。
 
 - [ ] **Step 3: 类型检查**
@@ -553,7 +542,7 @@ const facePetAlert = ref<{ alertId: string; personName: string; confidence: numb
 const activeFacePetAlert = computed(() => (facePetAlert.value && facePetAlert.value.until > nowTick.value) ? facePetAlert.value : null);
 ```
 
-`upsertCameraFaceAlert` 中：当 `record.sourceKind === "camera_face"` 时设置 `facePetAlert.value = { ..., until: Date.now() + 30_000 }`，随后 `nowTick.value = Date.now(); void syncDesktopPetRuntime();`（`nowTick` 已存在并有定时器驱动；若 30 秒后无定时器刷新，可在 `until` 到期时依靠下一次 nowTick 更新自然失效）。
+`upsertCameraFaceAlert` 中：对所有 `CameraFaceAlert` 记录（匿名告警已取消，收到的即识别告警；历史旧记录 personName 为"检测到人脸"，同样可驱动桌宠无害）设置 `facePetAlert.value = { ..., until: Date.now() + 30_000 }`，随后 `nowTick.value = Date.now(); void syncDesktopPetRuntime();`（`nowTick` 已存在并有定时器驱动；若 30 秒后无定时器刷新，可在 `until` 到期时依靠下一次 nowTick 更新自然失效）。
 
 - [ ] **Step 2: 合入运行时快照**
 
@@ -595,8 +584,8 @@ git commit -m "feat: 人脸识别告警驱动桌宠并与狼来了区分"
 - [ ] **Step 1: 增补脚本断言**
 
 参照现有脚本模式（读源码文本断言关键行为）补充：
-1. `CameraFaceAlert` 类型包含 `sourceKind`；
-2. `upsertCameraFaceAlert` 仅在 `sourceKind === "camera_face"` 时设置 `facePetAlert`；
+1. `lib.rs` 中 `publish_camera_face_presence` 已不存在（匿名告警链路已移除）；
+2. `upsertCameraFaceAlert` 设置 `facePetAlert`；
 3. `syncDesktopPetRuntime` 中识别覆盖文案包含 `【人脸识别】`；
 4. Rust 侧 `render_camera_face_push_text` 存在且不改动 `send_external_push_alert` 签名（文本断言即可）。
 
@@ -618,8 +607,8 @@ Expected: 全部 PASS。
 1. 录入本人照片（上传与拍照各一次）→ 人员显示"特征已提取"；照片中无脸时提示"参考照片中未检测到人脸"。
 2. 开启监控出镜 → 连续命中后产生具名告警"检测到 XX"，桌宠进入 Alert 显示【人脸识别】文案；外部推送（如已配置 webhook）收到 `[人脸识别告警]` 文案。
 3. 陌生人出镜 → 无告警。
-4. 删除全部人员 → 回退匿名告警，设置页出现录入提示。
-5. 临时将 manifest 中 recognizer 哈希改错并重启 → 状态区显示识别模型错误，匿名告警保留。
+4. 删除全部人员 → 不再产生任何告警，设置页显示录入提示。
+5. 临时将 manifest 中 recognizer 哈希改错并重启 → 状态区显示识别模型错误，不产生告警。
 
 - [ ] **Step 4: 提交**
 
@@ -637,7 +626,7 @@ Task 1（模型资源）
   └→ Task 2（清单/会话）→ Task 4（对齐+特征提取）→ Task 8（录入提取）
 Task 3（多人脸解码）→ Task 7（识别编排+具名告警）→ Task 9（外部推送）
 Task 5（特征列）→ Task 7 / Task 8
-Task 6（sourceKind）→ Task 10 / Task 11
+Task 6（移除匿名链路）→ Task 7
 Task 10、11 → Task 12（回归）
 ```
 
