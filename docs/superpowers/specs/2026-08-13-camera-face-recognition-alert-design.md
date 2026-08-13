@@ -50,7 +50,7 @@
 1. **多人脸解码**：解码 YuNet 三个步长（8/16/32）的全部锚框（bbox 回归 + 5 关键点），置信度过滤 + NMS，输出 0..N 张人脸。现有"最强分数 ≥ 0.60"的存在判断以解码结果为准。
 2. **对齐裁剪**：按 5 关键点（双眼、鼻尖、嘴角）做仿射对齐，裁剪 112×112 RGB 人脸。
 3. **特征提取**：SFace 推理，输出 128 维向量并 L2 归一化。
-4. **比对**：与所有"已启用且特征可用"的人员计算余弦相似度，`confidence = round(相似度 × 100)`。
+4. **比对**：与所有"已启用且特征可用"的人员计算余弦相似度，`confidence = round(相似度 × 100)`，并 clamp 到 0..100（余弦相似度可能为负，避免 `u8` 溢出）。
 5. **门限**：每个命中人员以 `personId` 为 key 走现有 `accept_match`（`min_confidence` / `consecutive_hits` / `cooldown_seconds`），各人员独立连击计数与冷却。
 
 `submit_face_monitor_frame` 命令改为调用 `analyze_frame_full`。参考照片特征提取复用同一 SFace 会话与对齐逻辑（`extract_embedding` 公开方法）。
@@ -76,7 +76,7 @@
 - **识别模式**：本机存在 ≥1 个"已启用且特征可用"的人员时生效。只对命中人员发具名告警：`source_kind = "camera_face"`，`person_id` / `person_name` 为真实人员，`confidence` 为匹配置信度。未匹配的陌生人脸**不告警**。
 - **降级模式**：无启用人员或识别模型不可用时，设置页状态区显示明确错误提示（如"请先录入识别人员""识别模型未安装"），并回退为现有匿名 `camera_face_presence` 告警，保证已上线功能不回退。
 - **多人命中**：一帧内多个人员分别命中时，各自生成告警，受各自连击与冷却约束。
-- 告警落库、局域网广播、`camera_face_alert_received` 事件、反馈链路全部复用现有实现。
+- 告警落库、局域网广播、`camera_face_alert_received` 事件、反馈链路复用现有实现。注意：现有 `CameraFaceAlertRecord` / 前端 `CameraFaceAlert` 类型**不含告警类型字段**，需为其补充 `source_kind` / `sourceKind`（广播协议帧已有该字段，属小幅补全，不是另建链路）。
 
 ## 桌宠与外部推送介入（与普通告警区分）
 
@@ -104,6 +104,7 @@
 - 推送文案使用专用格式，不复用狼来了模板：
   `[人脸识别告警] 检测到 {人员名} · 置信度 {n}% · 来源：{设备昵称}({IP}) · {时间}`；`mention_all` 生效。
 - 自动告警无"发送人可信度"概念，不走 `external_push_min_credibility` 阈值；超管锁定逻辑保持不变。
+- 推送走**独立渲染与发送路径**：新增面向 `CameraFaceAlertFrame` 的推送函数，不复用、不改造 `send_external_push_alert(config, QuickAlertFrame)`，避免把识别告警塞进狼来了帧污染其文案与可信度逻辑。
 - 局域网内其他接收端只展示桌宠告警，**不重复推送**，避免多设备向同一群重复推送同一事件。
 
 ## 前端改动
