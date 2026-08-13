@@ -8,6 +8,7 @@ const [app, api, rust] = await Promise.all([
 ]);
 
 assert.match(app, /title="摄像头自动告警"/, "设置页需要提供本机摄像头告警入口");
+assert.match(app, /class="camera-face-settings-card"/, "摄像头设置应跨越设置网格整行展示");
 assert.match(app, /视频通话期间暂停识别/, "设置页需要提供通话期间隐私开关");
 assert.match(app, /initializeFaceMonitor\(\)/, "应用启动时需要恢复本机摄像头设置");
 assert.match(app, /cameraMediaCoordinator\.subscribeFrames/, "低清采样帧必须走统一协调器");

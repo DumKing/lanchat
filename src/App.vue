@@ -7113,7 +7113,7 @@ async function closeWindow() {
                     </NSpace>
                   </NSpace>
                 </NCard>
-                <NCard v-if="settingsCategory === 'camera'" title="摄像头自动告警" size="small">
+                <NCard v-if="settingsCategory === 'camera'" class="camera-face-settings-card" title="摄像头自动告警" size="small">
                   <NSpace vertical>
                     <div class="setting-switch-row">
                       <div>
