@@ -368,18 +368,24 @@ async fn send_external_push_alert(
         return Err("外部推送机器人 Webhook 必须使用 https:// 地址".to_string());
     }
     let content = render_external_push_alert_text(&config.template, &frame);
-    let payload = if config.kind == "dingtalk" {
+    let payload = external_push_payload(&config.kind, config.mention_all, &content);
+    post_external_push_webhook(&config.name, webhook, &payload).await
+}
+
+/// 钉钉/企业微信机器人 text 消息体，狼来了与人脸识别告警共用。
+fn external_push_payload(kind: &str, mention_all: bool, content: &str) -> serde_json::Value {
+    if kind == "dingtalk" {
         serde_json::json!({
             "msgtype": "text",
             "text": {
                 "content": content,
             },
             "at": {
-                "isAtAll": config.mention_all,
+                "isAtAll": mention_all,
             }
         })
     } else {
-        let mentioned_list = if config.mention_all {
+        let mentioned_list = if mention_all {
             vec!["@all"]
         } else {
             Vec::new()
@@ -391,19 +397,21 @@ async fn send_external_push_alert(
                 "mentioned_list": mentioned_list,
             }
         })
-    };
+    }
+}
+
+async fn post_external_push_webhook(name: &str, webhook: &str, payload: &serde_json::Value) -> Result<(), String> {
     let response = reqwest::Client::new()
         .post(webhook)
-        .json(&payload)
+        .json(payload)
         .send()
         .await
-        .map_err(|error| format!("外部推送「{}」发送失败：{error}", config.name))?;
+        .map_err(|error| format!("外部推送「{name}」发送失败：{error}"))?;
     let status = response.status();
     let body = response.text().await.unwrap_or_else(|_| String::new());
     if !status.is_success() {
         return Err(format!(
-            "外部推送「{}」发送失败：HTTP {status}",
-            config.name
+            "外部推送「{name}」发送失败：HTTP {status}"
         ));
     }
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
@@ -416,10 +424,65 @@ async fn send_external_push_alert(
                 .get("errmsg")
                 .and_then(|item| item.as_str())
                 .unwrap_or("未知错误");
-            return Err(format!("外部推送「{}」发送失败：{message}", config.name));
+            return Err(format!("外部推送「{name}」发送失败：{message}"));
         }
     }
     Ok(())
+}
+
+/// 人脸识别告警的推送文案：与狼来了模板渲染完全分离，固定具名格式。
+fn render_camera_face_push_text(frame: &protocol::CameraFaceAlertFrame) -> String {
+    let source_ip = frame.source_address.as_deref().unwrap_or("未知 IP");
+    format!(
+        "[人脸识别告警] 检测到 {} · 置信度 {}% · 来源：{}（{}） · {}",
+        frame.person_name,
+        frame.confidence,
+        frame.source_nickname,
+        source_ip,
+        format_alert_time(frame.created_at)
+    )
+}
+
+/// 人脸识别告警的独立外部推送：不走可信度阈值，不复用狼来了模板。
+async fn send_camera_face_external_push(
+    config: ExternalPushConfig,
+    frame: protocol::CameraFaceAlertFrame,
+) -> Result<(), String> {
+    if !config.enabled {
+        return Ok(());
+    }
+    let webhook = config.webhook.trim();
+    if webhook.is_empty() {
+        return Ok(());
+    }
+    if !webhook.starts_with("https://") {
+        return Err("外部推送机器人 Webhook 必须使用 https:// 地址".to_string());
+    }
+    let content = render_camera_face_push_text(&frame);
+    let payload = external_push_payload(&config.kind, config.mention_all, &content);
+    post_external_push_webhook(&config.name, webhook, &payload).await
+}
+
+#[cfg(test)]
+mod camera_face_push_tests {
+    use super::*;
+
+    #[test]
+    fn camera_face_push_text_names_person_and_source() {
+        let frame = protocol::CameraFaceAlertFrame {
+            alert_id: "alert-1".to_string(), source_kind: "camera_face".to_string(),
+            source_device_id: "device-1".to_string(), source_nickname: "监控机".to_string(),
+            source_address: Some("192.168.1.10".to_string()), person_id: "person-1".to_string(),
+            person_name: "张三".to_string(), confidence: 87, consecutive_hits: 2,
+            policy_version: 3, created_at: 1_723_000_000_000,
+        };
+        let text = render_camera_face_push_text(&frame);
+        assert!(text.starts_with("[人脸识别告警]"));
+        assert!(text.contains("张三"));
+        assert!(text.contains("87%"));
+        assert!(text.contains("监控机"));
+        assert!(text.contains("192.168.1.10"));
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -767,8 +830,24 @@ async fn publish_camera_face_alert(
         consecutive_hits: policy.consecutive_hits, policy_version: policy.version, created_at: now,
     };
     let record = state.storage.upsert_camera_face_alert(&frame)?;
-    state.network.broadcast_camera_face_alert(app.clone(), frame).await?;
+    state.network.broadcast_camera_face_alert(app.clone(), frame.clone()).await?;
     app.emit("camera_face_alert_received", &record).ok();
+    // 人脸识别告警的独立外部推送：不走可信度阈值，只在产生端执行。
+    let settings = state.desktop_pet.settings();
+    if settings.external_push_enabled {
+        for config in settings
+            .external_push_configs
+            .into_iter()
+            .filter(|item| item.enabled && !item.webhook.trim().is_empty())
+        {
+            let notify_frame = frame.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = send_camera_face_external_push(config, notify_frame).await {
+                    eprintln!("{error}");
+                }
+            });
+        }
+    }
     Ok(record)
 }
 
