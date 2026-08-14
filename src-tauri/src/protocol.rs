@@ -29,6 +29,7 @@ pub enum WireFrame {
     FaceMonitorPolicy(FaceMonitorPolicyFrame),
     CameraFaceAlert(CameraFaceAlertFrame),
     CameraFaceAlertFeedback(CameraFaceAlertFeedbackFrame),
+    AdminRemoteUpdate(AdminRemoteUpdateFrame),
     Ping,
     Pong,
 }
@@ -266,6 +267,20 @@ pub struct AdminAlertModeFrame {
     pub created_at: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdminRemoteUpdateFrame {
+    pub command_id: String,
+    pub target_device_id: String,
+    pub target_version: String,
+    #[serde(default)]
+    pub package: Option<FileMeta>,
+    #[serde(default)]
+    pub package_sha256: Option<String>,
+    pub issued_by_device_id: String,
+    pub issued_by_nickname: String,
+    pub created_at: i64,
+}
+
 /// The reference image is transferred through the issuer's LAN file server,
 /// keeping the JSON-lines control channel small and bounded.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -275,7 +290,11 @@ pub struct FacePersonPolicyFrame {
     #[serde(default)]
     pub photo_url: Option<String>,
     #[serde(default)]
+    pub photo_urls: Vec<String>,
+    #[serde(default)]
     pub photo_sha256: Option<String>,
+    #[serde(default)]
+    pub photo_sha256s: Vec<String>,
     #[serde(default)]
     pub expires_at: Option<i64>,
     pub enabled: bool,
@@ -292,12 +311,31 @@ pub struct FaceMonitorPolicyFrame {
     /// * targets all currently online devices, otherwise a concrete device id.
     pub target_device_id: String,
     pub min_confidence: u8,
+    #[serde(default = "default_body_min_confidence")]
+    pub body_min_confidence: u8,
+    #[serde(default = "default_face_monitor_sample_fps")]
+    pub sample_fps: u8,
     pub consecutive_hits: u8,
+    /// Legacy fallback used by clients older than the split-cooldown protocol.
     pub cooldown_seconds: u32,
+    #[serde(default)]
+    pub face_cooldown_seconds: u32,
+    #[serde(default)]
+    pub body_cooldown_seconds: u32,
+    #[serde(default)]
+    pub settings_locked: bool,
     pub version: i64,
     pub issued_by_device_id: String,
     pub issued_by_nickname: String,
     pub issued_at: i64,
+}
+
+fn default_body_min_confidence() -> u8 {
+    68
+}
+
+fn default_face_monitor_sample_fps() -> u8 {
+    2
 }
 
 /// A metadata-only automatic alert. It intentionally contains no frame, image
@@ -313,9 +351,19 @@ pub struct CameraFaceAlertFrame {
     pub person_id: String,
     pub person_name: String,
     pub confidence: u8,
+    #[serde(default = "default_confirmed_recognition_level")]
+    pub recognition_level: String,
+    #[serde(default)]
+    pub face_confidence: Option<u8>,
+    #[serde(default)]
+    pub body_confidence: Option<u8>,
     pub consecutive_hits: u8,
     pub policy_version: i64,
     pub created_at: i64,
+}
+
+fn default_confirmed_recognition_level() -> String {
+    "confirmed".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -428,7 +476,9 @@ mod tests {
             person_id: "person-1".to_string(),
             display_name: "测试人员".to_string(),
             photo_url: Some("http://192.168.1.2:1234/files/a/photo.jpg".to_string()),
+            photo_urls: vec![],
             photo_sha256: Some("abc".to_string()),
+            photo_sha256s: vec![],
             expires_at: None,
             enabled: true,
             version: 2,
@@ -447,8 +497,13 @@ mod tests {
         let frame = WireFrame::FaceMonitorPolicy(FaceMonitorPolicyFrame {
             target_device_id: "*".to_string(),
             min_confidence: 82,
+            body_min_confidence: 72,
+            sample_fps: 3,
             consecutive_hits: 3,
             cooldown_seconds: 60,
+            face_cooldown_seconds: 45,
+            body_cooldown_seconds: 90,
+            settings_locked: true,
             version: 4,
             issued_by_device_id: "admin".to_string(),
             issued_by_nickname: "管理员".to_string(),
@@ -461,15 +516,28 @@ mod tests {
     #[test]
     fn camera_face_alert_round_trips_without_camera_evidence() {
         let frame = WireFrame::CameraFaceAlert(CameraFaceAlertFrame {
-            alert_id: "face-alert-1".to_string(), source_kind: "camera_face".to_string(),
-            source_device_id: "device-a".to_string(), source_nickname: "摄像头设备".to_string(),
-            source_address: Some("192.168.1.9".to_string()), person_id: "person-1".to_string(),
-            person_name: "指定人员".to_string(), confidence: 91, consecutive_hits: 2, policy_version: 3, created_at: 10,
+            alert_id: "face-alert-1".to_string(),
+            source_kind: "camera_face".to_string(),
+            source_device_id: "device-a".to_string(),
+            source_nickname: "摄像头设备".to_string(),
+            source_address: Some("192.168.1.9".to_string()),
+            person_id: "person-1".to_string(),
+            person_name: "指定人员".to_string(),
+            confidence: 91,
+            recognition_level: "confirmed".to_string(),
+            face_confidence: Some(91),
+            body_confidence: None,
+            consecutive_hits: 2,
+            policy_version: 3,
+            created_at: 10,
         });
         let encoded = encode_frame(&frame).expect("automatic alert encodes");
         assert!(!encoded.contains("photo"));
         assert!(!encoded.contains("embedding"));
-        assert_eq!(decode_frame(&encoded).expect("automatic alert decodes"), frame);
+        assert_eq!(
+            decode_frame(&encoded).expect("automatic alert decodes"),
+            frame
+        );
     }
 
     #[test]

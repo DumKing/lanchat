@@ -7,8 +7,22 @@ const clampFps = (value: number) => Math.max(1, Math.min(5, Math.round(value || 
 
 /** Owns the only camera track used by both face monitoring and WebRTC calls. */
 class CameraMediaCoordinator {
-  private settings: CameraMonitorSettings = { enabled: false, deviceId: null, pauseDuringCall: false, sampleFps: 2 };
+  private settings: CameraMonitorSettings = {
+    enabled: false,
+    faceRecognitionEnabled: true,
+    bodyRecognitionEnabled: true,
+    deviceId: null,
+    pauseDuringCall: false,
+    sampleFps: 2,
+    faceMinConfidence: 60,
+    bodyMinConfidence: 68,
+    consecutiveHits: 1,
+    faceCooldownSeconds: 60,
+    bodyCooldownSeconds: 300,
+    appliedPolicyVersion: 0,
+  };
   private videoStream: MediaStream | null = null;
+  private callVideoTrack: MediaStreamTrack | null = null;
   private callAudioStream: MediaStream | null = null;
   private videoCallActive = false;
   private previewActive = false;
@@ -22,7 +36,7 @@ class CameraMediaCoordinator {
   private samplerCanvas: HTMLCanvasElement | null = null;
 
   getStatus(): CameraMonitorStatus {
-    const sampling = !!this.frameTimer && this.settings.enabled && !(this.videoCallActive && this.settings.pauseDuringCall);
+    const sampling = !!this.frameTimer && this.monitoringActive() && !(this.videoCallActive && this.settings.pauseDuringCall);
     return {
       supported: true,
       enabled: this.settings.enabled,
@@ -51,7 +65,7 @@ class CameraMediaCoordinator {
 
   async updateMonitorSettings(next: Partial<CameraMonitorSettings>) {
     this.settings = { ...this.settings, ...next, sampleFps: clampFps(next.sampleFps ?? this.settings.sampleFps) };
-    if (this.settings.enabled) await this.ensureVideoTrack();
+    if (this.monitoringActive()) await this.ensureVideoTrack();
     this.releaseUnusedTracks();
     this.updateSampling();
     this.emitStatus();
@@ -69,8 +83,10 @@ class CameraMediaCoordinator {
       const tracks: MediaStreamTrack[] = [];
       if (media === "video") {
         this.videoCallActive = true;
-        const video = await this.ensureVideoTrack();
-        tracks.push(video);
+        const sourceVideoTrack = await this.ensureVideoTrack();
+        this.callVideoTrack?.stop();
+        this.callVideoTrack = sourceVideoTrack.clone();
+        tracks.push(this.callVideoTrack);
       }
       const audio = await this.ensureAudioTrack();
       tracks.unshift(audio);
@@ -79,6 +95,9 @@ class CameraMediaCoordinator {
       this.emitStatus();
       return new MediaStream(tracks);
     } catch (error) {
+      this.callVideoTrack?.stop();
+      this.callVideoTrack = null;
+      this.videoCallActive = false;
       this.lastError = error instanceof Error ? error.message : String(error);
       this.emitStatus();
       throw error;
@@ -99,7 +118,11 @@ class CameraMediaCoordinator {
   }
 
   releaseCall(media: "audio" | "video") {
-    if (media === "video") this.videoCallActive = false;
+    if (media === "video") {
+      this.videoCallActive = false;
+      this.callVideoTrack?.stop();
+      this.callVideoTrack = null;
+    }
     this.stopStream(this.callAudioStream);
     this.callAudioStream = null;
     this.releaseUnusedTracks();
@@ -112,8 +135,10 @@ class CameraMediaCoordinator {
     this.frameTimer = null;
     this.stopStream(this.videoStream);
     this.stopStream(this.callAudioStream);
+    this.callVideoTrack?.stop();
     this.videoStream = null;
     this.callAudioStream = null;
+    this.callVideoTrack = null;
     this.frameListeners.clear();
     this.statusListeners.clear();
   }
@@ -139,8 +164,12 @@ class CameraMediaCoordinator {
     return this.videoCallActive ? 1 : clampFps(this.settings.sampleFps);
   }
 
+  private monitoringActive() {
+    return this.settings.enabled && (this.settings.faceRecognitionEnabled || this.settings.bodyRecognitionEnabled);
+  }
+
   private updateSampling() {
-    const enabled = this.samplingAllowed && this.settings.enabled && this.frameListeners.size > 0 && !!this.videoStream && !(this.videoCallActive && this.settings.pauseDuringCall);
+    const enabled = this.samplingAllowed && this.monitoringActive() && this.frameListeners.size > 0 && !!this.videoStream && !(this.videoCallActive && this.settings.pauseDuringCall);
     if (this.frameTimer !== null) {
       window.clearInterval(this.frameTimer);
       this.frameTimer = null;
@@ -196,7 +225,7 @@ class CameraMediaCoordinator {
   }
 
   private releaseUnusedTracks() {
-    if (!this.settings.enabled && !this.videoCallActive && !this.previewActive) {
+    if (!this.monitoringActive() && !this.videoCallActive && !this.previewActive) {
       this.stopStream(this.videoStream);
       this.videoStream = null;
     }

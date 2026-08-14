@@ -11,6 +11,8 @@ assert.match(types, /CameraMonitorSettings/, "需要定义本机摄像头识别�
 assert.match(types, /CameraMonitorStatus/, "需要定义摄像头诊断状态");
 assert.match(types, /CameraFrameSample/, "需要定义低频帧契约");
 assert.match(coordinator, /acquireForCall/, "协调器需要提供通话媒体流");
+assert.match(coordinator, /sourceVideoTrack\.clone\(\)/, "视频通话必须克隆本地检测轨道，关闭发送不能停掉检测源");
+assert.match(coordinator, /callVideoTrack/, "协调器需要独立管理通话发送轨道的生命周期");
 assert.match(coordinator, /subscribeFrames/, "协调器需要提供识别采样订阅");
 assert.match(coordinator, /effectiveSampleFps\(\).*videoCallActive/s, "通话期间需要降频采样");
 assert.match(coordinator, /longest = 320/, "采样帧必须缩放，不能传递原始视频帧");

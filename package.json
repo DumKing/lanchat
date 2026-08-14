@@ -1,7 +1,7 @@
 {
   "name": "lanchat",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.5.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -29,12 +29,16 @@
     "test:tray-attention": "node scripts/test-tray-attention.mjs",
     "test:app-error-boundary": "node scripts/test-app-error-boundary.mjs",
     "test:face-recognition-alert": "node scripts/test-face-recognition-alert.mjs",
+    "test:settings-layout": "node scripts/test-settings-layout.mjs",
+    "test:admin-remote-update": "node scripts/test-admin-remote-update.mjs",
+    "test:i18n": "node scripts/test-i18n.mjs",
     "build": "node scripts/write-build-timestamp.mjs && vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-autostart": "^2.5.1",
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-updater": "^2.10.1",

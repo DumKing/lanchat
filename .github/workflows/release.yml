@@ -144,8 +144,17 @@ jobs:
         run: |
           TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
           VERSION="${TAG#v}"
-          FORCE_UPDATE="${{ github.event_name == 'workflow_dispatch' && inputs.force_update || 'false' }}"
-          MIN_SUPPORTED_VERSION="${{ github.event_name == 'workflow_dispatch' && inputs.min_supported_version || '0.0.0' }}"
+          RELEASE_CONFIG="docs/releases/${TAG}.json"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            FORCE_UPDATE="${{ inputs.force_update }}"
+            MIN_SUPPORTED_VERSION="${{ inputs.min_supported_version }}"
+          elif [ -f "${RELEASE_CONFIG}" ]; then
+            FORCE_UPDATE=$(jq -r '.force_update // false' "${RELEASE_CONFIG}")
+            MIN_SUPPORTED_VERSION=$(jq -r '.min_supported_version // "0.0.0"' "${RELEASE_CONFIG}")
+          else
+            FORCE_UPDATE="false"
+            MIN_SUPPORTED_VERSION="0.0.0"
+          fi
           PORTABLE=$(find release-downloads -iname 'lanchat-windows-portable.zip' | head -n 1)
           INSTALLER=$(find release-downloads -iname '*.exe' | head -n 1)
           SIGNATURE=$(find release-downloads -iname '*.exe.sig' | head -n 1)

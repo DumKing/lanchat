@@ -1703,9 +1703,12 @@
 .external-push-list{display:grid;gap:10px}.external-push-item{display:grid;gap:10px;padding:12px;border:1px solid var(--panel-line);border-radius:8px;background:var(--panel-bg)}.external-push-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.external-push-head strong{min-width:0;overflow:hidden;color:var(--text);font-size:14px;text-overflow:ellipsis;white-space:nowrap}.external-push-grid{display:grid;grid-template-columns:minmax(130px,180px) minmax(0,1fr);gap:10px}.external-push-actions{display:flex;align-items:center;justify-content:space-between;gap:10px}@media(max-width:1180px){.external-push-grid{grid-template-columns:1fr}}
 .device-note-editor{display:flex;align-items:flex-end;gap:10px;padding:12px;border:1px solid var(--panel-line);border-radius:8px;background:var(--panel-bg)}.device-note-editor .n-form-item{flex:1;min-width:0;margin:0}.group-member-row.is-offline,.channel-member-list.embedded .device-item.is-offline{opacity:.62}.group-member-row.is-offline .presence-dot{background:#ef4444}.channel-member-list.embedded .device-item.is-offline .n-thing-main__description{color:#c24141}@media(max-width:760px){.device-note-editor{align-items:stretch;flex-direction:column}}.file-preview-image{cursor:zoom-in}.local-device-list{padding-top:0}.local-device-item{border-left-color:var(--accent);background:var(--soft-accent)}.image-preview-modal .n-modal{max-width:min(92vw,1280px);max-height:92vh;background:transparent;box-shadow:none}.image-preview-dialog{position:relative;display:grid;place-items:center;max-width:min(92vw,1280px);max-height:92vh;padding:12px;border-radius:10px;background:#0f172ad9;box-shadow:0 24px 80px #02061799}.image-preview-dialog img{display:block;max-width:calc(min(92vw,1280px) - 24px);max-height:calc(92vh - 24px);border-radius:6px;object-fit:contain}.image-preview-close{position:absolute;top:-12px;right:-12px;z-index:1;display:grid;place-items:center;width:30px;height:30px;border:0;border-radius:50%;color:#fff;background:#334155;box-shadow:0 4px 14px #02061766;cursor:pointer;font-size:24px;line-height:1}
 .simulation-modal.n-card{width:min(480px,calc(100vw - 36px))!important}.simulation-form{display:grid;gap:14px}.simulation-identity{display:flex;align-items:center;gap:10px;padding:10px;border-radius:8px;background:var(--soft-accent)}.simulation-identity>div{display:grid;gap:2px;min-width:0}.simulation-identity strong,.simulation-identity small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.simulation-identity small{color:var(--muted);font-size:12px}.simulation-actions{display:flex;justify-content:flex-end;gap:8px}.message-meta{display:flex;align-items:center;gap:6px}
+.operation-error-modal.n-card{width:min(380px,calc(100vw - 32px))!important;border-radius:10px!important}.operation-error-modal .n-card-header{padding:16px 18px 8px!important}.operation-error-modal .n-card__content{padding:10px 18px!important}.operation-error-modal .n-card__footer{padding:8px 18px 16px!important}.operation-error-content{display:grid;grid-template-columns:30px minmax(0,1fr);align-items:start;gap:10px}.operation-error-content p{min-width:0;margin:3px 0 0;color:var(--text);font-size:13px;line-height:20px;overflow-wrap:anywhere}.operation-error-icon{display:grid;width:28px;height:28px;place-items:center;border-radius:50%;color:#fff;background:#d03050;font-size:20px;font-weight:800;line-height:1}.operation-error-actions{display:flex;justify-content:flex-end}.super-admin-auth-modal.n-card{width:min(360px,calc(100vw - 32px))!important;border-radius:10px!important}.super-admin-auth-modal .n-card-header{padding:16px 18px 8px!important}.super-admin-auth-modal .n-card__content{padding:8px 18px 18px!important}
 /* 超管通知采用紧凑的任务确认面板，避免遮挡主界面信息。 */
 .admin-notification-lock.n-card,.admin-notification-announcement.n-card{width:min(500px,calc(100vw - 40px))!important;border-radius:12px!important}
 .admin-notification-history-modal.n-card{width:min(620px,calc(100vw - 40px))!important;border-radius:12px!important}.admin-notification-history-list{display:grid;max-height:min(62vh,620px);gap:8px;overflow-y:auto;padding-right:4px}.admin-notification-history-item{display:grid;gap:7px;padding:12px;border:1px solid var(--panel-line);border-radius:8px;background:var(--input-bg)}.admin-notification-history-item header{display:flex;min-width:0;align-items:center;justify-content:space-between;gap:8px}.admin-notification-history-item strong{overflow:hidden;color:var(--text);text-overflow:ellipsis;white-space:nowrap}.admin-notification-history-item p{margin:0;color:var(--text);font-size:13px;line-height:1.6;white-space:pre-wrap}.admin-notification-history-item footer{color:var(--muted);font-size:11px}
+.basic-settings-grid{grid-template-columns:minmax(0,1fr)!important}.basic-memory-diagnostic-card{order:90}.basic-image-cache-card{order:91}.basic-network-repair-card{order:92}.update-token-section{display:grid;gap:10px;margin-top:16px;padding-top:16px;border-top:1px solid var(--panel-line)}
+.admin-notification-review-modal.n-card{width:min(760px,calc(100vw - 48px))!important;max-height:min(720px,calc(100vh - 48px));border-radius:10px!important}.admin-notification-review-modal .admin-notification-review-list{max-height:560px;overflow:auto}.admin-notification-review-modal .n-pagination{justify-content:flex-end;padding-top:8px}
 .admin-notification-lock-content { display: grid; gap: 12px; }
 .admin-notification-lock-content h2, .admin-notification-lock-content p { margin: 0; }
 .admin-notification-lock-content p { white-space: pre-wrap; line-height: 1.65; }
@@ -1719,3 +1722,37 @@
 .nav-notification-dot{position:absolute;top:7px;right:7px;width:8px;height:8px;border:2px solid var(--rail-bg);border-radius:50%;background:#ff4d4f;pointer-events:none}.rail.expanded .nav-notification-dot{right:10px}.admin-notification-history-item{cursor:pointer}.admin-notification-history-item:hover{border-color:var(--accent);background:var(--soft-accent)}
 .nav-bell-icon svg{display:block;width:18px;height:18px;fill:none;stroke:currentColor;stroke-linecap:round;stroke-linejoin:round;stroke-width:1.8}.remote-call-audio{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
 .camera-face-settings-card{grid-column:1 / -1;min-width:0}
+.alert-rank-head-auto,.alert-rank-row-auto{grid-template-columns:44px minmax(90px,1fr) minmax(118px,auto) minmax(118px,auto) 58px}
+.recognition-rank-metric{display:grid;gap:2px}.recognition-rank-metric b{color:var(--text);font-size:12px}.recognition-rank-metric small{color:var(--muted);font-size:11px}
+
+/* Naive UI 弹窗会传送到 body，尺寸约束必须使用全局卡片选择器。 */
+.face-person-detail-modal.n-card {
+  width: min(540px, calc(100vw - 40px)) !important;
+  max-height: calc(100vh - 40px);
+  border-radius: 10px !important;
+}
+.face-person-detail-modal .n-card__content {
+  overflow-y: auto;
+}
+.face-person-detail-modal .face-person-detail-stage {
+  height: min(42vh, 300px);
+}
+.face-person-detail-modal .face-person-detail-image {
+  width: auto !important;
+  height: auto !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  object-fit: contain !important;
+}
+.camera-face-alert-modal.n-card {
+  width: min(560px, calc(100vw - 40px)) !important;
+  max-height: calc(100vh - 40px);
+  border-radius: 10px !important;
+}
+.camera-face-alert-modal .n-card__content {
+  overflow-y: auto;
+}
+.camera-face-alert-modal .camera-face-alert-detail > img {
+  max-height: min(48vh, 320px);
+  object-fit: contain;
+}

@@ -88,6 +88,10 @@ pub struct DesktopPetRuntimeState {
     pub pending_count: u32,
     pub temperature: u8,
     pub latest_alert_id: Option<String>,
+    #[serde(default)]
+    pub latest_alert_kind: Option<String>,
+    #[serde(default)]
+    pub latest_alert_recognition_level: Option<String>,
     pub latest_sender: Option<String>,
     pub latest_sender_address: Option<String>,
     pub latest_content: Option<String>,
@@ -145,6 +149,8 @@ fn merge_runtime_state(
         && previous.latest_alert_id.is_some()
     {
         incoming.latest_alert_id = previous.latest_alert_id.clone();
+        incoming.latest_alert_kind = previous.latest_alert_kind.clone();
+        incoming.latest_alert_recognition_level = previous.latest_alert_recognition_level.clone();
         incoming.latest_sender = previous.latest_sender.clone();
         incoming.latest_sender_address = previous.latest_sender_address.clone();
         incoming.latest_content = previous.latest_content.clone();
@@ -158,6 +164,12 @@ fn merge_runtime_state(
 
     if is_missing_alert_detail(incoming.latest_sender.as_ref()) {
         incoming.latest_sender = previous.latest_sender.clone();
+    }
+    if incoming.latest_alert_kind.is_none() {
+        incoming.latest_alert_kind = previous.latest_alert_kind.clone();
+    }
+    if incoming.latest_alert_recognition_level.is_none() {
+        incoming.latest_alert_recognition_level = previous.latest_alert_recognition_level.clone();
     }
     if is_missing_alert_detail(incoming.latest_sender_address.as_ref()) {
         incoming.latest_sender_address = previous.latest_sender_address.clone();
@@ -179,6 +191,8 @@ fn merge_runtime_state(
 struct DesktopPetAction {
     action: String,
     alert_id: Option<String>,
+    #[serde(default)]
+    alert_kind: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -211,6 +225,7 @@ struct ActivePetClip {
 #[derive(Clone)]
 pub struct DesktopPetController {
     state: Arc<Mutex<DesktopPetRuntimeState>>,
+    suppressed_alert_id: Arc<Mutex<(bool, Option<String>)>>,
     package: Arc<Mutex<Option<DesktopPetPackage>>>,
     repaint: Arc<Mutex<Option<egui::Context>>>,
     process: Arc<Mutex<Option<DesktopPetProcessHandle>>>,
@@ -226,9 +241,28 @@ fn should_rehydrate_pet_process(enabled: bool) -> bool {
     enabled
 }
 
+fn apply_visual_suppression(
+    suppressed: &mut (bool, Option<String>),
+    next: &mut DesktopPetRuntimeState,
+) {
+    let frontend_confirmed_stop = !next.flashing && !next.disco;
+    let different_alert_arrived = suppressed.1.is_some()
+        && next.latest_alert_id.is_some()
+        && suppressed.1 != next.latest_alert_id;
+    if suppressed.0 && !frontend_confirmed_stop && !different_alert_arrived {
+        next.flashing = false;
+        next.disco = false;
+    } else if suppressed.0 {
+        *suppressed = (false, None);
+    }
+}
+
 #[cfg(test)]
 mod desktop_pet_enable_tests {
-    use super::{merge_runtime_state, should_rehydrate_pet_process, DesktopPetRuntimeState};
+    use super::{
+        apply_visual_suppression, merge_runtime_state, should_rehydrate_pet_process,
+        DesktopPetRuntimeState,
+    };
 
     #[test]
     fn enabling_pet_requires_state_and_package_rehydration() {
@@ -290,7 +324,10 @@ mod desktop_pet_enable_tests {
 
         assert_eq!(merged.latest_alert_id.as_deref(), Some("alert-1"));
         assert_eq!(merged.latest_sender.as_deref(), Some("王二"));
-        assert_eq!(merged.latest_sender_address.as_deref(), Some("192.168.1.23"));
+        assert_eq!(
+            merged.latest_sender_address.as_deref(),
+            Some("192.168.1.23")
+        );
     }
 
     #[test]
@@ -314,6 +351,40 @@ mod desktop_pet_enable_tests {
         assert_eq!(merged.pending_count, 0);
         assert!(merged.latest_alert_id.is_none());
     }
+
+    #[test]
+    fn stopped_alert_cannot_be_reactivated_by_a_stale_frontend_snapshot() {
+        let mut suppressed = (true, Some("alert-1".to_string()));
+        let mut incoming = DesktopPetRuntimeState {
+            latest_alert_id: Some("alert-1".to_string()),
+            flashing: true,
+            disco: true,
+            ..Default::default()
+        };
+
+        apply_visual_suppression(&mut suppressed, &mut incoming);
+
+        assert!(!incoming.flashing);
+        assert!(!incoming.disco);
+        assert!(suppressed.0);
+    }
+
+    #[test]
+    fn a_new_alert_is_allowed_after_the_previous_alert_was_stopped() {
+        let mut suppressed = (true, Some("alert-1".to_string()));
+        let mut incoming = DesktopPetRuntimeState {
+            latest_alert_id: Some("alert-2".to_string()),
+            flashing: true,
+            disco: true,
+            ..Default::default()
+        };
+
+        apply_visual_suppression(&mut suppressed, &mut incoming);
+
+        assert!(incoming.flashing);
+        assert!(incoming.disco);
+        assert!(!suppressed.0);
+    }
 }
 
 impl DesktopPetController {
@@ -326,6 +397,7 @@ impl DesktopPetController {
         let repaint = Arc::new(Mutex::new(None));
         let controller = Self {
             state: state.clone(),
+            suppressed_alert_id: Arc::new(Mutex::new((false, None))),
             package: package.clone(),
             repaint: repaint.clone(),
             process: Arc::new(Mutex::new(None)),
@@ -335,7 +407,10 @@ impl DesktopPetController {
         controller
     }
 
-    pub fn update(&self, next: DesktopPetRuntimeState) {
+    pub fn update(&self, mut next: DesktopPetRuntimeState) {
+        if let Ok(mut suppressed) = self.suppressed_alert_id.lock() {
+            apply_visual_suppression(&mut suppressed, &mut next);
+        }
         let enabled = next.enabled;
         if let Ok(mut state) = self.state.lock() {
             *state = merge_runtime_state(&state, next);
@@ -344,6 +419,26 @@ impl DesktopPetController {
         if let Ok(context) = self.repaint.lock() {
             if let Some(context) = context.as_ref() {
                 context.send_viewport_cmd(egui::ViewportCommand::Visible(enabled));
+                context.request_repaint();
+            }
+        }
+    }
+
+    pub fn stop_alert_visuals(&self) {
+        let stopped_alert_id = if let Ok(mut state) = self.state.lock() {
+            state.revision = state.revision.saturating_add(1);
+            state.flashing = false;
+            state.disco = false;
+            state.latest_alert_id.clone()
+        } else {
+            None
+        };
+        if let Ok(mut suppressed) = self.suppressed_alert_id.lock() {
+            *suppressed = (true, stopped_alert_id);
+        }
+        self.send_command(DesktopPetProcessCommand::State(self.state()));
+        if let Ok(context) = self.repaint.lock() {
+            if let Some(context) = context.as_ref() {
                 context.request_repaint();
             }
         }
@@ -685,10 +780,24 @@ impl DesktopPetApp {
     }
 
     fn emit_action(&self, action: &str, alert_id: Option<String>) {
-        native_pet_log(&format!("emit action: {action}"));
+        self.emit_action_with_kind(action, alert_id, None);
+    }
+
+    fn emit_action_with_kind(
+        &self,
+        action: &str,
+        alert_id: Option<String>,
+        alert_kind: Option<String>,
+    ) {
+        native_pet_log(&format!(
+            "emit action: {action} alert_id={} alert_kind={}",
+            alert_id.as_deref().unwrap_or("-"),
+            alert_kind.as_deref().unwrap_or("-")
+        ));
         let payload = DesktopPetAction {
             action: action.to_string(),
             alert_id,
+            alert_kind,
         };
         match &self.action_sink {
             DesktopPetActionSink::Stdout => {
@@ -916,7 +1025,7 @@ impl DesktopPetApp {
     }
 
     fn update_runtime_state(&mut self, state: &DesktopPetRuntimeState) -> PetStateKind {
-        let alert_active = state.flashing || state.pending_count > 0 || state.disco;
+        let alert_active = state.flashing || state.disco;
         if alert_active {
             self.transition_runtime(PetEvent::AlertRaised);
             return self.runtime_machine.current();
@@ -1060,12 +1169,28 @@ impl DesktopPetApp {
         let muted_color = Color32::from_rgb(116, 126, 138);
         let sender = state.latest_sender.as_deref().unwrap_or("告警");
         let sender_address = state.latest_sender_address.as_deref().unwrap_or("未知 IP");
+        let alert_kind = if state.latest_alert_kind.as_deref() == Some("camera_face") {
+            if state.latest_alert_recognition_level.as_deref() == Some("suspected") {
+                ("◇ 人体", Color32::from_rgb(224, 104, 36))
+            } else {
+                ("◉ 人脸", Color32::from_rgb(28, 170, 106))
+            }
+        } else {
+            ("[手动]", Color32::from_rgb(38, 112, 206))
+        };
         let sender_line = format!("{}：{}", sender, sender_address);
         let created_at = Self::format_alert_time(state.latest_created_at);
         let title = state.latest_content.as_deref().unwrap_or("");
 
         painter.text(
             panel.left_top() + Vec2::new(12.0, 10.0),
+            egui::Align2::LEFT_TOP,
+            alert_kind.0,
+            egui::FontId::proportional(11.0),
+            alert_kind.1,
+        );
+        painter.text(
+            panel.left_top() + Vec2::new(52.0, 10.0),
             egui::Align2::LEFT_TOP,
             sender_line,
             egui::FontId::proportional(11.0),
@@ -1115,7 +1240,11 @@ impl DesktopPetApp {
                 .interact(real, ui.id().with("feedback-real"), egui::Sense::click())
                 .clicked()
             {
-                self.emit_action("feedback_real", state.latest_alert_id.clone());
+                self.emit_action_with_kind(
+                    "feedback_real",
+                    state.latest_alert_id.clone(),
+                    state.latest_alert_kind.clone(),
+                );
             }
             if ui
                 .interact(
@@ -1125,7 +1254,11 @@ impl DesktopPetApp {
                 )
                 .clicked()
             {
-                self.emit_action("feedback_false", state.latest_alert_id.clone());
+                self.emit_action_with_kind(
+                    "feedback_false",
+                    state.latest_alert_id.clone(),
+                    state.latest_alert_kind.clone(),
+                );
             }
         }
     }
@@ -1228,10 +1361,7 @@ impl DesktopPetApp {
     }
 
     fn alert_visual_active(runtime_state: PetStateKind, state: &DesktopPetRuntimeState) -> bool {
-        runtime_state == PetStateKind::Alert
-            || state.flashing
-            || state.pending_count > 0
-            || state.disco
+        runtime_state == PetStateKind::Alert || state.flashing || state.disco
     }
 
     fn start_pointer_interaction(&mut self, ctx: &egui::Context) {

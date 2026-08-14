@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AppVersionInfo, CallSignal, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Nudge, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem, UpdateCheckResult, UpdateGithubTokenInfo } from "../types/lanchat";
+import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AdminRemoteUpdate, AppVersionInfo, CallSignal, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Nudge, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem, UpdateCheckResult, UpdateGithubTokenInfo } from "../types/lanchat";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, PetStatePlaybackConfig } from "../types/desktop-pet";
 import type { CameraFaceAlert, CameraFrameSample, CameraMonitorSettings, FaceMonitorPolicy, FaceMonitorRuntimeStatus, FacePersonPolicy } from "../types/face-monitor";
 
@@ -11,14 +11,15 @@ export const api = {
   listFacePeople: () => invoke<FacePersonPolicy[]>("list_face_people"),
   deleteFacePersonLocal: (personId: string) => invoke<void>("delete_face_person_local", { personId }),
   saveFaceReferencePhoto: (bytes: Uint8Array) => invoke<string>("save_face_reference_photo", { bytes: Array.from(bytes) }),
-  createLocalFacePerson: (personId: string, displayName: string, photoPath: string) =>
-    invoke<FacePersonPolicy>("create_local_face_person", { personId, displayName, photoPath }),
+  createLocalFacePerson: (personId: string, displayName: string, photoPaths: string[]) =>
+    invoke<FacePersonPolicy>("create_local_face_person", { personId, displayName, photoPaths }),
   getEffectiveFaceMonitorPolicy: () => invoke<FaceMonitorPolicy | null>("get_effective_face_monitor_policy"),
-  sendFaceMonitorPolicy: (targetDeviceId: string, minConfidence: number, consecutiveHits: number, cooldownSeconds: number, version: number) =>
-    invoke<FaceMonitorPolicy>("send_face_monitor_policy", { targetDeviceId, minConfidence, consecutiveHits, cooldownSeconds, version }),
-  sendFacePersonPolicy: (targetDeviceId: string, personId: string, displayName: string, photoPath: string | null, expiresAt: number | null, enabled: boolean, action: "upsert" | "disable" | "delete", version: number) =>
-    invoke<FacePersonPolicy>("send_face_person_policy", { targetDeviceId, personId, displayName, photoPath, expiresAt, enabled, action, version }),
+  sendFaceMonitorPolicy: (targetDeviceId: string, minConfidence: number, bodyMinConfidence: number, sampleFps: number, consecutiveHits: number, faceCooldownSeconds: number, bodyCooldownSeconds: number, settingsLocked: boolean, version: number) =>
+    invoke<FaceMonitorPolicy>("send_face_monitor_policy", { targetDeviceId, minConfidence, bodyMinConfidence, sampleFps, consecutiveHits, faceCooldownSeconds, bodyCooldownSeconds, settingsLocked, version }),
+  sendFacePersonPolicy: (targetDeviceId: string, personId: string, displayName: string, photoPaths: string[], expiresAt: number | null, enabled: boolean, action: "upsert" | "disable" | "delete", version: number) =>
+    invoke<FacePersonPolicy>("send_face_person_policy", { targetDeviceId, personId, displayName, photoPaths, expiresAt, enabled, action, version }),
   listCameraFaceAlerts: () => invoke<CameraFaceAlert[]>("list_camera_face_alerts"),
+  clearCameraFaceAlerts: () => invoke<void>("clear_camera_face_alerts"),
   sendCameraFaceAlertFeedback: (alertId: string, sourceDeviceId: string, result: "real" | "false") =>
     invoke<CameraFaceAlert>("send_camera_face_alert_feedback", { alertId, sourceDeviceId, result }),
   getAppVersionInfo: () => invoke<AppVersionInfo>("get_app_version_info"),
@@ -29,6 +30,9 @@ export const api = {
   clearUpdateGithubToken: () => invoke<UpdateGithubTokenInfo>("clear_update_github_token"),
   isPortableRuntime: () => invoke<boolean>("is_portable_runtime"),
   installPortableUpdate: (downloadUrl: string, sha256: string) => invoke<void>("install_portable_update", { downloadUrl, sha256 }),
+  sendAdminRemoteUpdate: (targetDeviceId: string, targetVersion: string, packagePath?: string | null) =>
+    invoke<AdminRemoteUpdate>("send_admin_remote_update", { targetDeviceId, targetVersion, packagePath: packagePath || null }),
+  executeAdminRemoteUpdate: (command: AdminRemoteUpdate) => invoke<void>("execute_admin_remote_update", { command }),
   authenticateSuperAdmin: (password: string) => invoke<boolean>("authenticate_super_admin", { password }),
   clearSuperAdminSession: () => invoke<void>("clear_super_admin_session"),
   isSuperAdminAuthenticated: () => invoke<boolean>("is_super_admin_authenticated"),
@@ -102,7 +106,7 @@ export const api = {
     invoke<QuickAlertFeedback>("send_quick_alert_feedback", { alertId, alertSenderDeviceId, result }),
   resetQuickAlertCredibility: (targetDeviceId: string) =>
     invoke<QuickAlertTrustReset>("send_quick_alert_trust_reset", { targetDeviceId }),
-  sendAdminDiscoMode: (targetDeviceId: string, durationMs = 120_000) =>
+  sendAdminDiscoMode: (targetDeviceId: string, durationMs = 60_000) =>
     invoke<AdminDiscoMode>("send_admin_disco_mode", { targetDeviceId, durationMs }),
   sendAdminAlertMode: (targetDeviceId: string, mode: PetAlertMode) =>
     invoke<AdminAlertMode>("send_admin_alert_mode", { targetDeviceId, mode }),

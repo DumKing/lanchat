@@ -129,6 +129,17 @@ export type FileMeta = {
   duration_ms?: number | null;
 };
 
+export type AdminRemoteUpdate = {
+  command_id: string;
+  target_device_id: string;
+  target_version: string;
+  package?: FileMeta | null;
+  package_sha256?: string | null;
+  issued_by_device_id: string;
+  issued_by_nickname: string;
+  created_at: number;
+};
+
 export type PreviewMediaCacheInfo = {
   directory: string;
   fileCount: number;
@@ -269,6 +280,8 @@ export type DesktopPetRuntimeState = {
   pending_count: number;
   temperature: number;
   latest_alert_id?: string | null;
+  latest_alert_kind?: "quick_alert" | "camera_face" | string | null;
+  latest_alert_recognition_level?: "confirmed" | "suspected" | string | null;
   latest_sender?: string | null;
   latest_sender_address?: string | null;
   latest_content?: string | null;

@@ -15,7 +15,7 @@ assert.match(api, /registerDesktopPetStopHotkey/, "API 应注册通用桌宠停�
 assert.doesNotMatch(api, /setFrogPetEnabled|updateNativeFrogPet|registerFrogStopHotkey|update_native_frog_pet|register_frog_stop_hotkey/, "API 不应保留旧青蛙兼容调用");
 
 assert.match(store, /mode: PetAlertMode = "normal"/, "告警 store 应使用通用报警模式类型");
-assert.match(appVue, /listen<\{ action: string; alert_id\?: string \| null \}>\("desktop_pet_action"/, "主界面应只监听通用桌宠动作事件");
+assert.match(appVue, /listen<\{ action: string; alert_id\?: string \| null; alert_kind\?: string \| null \}>\("desktop_pet_action"/, "主界面应监听包含告警 ID 和类型的通用桌宠动作事件");
 assert.match(appVue, /event\.payload\.action === "open_main_window"[\s\S]{0,160}api\.showFromTray/, "桌宠普通单击应打开主程序");
 assert.match(appVue, /listen\("desktop_pet_stop_hotkey_received"/, "主界面应监听通用快捷键事件");
 assert.match(appVue, /const ALERT_SEND_COOLDOWN_MS = 20_000;/, "告警仍应保留本地频率限制");

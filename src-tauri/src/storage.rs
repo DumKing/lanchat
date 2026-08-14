@@ -3,8 +3,7 @@ use crate::identity::{normalize_device_id, resolve_device_id, resolve_profile_de
 use crate::network::local_ip_address;
 use crate::protocol::{
     AdminNotificationDecisionFrame, AdminNotificationFrame, CameraFaceAlertFeedbackFrame,
-    CameraFaceAlertFrame, FaceMonitorPolicyFrame,
-    FacePersonPolicyFrame, SimulationMeta,
+    CameraFaceAlertFrame, FaceMonitorPolicyFrame, FacePersonPolicyFrame, SimulationMeta,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -101,6 +100,8 @@ pub struct FacePersonRecord {
     pub person_id: String,
     pub display_name: String,
     pub photo_url: Option<String>,
+    #[serde(default)]
+    pub photo_urls: Vec<String>,
     pub photo_sha256: Option<String>,
     pub expires_at: Option<i64>,
     pub enabled: bool,
@@ -114,6 +115,22 @@ pub struct FacePersonRecord {
     pub embedding_model_version: Option<String>,
     #[serde(default)]
     pub has_embedding: bool,
+    #[serde(default)]
+    pub has_body_embedding: bool,
+    #[serde(default)]
+    pub sample_count: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct FacePersonSampleRecord {
+    pub sample_id: String,
+    pub person_id: String,
+    pub photo_url: String,
+    pub photo_sha256: Option<String>,
+    pub embedding: Option<Vec<u8>>,
+    pub embedding_model_version: Option<String>,
+    pub body_embedding: Option<Vec<u8>>,
+    pub body_embedding_model_version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,8 +138,13 @@ pub struct FacePersonRecord {
 pub struct FaceMonitorPolicyRecord {
     pub target_device_id: String,
     pub min_confidence: u8,
+    pub body_min_confidence: u8,
+    pub sample_fps: u8,
     pub consecutive_hits: u8,
     pub cooldown_seconds: u32,
+    pub face_cooldown_seconds: u32,
+    pub body_cooldown_seconds: u32,
+    pub settings_locked: bool,
     pub version: i64,
     pub issued_by_device_id: String,
     pub issued_by_nickname: String,
@@ -140,11 +162,15 @@ pub struct CameraFaceAlertRecord {
     pub person_id: String,
     pub person_name: String,
     pub confidence: u8,
+    pub recognition_level: String,
+    pub face_confidence: Option<u8>,
+    pub body_confidence: Option<u8>,
     pub consecutive_hits: u8,
     pub policy_version: i64,
     pub created_at: i64,
     pub feedback_real: u32,
     pub feedback_false: u32,
+    pub local_feedback: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
@@ -381,11 +407,28 @@ impl Storage {
                 issued_at INTEGER NOT NULL,
                 deleted_at INTEGER
             );
+            CREATE TABLE IF NOT EXISTS face_person_samples (
+                sample_id TEXT PRIMARY KEY,
+                person_id TEXT NOT NULL,
+                photo_url TEXT NOT NULL,
+                photo_sha256 TEXT,
+                embedding BLOB,
+                embedding_model_version TEXT,
+                body_embedding BLOB,
+                body_embedding_model_version TEXT,
+                created_at INTEGER NOT NULL,
+                FOREIGN KEY(person_id) REFERENCES face_people(person_id)
+            );
             CREATE TABLE IF NOT EXISTS face_monitor_policies (
                 target_device_id TEXT PRIMARY KEY,
                 min_confidence INTEGER NOT NULL,
+                body_min_confidence INTEGER NOT NULL DEFAULT 0,
+                sample_fps INTEGER NOT NULL DEFAULT 0,
                 consecutive_hits INTEGER NOT NULL,
                 cooldown_seconds INTEGER NOT NULL,
+                face_cooldown_seconds INTEGER NOT NULL DEFAULT 0,
+                body_cooldown_seconds INTEGER NOT NULL DEFAULT 0,
+                settings_locked INTEGER NOT NULL DEFAULT 0,
                 version INTEGER NOT NULL,
                 issued_by_device_id TEXT NOT NULL,
                 issued_by_nickname TEXT NOT NULL,
@@ -399,6 +442,9 @@ impl Storage {
                 person_id TEXT NOT NULL,
                 person_name TEXT NOT NULL,
                 confidence INTEGER NOT NULL,
+                recognition_level TEXT NOT NULL DEFAULT 'confirmed',
+                face_confidence INTEGER,
+                body_confidence INTEGER,
                 consecutive_hits INTEGER NOT NULL,
                 policy_version INTEGER NOT NULL,
                 created_at INTEGER NOT NULL
@@ -415,6 +461,8 @@ impl Storage {
                 ON messages(conversation_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_face_people_active
                 ON face_people(enabled, expires_at, deleted_at);
+            CREATE INDEX IF NOT EXISTS idx_face_person_samples_person
+                ON face_person_samples(person_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_camera_face_alerts_created
                 ON camera_face_alerts(created_at DESC);
             ",
@@ -437,7 +485,57 @@ impl Storage {
         ensure_column(&conn, "messages", "simulation_created_at", "INTEGER")?;
         ensure_column(&conn, "face_people", "embedding", "BLOB")?;
         ensure_column(&conn, "face_people", "embedding_model_version", "TEXT")?;
-        ensure_column(&conn, "camera_face_alerts", "source_kind", "TEXT NOT NULL DEFAULT 'camera_face_presence'")?;
+        ensure_column(&conn, "face_person_samples", "body_embedding", "BLOB")?;
+        ensure_column(
+            &conn,
+            "face_person_samples",
+            "body_embedding_model_version",
+            "TEXT",
+        )?;
+        ensure_column(
+            &conn,
+            "camera_face_alerts",
+            "source_kind",
+            "TEXT NOT NULL DEFAULT 'camera_face_presence'",
+        )?;
+        ensure_column(
+            &conn,
+            "camera_face_alerts",
+            "recognition_level",
+            "TEXT NOT NULL DEFAULT 'confirmed'",
+        )?;
+        ensure_column(&conn, "camera_face_alerts", "face_confidence", "INTEGER")?;
+        ensure_column(&conn, "camera_face_alerts", "body_confidence", "INTEGER")?;
+        ensure_column(
+            &conn,
+            "face_monitor_policies",
+            "body_min_confidence",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column(
+            &conn,
+            "face_monitor_policies",
+            "sample_fps",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column(
+            &conn,
+            "face_monitor_policies",
+            "settings_locked",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column(
+            &conn,
+            "face_monitor_policies",
+            "face_cooldown_seconds",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column(
+            &conn,
+            "face_monitor_policies",
+            "body_cooldown_seconds",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
         ensure_column(&conn, "profile", "avatar", "TEXT")?;
         ensure_column(
             &conn,
@@ -486,13 +584,19 @@ impl Storage {
         Ok(())
     }
 
-    pub fn upsert_face_person(&self, frame: &FacePersonPolicyFrame) -> Result<FacePersonRecord, String> {
+    pub fn upsert_face_person(
+        &self,
+        frame: &FacePersonPolicyFrame,
+    ) -> Result<FacePersonRecord, String> {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
-        let current = conn.query_row(
-            "SELECT version FROM face_people WHERE person_id=?1",
-            params![frame.person_id],
-            |row| row.get::<_, i64>(0),
-        ).optional().map_err(|err| format!("读取人员规则版本失败：{err}"))?;
+        let current = conn
+            .query_row(
+                "SELECT version FROM face_people WHERE person_id=?1",
+                params![frame.person_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|err| format!("读取人员规则版本失败：{err}"))?;
         if current.is_some_and(|version| version > frame.version) {
             return Self::read_face_person(&conn, &frame.person_id);
         }
@@ -505,25 +609,114 @@ impl Storage {
              ON CONFLICT(person_id) DO UPDATE SET display_name=excluded.display_name,photo_url=excluded.photo_url,photo_sha256=excluded.photo_sha256,expires_at=excluded.expires_at,enabled=excluded.enabled,version=excluded.version,issued_by_device_id=excluded.issued_by_device_id,issued_by_nickname=excluded.issued_by_nickname,issued_at=excluded.issued_at,deleted_at=excluded.deleted_at",
             params![frame.person_id, frame.display_name, frame.photo_url, frame.photo_sha256, frame.expires_at, enabled as i32, frame.version, frame.issued_by_device_id, frame.issued_by_nickname, frame.issued_at, deleted_at],
         ).map_err(|err| format!("保存人员规则失败：{err}"))?;
+        if action == "upsert" && !frame.photo_urls.is_empty() {
+            let samples = frame
+                .photo_urls
+                .iter()
+                .take(12)
+                .enumerate()
+                .map(|(index, photo_url)| FacePersonSampleRecord {
+                    sample_id: format!("{}-v{}-{}", frame.person_id, frame.version, index),
+                    person_id: frame.person_id.clone(),
+                    photo_url: photo_url.clone(),
+                    photo_sha256: frame.photo_sha256s.get(index).cloned(),
+                    embedding: None,
+                    embedding_model_version: None,
+                    body_embedding: None,
+                    body_embedding_model_version: None,
+                })
+                .collect::<Vec<_>>();
+            drop(conn);
+            self.replace_face_person_samples(&frame.person_id, &samples)?;
+            let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+            return Self::read_face_person(&conn, &frame.person_id);
+        }
         Self::read_face_person(&conn, &frame.person_id)
     }
 
     pub fn list_face_people(&self) -> Result<Vec<FacePersonRecord>, String> {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
-        let mut stmt = conn.prepare("SELECT person_id,display_name,photo_url,photo_sha256,expires_at,enabled,version,issued_by_device_id,issued_by_nickname,issued_at,deleted_at,embedding,embedding_model_version FROM face_people WHERE deleted_at IS NULL ORDER BY issued_at DESC")
+        let mut stmt = conn.prepare("SELECT person_id,display_name,photo_url,photo_sha256,expires_at,enabled,version,issued_by_device_id,issued_by_nickname,issued_at,deleted_at,embedding,embedding_model_version,(SELECT COUNT(*) FROM face_person_samples s WHERE s.person_id=face_people.person_id),(SELECT COUNT(*) FROM face_person_samples s WHERE s.person_id=face_people.person_id AND s.body_embedding IS NOT NULL) FROM face_people WHERE deleted_at IS NULL ORDER BY issued_at DESC")
             .map_err(|err| format!("读取人员规则失败：{err}"))?;
-        let rows = stmt.query_map([], Self::face_person_from_row).map_err(|err| format!("读取人员规则失败：{err}"))?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|err| format!("读取人员规则失败：{err}"))
+        let rows = stmt
+            .query_map([], Self::face_person_from_row)
+            .map_err(|err| format!("读取人员规则失败：{err}"))?;
+        let mut records = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("读取人员规则失败：{err}"))?;
+        drop(stmt);
+        for record in &mut records {
+            record.photo_urls = Self::face_person_photo_urls(&conn, record)?;
+        }
+        Ok(records)
+    }
+
+    pub fn replace_face_person_samples(
+        &self,
+        person_id: &str,
+        samples: &[FacePersonSampleRecord],
+    ) -> Result<(), String> {
+        let mut conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let transaction = conn
+            .transaction()
+            .map_err(|err| format!("保存人员样本失败：{err}"))?;
+        transaction
+            .execute(
+                "DELETE FROM face_person_samples WHERE person_id=?1",
+                params![person_id],
+            )
+            .map_err(|err| format!("清理旧人员样本失败：{err}"))?;
+        for sample in samples {
+            transaction.execute(
+                "INSERT INTO face_person_samples (sample_id,person_id,photo_url,photo_sha256,embedding,embedding_model_version,body_embedding,body_embedding_model_version,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                params![sample.sample_id, sample.person_id, sample.photo_url, sample.photo_sha256, sample.embedding, sample.embedding_model_version, sample.body_embedding, sample.body_embedding_model_version, chrono::Utc::now().timestamp_millis()],
+            ).map_err(|err| format!("保存人员样本失败：{err}"))?;
+        }
+        transaction
+            .commit()
+            .map_err(|err| format!("提交人员样本失败：{err}"))
+    }
+
+    pub fn list_face_person_samples(
+        &self,
+        person_id: &str,
+    ) -> Result<Vec<FacePersonSampleRecord>, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let mut stmt = conn.prepare("SELECT sample_id,person_id,photo_url,photo_sha256,embedding,embedding_model_version,body_embedding,body_embedding_model_version FROM face_person_samples WHERE person_id=?1 ORDER BY created_at ASC")
+            .map_err(|err| format!("读取人员样本失败：{err}"))?;
+        let rows = stmt
+            .query_map(params![person_id], |row| {
+                Ok(FacePersonSampleRecord {
+                    sample_id: row.get(0)?,
+                    person_id: row.get(1)?,
+                    photo_url: row.get(2)?,
+                    photo_sha256: row.get(3)?,
+                    embedding: row.get(4)?,
+                    embedding_model_version: row.get(5)?,
+                    body_embedding: row.get(6)?,
+                    body_embedding_model_version: row.get(7)?,
+                })
+            })
+            .map_err(|err| format!("读取人员样本失败：{err}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("读取人员样本失败：{err}"))
     }
 
     /// 仅在本机更新人脸特征，特征不参与局域网同步。
-    pub fn update_face_person_embedding(&self, person_id: &str, embedding: Option<Vec<u8>>, model_version: Option<String>) -> Result<(), String> {
+    pub fn update_face_person_embedding(
+        &self,
+        person_id: &str,
+        embedding: Option<Vec<u8>>,
+        model_version: Option<String>,
+    ) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         let changed = conn.execute(
             "UPDATE face_people SET embedding=?1, embedding_model_version=?2 WHERE person_id=?3",
             params![embedding.as_deref(), model_version, person_id],
         ).map_err(|err| format!("保存人脸特征失败：{err}"))?;
-        if changed == 0 { return Err("未找到识别人员".to_string()); }
+        if changed == 0 {
+            return Err("未找到识别人员".to_string());
+        }
         Ok(())
     }
 
@@ -531,95 +724,273 @@ impl Storage {
     /// broadcast, so it cannot alter another device's authorised rule set.
     pub fn delete_face_person_local(&self, person_id: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
-        let changed = conn.execute(
-            "UPDATE face_people SET enabled=0, deleted_at=?1 WHERE person_id=?2",
-            params![chrono::Utc::now().timestamp_millis(), person_id],
-        ).map_err(|err| format!("删除本机识别人员失败：{err}"))?;
-        if changed == 0 { return Err("未找到识别人员".to_string()); }
+        let changed = conn
+            .execute(
+                "UPDATE face_people SET enabled=0, deleted_at=?1 WHERE person_id=?2",
+                params![chrono::Utc::now().timestamp_millis(), person_id],
+            )
+            .map_err(|err| format!("删除本机识别人员失败：{err}"))?;
+        if changed == 0 {
+            return Err("未找到识别人员".to_string());
+        }
         Ok(())
     }
 
-    pub fn upsert_face_monitor_policy(&self, frame: &FaceMonitorPolicyFrame) -> Result<FaceMonitorPolicyRecord, String> {
+    pub fn upsert_face_monitor_policy(
+        &self,
+        frame: &FaceMonitorPolicyFrame,
+    ) -> Result<FaceMonitorPolicyRecord, String> {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
-        let current = conn.query_row("SELECT version FROM face_monitor_policies WHERE target_device_id=?1", params![frame.target_device_id], |row| row.get::<_, i64>(0))
-            .optional().map_err(|err| format!("读取识别策略版本失败：{err}"))?;
+        let current = conn
+            .query_row(
+                "SELECT version FROM face_monitor_policies WHERE target_device_id=?1",
+                params![frame.target_device_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|err| format!("读取识别策略版本失败：{err}"))?;
         if current.is_some_and(|version| version > frame.version) {
             return Self::read_face_monitor_policy(&conn, &frame.target_device_id);
         }
+        let legacy_cooldown = frame.cooldown_seconds.clamp(5, 86_400);
+        let face_cooldown = if frame.face_cooldown_seconds == 0 {
+            legacy_cooldown
+        } else {
+            frame.face_cooldown_seconds.clamp(5, 86_400)
+        };
+        let body_cooldown = if frame.body_cooldown_seconds == 0 {
+            legacy_cooldown
+        } else {
+            frame.body_cooldown_seconds.clamp(5, 86_400)
+        };
         conn.execute(
-            "INSERT INTO face_monitor_policies (target_device_id,min_confidence,consecutive_hits,cooldown_seconds,version,issued_by_device_id,issued_by_nickname,issued_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
-             ON CONFLICT(target_device_id) DO UPDATE SET min_confidence=excluded.min_confidence,consecutive_hits=excluded.consecutive_hits,cooldown_seconds=excluded.cooldown_seconds,version=excluded.version,issued_by_device_id=excluded.issued_by_device_id,issued_by_nickname=excluded.issued_by_nickname,issued_at=excluded.issued_at",
-            params![frame.target_device_id, frame.min_confidence.min(100), frame.consecutive_hits.clamp(1, 20), frame.cooldown_seconds.clamp(5, 86_400), frame.version, frame.issued_by_device_id, frame.issued_by_nickname, frame.issued_at],
+            "INSERT INTO face_monitor_policies (target_device_id,min_confidence,body_min_confidence,sample_fps,consecutive_hits,cooldown_seconds,face_cooldown_seconds,body_cooldown_seconds,settings_locked,version,issued_by_device_id,issued_by_nickname,issued_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
+             ON CONFLICT(target_device_id) DO UPDATE SET min_confidence=excluded.min_confidence,body_min_confidence=excluded.body_min_confidence,sample_fps=excluded.sample_fps,consecutive_hits=excluded.consecutive_hits,cooldown_seconds=excluded.cooldown_seconds,face_cooldown_seconds=excluded.face_cooldown_seconds,body_cooldown_seconds=excluded.body_cooldown_seconds,settings_locked=excluded.settings_locked,version=excluded.version,issued_by_device_id=excluded.issued_by_device_id,issued_by_nickname=excluded.issued_by_nickname,issued_at=excluded.issued_at",
+            params![frame.target_device_id, frame.min_confidence.clamp(1, 100), frame.body_min_confidence.clamp(1, 100), frame.sample_fps.clamp(1, 5), frame.consecutive_hits.clamp(1, 20), legacy_cooldown, face_cooldown, body_cooldown, frame.settings_locked as i32, frame.version, frame.issued_by_device_id, frame.issued_by_nickname, frame.issued_at],
         ).map_err(|err| format!("保存识别策略失败：{err}"))?;
         Self::read_face_monitor_policy(&conn, &frame.target_device_id)
     }
 
-    pub fn effective_face_monitor_policy(&self, device_id: &str) -> Result<Option<FaceMonitorPolicyRecord>, String> {
+    pub fn effective_face_monitor_policy(
+        &self,
+        device_id: &str,
+    ) -> Result<Option<FaceMonitorPolicyRecord>, String> {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         conn.query_row(
-            "SELECT target_device_id,min_confidence,consecutive_hits,cooldown_seconds,version,issued_by_device_id,issued_by_nickname,issued_at FROM face_monitor_policies WHERE target_device_id IN (?1, '*') ORDER BY CASE WHEN target_device_id=?1 THEN 0 ELSE 1 END LIMIT 1",
+            "SELECT target_device_id,min_confidence,body_min_confidence,sample_fps,consecutive_hits,cooldown_seconds,face_cooldown_seconds,body_cooldown_seconds,settings_locked,version,issued_by_device_id,issued_by_nickname,issued_at FROM face_monitor_policies WHERE target_device_id IN (?1, '*') ORDER BY CASE WHEN target_device_id=?1 THEN 0 ELSE 1 END LIMIT 1",
             params![device_id],
             Self::face_monitor_policy_from_row,
         ).optional().map_err(|err| format!("读取识别策略失败：{err}"))
     }
 
     fn read_face_person(conn: &Connection, person_id: &str) -> Result<FacePersonRecord, String> {
-        conn.query_row("SELECT person_id,display_name,photo_url,photo_sha256,expires_at,enabled,version,issued_by_device_id,issued_by_nickname,issued_at,deleted_at,embedding,embedding_model_version FROM face_people WHERE person_id=?1", params![person_id], Self::face_person_from_row)
-            .map_err(|err| format!("读取人员规则失败：{err}"))
+        let mut record = conn
+            .query_row("SELECT person_id,display_name,photo_url,photo_sha256,expires_at,enabled,version,issued_by_device_id,issued_by_nickname,issued_at,deleted_at,embedding,embedding_model_version,(SELECT COUNT(*) FROM face_person_samples s WHERE s.person_id=face_people.person_id),(SELECT COUNT(*) FROM face_person_samples s WHERE s.person_id=face_people.person_id AND s.body_embedding IS NOT NULL) FROM face_people WHERE person_id=?1", params![person_id], Self::face_person_from_row)
+            .map_err(|err| format!("读取人员规则失败：{err}"))?;
+        record.photo_urls = Self::face_person_photo_urls(conn, &record)?;
+        Ok(record)
+    }
+
+    fn face_person_photo_urls(
+        conn: &Connection,
+        record: &FacePersonRecord,
+    ) -> Result<Vec<String>, String> {
+        let mut stmt = conn
+            .prepare("SELECT photo_url FROM face_person_samples WHERE person_id=?1 ORDER BY created_at ASC, rowid ASC")
+            .map_err(|err| format!("读取人员样本照片失败：{err}"))?;
+        let rows = stmt
+            .query_map(params![record.person_id], |row| row.get::<_, String>(0))
+            .map_err(|err| format!("读取人员样本照片失败：{err}"))?;
+        let mut urls = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("读取人员样本照片失败：{err}"))?;
+        if urls.is_empty() {
+            if let Some(photo_url) = record.photo_url.as_ref().filter(|value| !value.is_empty()) {
+                urls.push(photo_url.clone());
+            }
+        }
+        let mut seen = HashSet::new();
+        urls.retain(|url| seen.insert(url.clone()));
+        Ok(urls)
     }
 
     fn face_person_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FacePersonRecord> {
         let embedding: Option<Vec<u8>> = row.get(11)?;
-        Ok(FacePersonRecord { person_id: row.get(0)?, display_name: row.get(1)?, photo_url: row.get(2)?, photo_sha256: row.get(3)?, expires_at: row.get(4)?, enabled: row.get::<_, i32>(5)? != 0, version: row.get(6)?, issued_by_device_id: row.get(7)?, issued_by_nickname: row.get(8)?, issued_at: row.get(9)?, deleted_at: row.get(10)?, has_embedding: embedding.is_some(), embedding, embedding_model_version: row.get(12)? })
+        Ok(FacePersonRecord {
+            person_id: row.get(0)?,
+            display_name: row.get(1)?,
+            photo_url: row.get(2)?,
+            photo_urls: Vec::new(),
+            photo_sha256: row.get(3)?,
+            expires_at: row.get(4)?,
+            enabled: row.get::<_, i32>(5)? != 0,
+            version: row.get(6)?,
+            issued_by_device_id: row.get(7)?,
+            issued_by_nickname: row.get(8)?,
+            issued_at: row.get(9)?,
+            deleted_at: row.get(10)?,
+            has_embedding: embedding.is_some(),
+            embedding,
+            embedding_model_version: row.get(12)?,
+            sample_count: row.get::<_, i64>(13)? as u32,
+            has_body_embedding: row.get::<_, i64>(14)? > 0,
+        })
     }
 
-    fn read_face_monitor_policy(conn: &Connection, target_device_id: &str) -> Result<FaceMonitorPolicyRecord, String> {
-        conn.query_row("SELECT target_device_id,min_confidence,consecutive_hits,cooldown_seconds,version,issued_by_device_id,issued_by_nickname,issued_at FROM face_monitor_policies WHERE target_device_id=?1", params![target_device_id], Self::face_monitor_policy_from_row)
+    fn read_face_monitor_policy(
+        conn: &Connection,
+        target_device_id: &str,
+    ) -> Result<FaceMonitorPolicyRecord, String> {
+        conn.query_row("SELECT target_device_id,min_confidence,body_min_confidence,sample_fps,consecutive_hits,cooldown_seconds,face_cooldown_seconds,body_cooldown_seconds,settings_locked,version,issued_by_device_id,issued_by_nickname,issued_at FROM face_monitor_policies WHERE target_device_id=?1", params![target_device_id], Self::face_monitor_policy_from_row)
             .map_err(|err| format!("读取识别策略失败：{err}"))
     }
 
-    fn face_monitor_policy_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<FaceMonitorPolicyRecord> {
-        Ok(FaceMonitorPolicyRecord { target_device_id: row.get(0)?, min_confidence: row.get(1)?, consecutive_hits: row.get(2)?, cooldown_seconds: row.get(3)?, version: row.get(4)?, issued_by_device_id: row.get(5)?, issued_by_nickname: row.get(6)?, issued_at: row.get(7)? })
+    fn face_monitor_policy_from_row(
+        row: &rusqlite::Row<'_>,
+    ) -> rusqlite::Result<FaceMonitorPolicyRecord> {
+        Ok(FaceMonitorPolicyRecord {
+            target_device_id: row.get(0)?,
+            min_confidence: row.get(1)?,
+            body_min_confidence: {
+                let value = row.get::<_, u8>(2)?;
+                if value == 0 {
+                    row.get::<_, u8>(1)?.max(68)
+                } else {
+                    value
+                }
+            },
+            sample_fps: {
+                let value = row.get::<_, u8>(3)?;
+                if value == 0 {
+                    2
+                } else {
+                    value.clamp(1, 5)
+                }
+            },
+            consecutive_hits: row.get(4)?,
+            cooldown_seconds: row.get(5)?,
+            face_cooldown_seconds: {
+                let value = row.get::<_, u32>(6)?;
+                if value == 0 {
+                    row.get(5)?
+                } else {
+                    value
+                }
+            },
+            body_cooldown_seconds: {
+                let value = row.get::<_, u32>(7)?;
+                if value == 0 {
+                    row.get(5)?
+                } else {
+                    value
+                }
+            },
+            settings_locked: row.get::<_, i32>(8)? != 0,
+            version: row.get(9)?,
+            issued_by_device_id: row.get(10)?,
+            issued_by_nickname: row.get(11)?,
+            issued_at: row.get(12)?,
+        })
     }
 
-    pub fn upsert_camera_face_alert(&self, frame: &CameraFaceAlertFrame) -> Result<CameraFaceAlertRecord, String> {
-        if !matches!(frame.source_kind.as_str(), "camera_face" | "camera_face_presence") {
+    pub fn upsert_camera_face_alert(
+        &self,
+        frame: &CameraFaceAlertFrame,
+    ) -> Result<CameraFaceAlertRecord, String> {
+        if !matches!(
+            frame.source_kind.as_str(),
+            "camera_face" | "camera_face_presence" | "camera_person"
+        ) {
             return Err("自动识别告警来源无效".to_string());
         }
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         conn.execute(
-            "INSERT INTO camera_face_alerts (alert_id,source_kind,source_device_id,source_nickname,source_address,person_id,person_name,confidence,consecutive_hits,policy_version,created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+            "INSERT INTO camera_face_alerts (alert_id,source_kind,source_device_id,source_nickname,source_address,person_id,person_name,confidence,recognition_level,face_confidence,body_confidence,consecutive_hits,policy_version,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
              ON CONFLICT(alert_id) DO NOTHING",
-            params![frame.alert_id, frame.source_kind, frame.source_device_id, frame.source_nickname, frame.source_address, frame.person_id, frame.person_name, frame.confidence.min(100), frame.consecutive_hits.max(1), frame.policy_version, frame.created_at],
+            params![frame.alert_id, frame.source_kind, frame.source_device_id, frame.source_nickname, frame.source_address, frame.person_id, frame.person_name, frame.confidence.min(100), frame.recognition_level, frame.face_confidence.map(|v| v.min(100)), frame.body_confidence.map(|v| v.min(100)), frame.consecutive_hits.max(1), frame.policy_version, frame.created_at],
         ).map_err(|err| format!("保存自动识别告警失败：{err}"))?;
         Self::read_camera_face_alert(&conn, &frame.alert_id)
     }
 
-    pub fn list_camera_face_alerts(&self, limit: usize) -> Result<Vec<CameraFaceAlertRecord>, String> {
+    pub fn list_camera_face_alerts_for_responder(
+        &self,
+        limit: usize,
+        responder_device_id: &str,
+    ) -> Result<Vec<CameraFaceAlertRecord>, String> {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
-        let mut stmt = conn.prepare("SELECT a.alert_id,a.source_kind,a.source_device_id,a.source_nickname,a.source_address,a.person_id,a.person_name,a.confidence,a.consecutive_hits,a.policy_version,a.created_at,COALESCE(SUM(CASE WHEN f.result='real' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN f.result='false' THEN 1 ELSE 0 END),0) FROM camera_face_alerts a LEFT JOIN camera_face_alert_feedbacks f ON f.alert_id=a.alert_id GROUP BY a.alert_id ORDER BY a.created_at DESC LIMIT ?1")
+        let mut stmt = conn.prepare("SELECT a.alert_id,a.source_kind,a.source_device_id,a.source_nickname,a.source_address,a.person_id,a.person_name,a.confidence,a.recognition_level,a.face_confidence,a.body_confidence,a.consecutive_hits,a.policy_version,a.created_at,COALESCE(SUM(CASE WHEN f.result='real' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN f.result='false' THEN 1 ELSE 0 END),0),MAX(CASE WHEN f.responder_device_id=?1 THEN f.result END) FROM camera_face_alerts a LEFT JOIN camera_face_alert_feedbacks f ON f.alert_id=a.alert_id GROUP BY a.alert_id ORDER BY a.created_at DESC LIMIT ?2")
             .map_err(|err| format!("读取自动识别告警失败：{err}"))?;
-        let rows = stmt.query_map(params![limit.clamp(1, 200) as i64], Self::camera_face_alert_from_row).map_err(|err| format!("读取自动识别告警失败：{err}"))?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|err| format!("读取自动识别告警失败：{err}"))
+        let rows = stmt
+            .query_map(
+                params![responder_device_id, limit.clamp(1, 200) as i64],
+                Self::camera_face_alert_from_row,
+            )
+            .map_err(|err| format!("读取自动识别告警失败：{err}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("读取自动识别告警失败：{err}"))
     }
 
-    pub fn upsert_camera_face_alert_feedback(&self, frame: &CameraFaceAlertFeedbackFrame) -> Result<CameraFaceAlertRecord, String> {
-        if !matches!(frame.result.as_str(), "real" | "false") { return Err("自动识别告警反馈无效".to_string()); }
+    pub fn clear_camera_face_alerts(&self) -> Result<(), String> {
+        let mut conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let transaction = conn
+            .transaction()
+            .map_err(|err| format!("开始清空识别率排行榜失败：{err}"))?;
+        transaction
+            .execute("DELETE FROM camera_face_alert_feedbacks", [])
+            .map_err(|err| format!("清空识别反馈失败：{err}"))?;
+        transaction
+            .execute("DELETE FROM camera_face_alerts", [])
+            .map_err(|err| format!("清空识别告警失败：{err}"))?;
+        transaction
+            .commit()
+            .map_err(|err| format!("提交识别率排行榜清理失败：{err}"))
+    }
+
+    pub fn upsert_camera_face_alert_feedback(
+        &self,
+        frame: &CameraFaceAlertFeedbackFrame,
+    ) -> Result<CameraFaceAlertRecord, String> {
+        if !matches!(frame.result.as_str(), "real" | "false") {
+            return Err("自动识别告警反馈无效".to_string());
+        }
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         conn.execute("INSERT INTO camera_face_alert_feedbacks (alert_id,responder_device_id,responder_nickname,result,created_at) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(alert_id,responder_device_id) DO UPDATE SET responder_nickname=excluded.responder_nickname,result=excluded.result,created_at=excluded.created_at", params![frame.alert_id, frame.responder_device_id, frame.responder_nickname, frame.result, frame.created_at])
             .map_err(|err| format!("保存自动识别告警反馈失败：{err}"))?;
         Self::read_camera_face_alert(&conn, &frame.alert_id)
     }
 
-    fn read_camera_face_alert(conn: &Connection, alert_id: &str) -> Result<CameraFaceAlertRecord, String> {
-        conn.query_row("SELECT a.alert_id,a.source_kind,a.source_device_id,a.source_nickname,a.source_address,a.person_id,a.person_name,a.confidence,a.consecutive_hits,a.policy_version,a.created_at,COALESCE(SUM(CASE WHEN f.result='real' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN f.result='false' THEN 1 ELSE 0 END),0) FROM camera_face_alerts a LEFT JOIN camera_face_alert_feedbacks f ON f.alert_id=a.alert_id WHERE a.alert_id=?1 GROUP BY a.alert_id", params![alert_id], Self::camera_face_alert_from_row)
+    fn read_camera_face_alert(
+        conn: &Connection,
+        alert_id: &str,
+    ) -> Result<CameraFaceAlertRecord, String> {
+        conn.query_row("SELECT a.alert_id,a.source_kind,a.source_device_id,a.source_nickname,a.source_address,a.person_id,a.person_name,a.confidence,a.recognition_level,a.face_confidence,a.body_confidence,a.consecutive_hits,a.policy_version,a.created_at,COALESCE(SUM(CASE WHEN f.result='real' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN f.result='false' THEN 1 ELSE 0 END),0),CAST(NULL AS TEXT) FROM camera_face_alerts a LEFT JOIN camera_face_alert_feedbacks f ON f.alert_id=a.alert_id WHERE a.alert_id=?1 GROUP BY a.alert_id", params![alert_id], Self::camera_face_alert_from_row)
             .map_err(|err| format!("读取自动识别告警失败：{err}"))
     }
 
-    fn camera_face_alert_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CameraFaceAlertRecord> {
-        Ok(CameraFaceAlertRecord { alert_id: row.get(0)?, source_kind: row.get(1)?, source_device_id: row.get(2)?, source_nickname: row.get(3)?, source_address: row.get(4)?, person_id: row.get(5)?, person_name: row.get(6)?, confidence: row.get(7)?, consecutive_hits: row.get(8)?, policy_version: row.get(9)?, created_at: row.get(10)?, feedback_real: row.get(11)?, feedback_false: row.get(12)? })
+    fn camera_face_alert_from_row(
+        row: &rusqlite::Row<'_>,
+    ) -> rusqlite::Result<CameraFaceAlertRecord> {
+        Ok(CameraFaceAlertRecord {
+            alert_id: row.get(0)?,
+            source_kind: row.get(1)?,
+            source_device_id: row.get(2)?,
+            source_nickname: row.get(3)?,
+            source_address: row.get(4)?,
+            person_id: row.get(5)?,
+            person_name: row.get(6)?,
+            confidence: row.get(7)?,
+            recognition_level: row.get(8)?,
+            face_confidence: row.get(9)?,
+            body_confidence: row.get(10)?,
+            consecutive_hits: row.get(11)?,
+            policy_version: row.get(12)?,
+            created_at: row.get(13)?,
+            feedback_real: row.get(14)?,
+            feedback_false: row.get(15)?,
+            local_feedback: row.get(16)?,
+        })
     }
 
     pub fn get_or_create_profile(&self) -> Result<Profile, String> {
@@ -1965,21 +2336,81 @@ mod tests {
     fn face_monitor_policy_prefers_device_override_and_keeps_newest_versions() {
         let temp = tempfile::tempdir().expect("tempdir");
         let storage = Storage::open(&temp.path().join("lanchat.sqlite3")).expect("storage opens");
-        storage.upsert_face_monitor_policy(&FaceMonitorPolicyFrame {
-            target_device_id: "*".to_string(), min_confidence: 70, consecutive_hits: 2,
-            cooldown_seconds: 60, version: 1, issued_by_device_id: "admin".to_string(), issued_by_nickname: "管理员".to_string(), issued_at: 1,
-        }).expect("global policy");
-        storage.upsert_face_monitor_policy(&FaceMonitorPolicyFrame {
-            target_device_id: "device-a".to_string(), min_confidence: 88, consecutive_hits: 3,
-            cooldown_seconds: 90, version: 2, issued_by_device_id: "admin".to_string(), issued_by_nickname: "管理员".to_string(), issued_at: 2,
-        }).expect("device policy");
-        let effective = storage.effective_face_monitor_policy("device-a").expect("policy read").expect("policy exists");
+        storage
+            .upsert_face_monitor_policy(&FaceMonitorPolicyFrame {
+                target_device_id: "*".to_string(),
+                min_confidence: 70,
+                body_min_confidence: 69,
+                sample_fps: 2,
+                consecutive_hits: 2,
+                cooldown_seconds: 60,
+                face_cooldown_seconds: 0,
+                body_cooldown_seconds: 0,
+                settings_locked: false,
+                version: 1,
+                issued_by_device_id: "admin".to_string(),
+                issued_by_nickname: "管理员".to_string(),
+                issued_at: 1,
+            })
+            .expect("global policy");
+        let migrated = storage
+            .effective_face_monitor_policy("legacy-device")
+            .expect("legacy policy read")
+            .expect("legacy policy exists");
+        assert_eq!(migrated.face_cooldown_seconds, 60);
+        assert_eq!(migrated.body_cooldown_seconds, 60);
+        storage
+            .upsert_face_monitor_policy(&FaceMonitorPolicyFrame {
+                target_device_id: "device-a".to_string(),
+                min_confidence: 88,
+                body_min_confidence: 76,
+                sample_fps: 4,
+                consecutive_hits: 3,
+                cooldown_seconds: 90,
+                face_cooldown_seconds: 45,
+                body_cooldown_seconds: 120,
+                settings_locked: true,
+                version: 2,
+                issued_by_device_id: "admin".to_string(),
+                issued_by_nickname: "管理员".to_string(),
+                issued_at: 2,
+            })
+            .expect("device policy");
+        let effective = storage
+            .effective_face_monitor_policy("device-a")
+            .expect("policy read")
+            .expect("policy exists");
         assert_eq!(effective.min_confidence, 88);
-        storage.upsert_face_monitor_policy(&FaceMonitorPolicyFrame {
-            target_device_id: "device-a".to_string(), min_confidence: 10, consecutive_hits: 1,
-            cooldown_seconds: 5, version: 1, issued_by_device_id: "old".to_string(), issued_by_nickname: "旧管理员".to_string(), issued_at: 0,
-        }).expect("old policy ignored");
-        assert_eq!(storage.effective_face_monitor_policy("device-a").expect("policy read").expect("policy exists").min_confidence, 88);
+        assert_eq!(effective.body_min_confidence, 76);
+        assert_eq!(effective.sample_fps, 4);
+        assert_eq!(effective.face_cooldown_seconds, 45);
+        assert_eq!(effective.body_cooldown_seconds, 120);
+        assert!(effective.settings_locked);
+        storage
+            .upsert_face_monitor_policy(&FaceMonitorPolicyFrame {
+                target_device_id: "device-a".to_string(),
+                min_confidence: 10,
+                body_min_confidence: 20,
+                sample_fps: 1,
+                consecutive_hits: 1,
+                cooldown_seconds: 5,
+                face_cooldown_seconds: 5,
+                body_cooldown_seconds: 5,
+                settings_locked: false,
+                version: 1,
+                issued_by_device_id: "old".to_string(),
+                issued_by_nickname: "旧管理员".to_string(),
+                issued_at: 0,
+            })
+            .expect("old policy ignored");
+        assert_eq!(
+            storage
+                .effective_face_monitor_policy("device-a")
+                .expect("policy read")
+                .expect("policy exists")
+                .min_confidence,
+            88
+        );
     }
 
     #[test]
@@ -1987,24 +2418,58 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let storage = Storage::open(&temp.path().join("lanchat.sqlite3")).expect("storage opens");
         let mut frame = FacePersonPolicyFrame {
-            person_id: "person-1".to_string(), display_name: "新名称".to_string(), photo_url: None, photo_sha256: None,
-            expires_at: None, enabled: true, version: 2, action: "upsert".to_string(), issued_by_device_id: "admin".to_string(), issued_by_nickname: "管理员".to_string(), issued_at: 2,
+            person_id: "person-1".to_string(),
+            display_name: "新名称".to_string(),
+            photo_url: None,
+            photo_urls: vec![],
+            photo_sha256: None,
+            photo_sha256s: vec![],
+            expires_at: None,
+            enabled: true,
+            version: 2,
+            action: "upsert".to_string(),
+            issued_by_device_id: "admin".to_string(),
+            issued_by_nickname: "管理员".to_string(),
+            issued_at: 2,
         };
-        storage.upsert_face_person(&frame).expect("new person saved");
-        frame.display_name = "旧名称".to_string(); frame.version = 1;
-        assert_eq!(storage.upsert_face_person(&frame).expect("old frame ignored").display_name, "新名称");
+        storage
+            .upsert_face_person(&frame)
+            .expect("new person saved");
+        frame.display_name = "旧名称".to_string();
+        frame.version = 1;
+        assert_eq!(
+            storage
+                .upsert_face_person(&frame)
+                .expect("old frame ignored")
+                .display_name,
+            "新名称"
+        );
     }
 
     #[test]
     fn deleted_face_person_is_not_returned_in_visible_list() {
         let temp = tempfile::tempdir().expect("tempdir");
         let storage = Storage::open(&temp.path().join("lanchat.sqlite3")).expect("storage opens");
-        storage.upsert_face_person(&FacePersonPolicyFrame {
-            person_id: "person-1".to_string(), display_name: "临时人员".to_string(), photo_url: None, photo_sha256: None,
-            expires_at: None, enabled: true, version: 1, action: "upsert".to_string(),
-            issued_by_device_id: "local".to_string(), issued_by_nickname: "本机".to_string(), issued_at: 1,
-        }).expect("person saved");
-        storage.delete_face_person_local("person-1").expect("person deleted");
+        storage
+            .upsert_face_person(&FacePersonPolicyFrame {
+                person_id: "person-1".to_string(),
+                display_name: "临时人员".to_string(),
+                photo_url: None,
+                photo_urls: vec![],
+                photo_sha256: None,
+                photo_sha256s: vec![],
+                expires_at: None,
+                enabled: true,
+                version: 1,
+                action: "upsert".to_string(),
+                issued_by_device_id: "local".to_string(),
+                issued_by_nickname: "本机".to_string(),
+                issued_at: 1,
+            })
+            .expect("person saved");
+        storage
+            .delete_face_person_local("person-1")
+            .expect("person deleted");
         assert!(storage.list_face_people().expect("visible list").is_empty());
     }
 
@@ -2012,30 +2477,203 @@ mod tests {
     fn face_people_store_embedding_and_model_version() {
         let temp = tempfile::tempdir().expect("tempdir");
         let storage = Storage::open(&temp.path().join("lanchat.sqlite3")).expect("storage opens");
-        storage.upsert_face_person(&FacePersonPolicyFrame {
-            person_id: "person-embedding".to_string(), display_name: "特征人员".to_string(), photo_url: None, photo_sha256: None,
-            expires_at: None, enabled: true, version: 1, action: "upsert".to_string(),
-            issued_by_device_id: "local".to_string(), issued_by_nickname: "本机".to_string(), issued_at: 1,
-        }).expect("person saved");
-        storage.update_face_person_embedding("person-embedding", Some(vec![1u8, 2, 3]), Some("v1".to_string())).expect("embedding saved");
-        let person = storage.list_face_people().expect("visible list").pop().expect("person present");
+        storage
+            .upsert_face_person(&FacePersonPolicyFrame {
+                person_id: "person-embedding".to_string(),
+                display_name: "特征人员".to_string(),
+                photo_url: None,
+                photo_urls: vec![],
+                photo_sha256: None,
+                photo_sha256s: vec![],
+                expires_at: None,
+                enabled: true,
+                version: 1,
+                action: "upsert".to_string(),
+                issued_by_device_id: "local".to_string(),
+                issued_by_nickname: "本机".to_string(),
+                issued_at: 1,
+            })
+            .expect("person saved");
+        storage
+            .update_face_person_embedding(
+                "person-embedding",
+                Some(vec![1u8, 2, 3]),
+                Some("v1".to_string()),
+            )
+            .expect("embedding saved");
+        let person = storage
+            .list_face_people()
+            .expect("visible list")
+            .pop()
+            .expect("person present");
         assert_eq!(person.embedding.as_deref(), Some([1u8, 2, 3].as_slice()));
         assert_eq!(person.embedding_model_version.as_deref(), Some("v1"));
         // 远端同步 upsert 不应覆盖本机已提取的特征。
-        storage.upsert_face_person(&FacePersonPolicyFrame {
-            person_id: "person-embedding".to_string(), display_name: "特征人员改名".to_string(), photo_url: None, photo_sha256: None,
-            expires_at: None, enabled: true, version: 2, action: "upsert".to_string(),
-            issued_by_device_id: "remote".to_string(), issued_by_nickname: "远端".to_string(), issued_at: 2,
-        }).expect("person re-synced");
-        let person = storage.list_face_people().expect("visible list").pop().expect("person present");
+        storage
+            .upsert_face_person(&FacePersonPolicyFrame {
+                person_id: "person-embedding".to_string(),
+                display_name: "特征人员改名".to_string(),
+                photo_url: None,
+                photo_urls: vec![],
+                photo_sha256: None,
+                photo_sha256s: vec![],
+                expires_at: None,
+                enabled: true,
+                version: 2,
+                action: "upsert".to_string(),
+                issued_by_device_id: "remote".to_string(),
+                issued_by_nickname: "远端".to_string(),
+                issued_at: 2,
+            })
+            .expect("person re-synced");
+        let person = storage
+            .list_face_people()
+            .expect("visible list")
+            .pop()
+            .expect("person present");
         assert_eq!(person.display_name, "特征人员改名");
         assert_eq!(person.embedding.as_deref(), Some([1u8, 2, 3].as_slice()));
         assert_eq!(person.embedding_model_version.as_deref(), Some("v1"));
         // 提取失败时清空特征。
-        storage.update_face_person_embedding("person-embedding", None, None).expect("embedding cleared");
-        let person = storage.list_face_people().expect("visible list").pop().expect("person present");
+        storage
+            .update_face_person_embedding("person-embedding", None, None)
+            .expect("embedding cleared");
+        let person = storage
+            .list_face_people()
+            .expect("visible list")
+            .pop()
+            .expect("person present");
         assert!(person.embedding.is_none());
         assert!(person.embedding_model_version.is_none());
+    }
+
+    #[test]
+    fn face_person_keeps_multiple_reference_samples() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage = Storage::open(&temp.path().join("lanchat.sqlite3")).expect("storage opens");
+        storage
+            .upsert_face_person(&FacePersonPolicyFrame {
+                person_id: "person-samples".to_string(),
+                display_name: "多角度人员".to_string(),
+                photo_url: Some("first.jpg".to_string()),
+                photo_urls: vec!["first.jpg".to_string(), "side.jpg".to_string()],
+                photo_sha256: None,
+                photo_sha256s: vec![],
+                expires_at: None,
+                enabled: true,
+                version: 1,
+                action: "upsert".to_string(),
+                issued_by_device_id: "local".to_string(),
+                issued_by_nickname: "本机".to_string(),
+                issued_at: 1,
+            })
+            .expect("person saved");
+        let person = storage
+            .list_face_people()
+            .expect("visible list")
+            .pop()
+            .expect("person present");
+        assert_eq!(person.sample_count, 2);
+        assert_eq!(
+            person.photo_urls,
+            vec!["first.jpg".to_string(), "side.jpg".to_string()]
+        );
+        assert_eq!(
+            storage
+                .list_face_person_samples("person-samples")
+                .expect("samples read")
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn camera_face_alert_list_restores_feedback_for_current_device() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db_path = temp.path().join("lanchat.sqlite3");
+        let storage = Storage::open(&db_path).expect("storage opens");
+        storage
+            .upsert_camera_face_alert(&CameraFaceAlertFrame {
+                alert_id: "face-alert-1".to_string(),
+                source_kind: "camera_face".to_string(),
+                source_device_id: "source-device".to_string(),
+                source_nickname: "来源设备".to_string(),
+                source_address: Some("192.168.1.8".to_string()),
+                person_id: "person-1".to_string(),
+                person_name: "测试人员".to_string(),
+                confidence: 88,
+                recognition_level: "confirmed".to_string(),
+                face_confidence: Some(88),
+                body_confidence: None,
+                consecutive_hits: 2,
+                policy_version: 1,
+                created_at: 100,
+            })
+            .expect("alert saved");
+        storage
+            .upsert_camera_face_alert_feedback(&CameraFaceAlertFeedbackFrame {
+                alert_id: "face-alert-1".to_string(),
+                source_device_id: "source-device".to_string(),
+                responder_device_id: "local-device".to_string(),
+                responder_nickname: "本机".to_string(),
+                result: "real".to_string(),
+                created_at: 200,
+            })
+            .expect("feedback saved");
+        drop(storage);
+
+        let reopened = Storage::open(&db_path).expect("storage reopens");
+
+        let local_records = reopened
+            .list_camera_face_alerts_for_responder(100, "local-device")
+            .expect("local records");
+        let other_records = reopened
+            .list_camera_face_alerts_for_responder(100, "other-device")
+            .expect("other records");
+
+        assert_eq!(local_records[0].local_feedback.as_deref(), Some("real"));
+        assert_eq!(other_records[0].local_feedback, None);
+    }
+
+    #[test]
+    fn clear_camera_face_alerts_removes_alerts_and_feedbacks() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage = Storage::open(temp.path().join("lanchat.sqlite3")).expect("storage opens");
+        storage
+            .upsert_camera_face_alert(&CameraFaceAlertFrame {
+                alert_id: "face-alert-clear".to_string(),
+                source_kind: "camera_face".to_string(),
+                source_device_id: "source-device".to_string(),
+                source_nickname: "来源设备".to_string(),
+                source_address: None,
+                person_id: "person-1".to_string(),
+                person_name: "测试人员".to_string(),
+                confidence: 86,
+                recognition_level: "confirmed".to_string(),
+                face_confidence: Some(86),
+                body_confidence: None,
+                consecutive_hits: 2,
+                policy_version: 1,
+                created_at: 100,
+            })
+            .expect("alert saved");
+        storage
+            .upsert_camera_face_alert_feedback(&CameraFaceAlertFeedbackFrame {
+                alert_id: "face-alert-clear".to_string(),
+                source_device_id: "source-device".to_string(),
+                responder_device_id: "local-device".to_string(),
+                responder_nickname: "本机".to_string(),
+                result: "real".to_string(),
+                created_at: 200,
+            })
+            .expect("feedback saved");
+
+        storage.clear_camera_face_alerts().expect("records cleared");
+
+        assert!(storage
+            .list_camera_face_alerts_for_responder(100, "local-device")
+            .expect("records read")
+            .is_empty());
     }
 
     #[test]

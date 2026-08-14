@@ -797,6 +797,8 @@ pub struct DesktopPetSettings {
     pub random_life_enabled: bool,
     #[serde(default = "default_disco_movement_mode")]
     pub disco_movement_mode: String,
+    #[serde(default = "default_disco_duration_seconds")]
+    pub disco_duration_seconds: u32,
     #[serde(default)]
     pub external_push_enabled: bool,
     #[serde(default = "default_external_push_min_credibility")]
@@ -817,6 +819,10 @@ pub struct DesktopPetSettings {
 
 fn default_disco_movement_mode() -> String {
     "jump".to_string()
+}
+
+fn default_disco_duration_seconds() -> u32 {
+    60
 }
 
 fn default_external_push_template() -> String {
@@ -850,6 +856,7 @@ impl Default for DesktopPetSettings {
             random_move_enabled: true,
             random_life_enabled: true,
             disco_movement_mode: default_disco_movement_mode(),
+            disco_duration_seconds: default_disco_duration_seconds(),
             external_push_enabled: false,
             external_push_min_credibility: default_external_push_min_credibility(),
             external_push_min_credibility_locked: false,
@@ -1026,6 +1033,7 @@ impl DesktopPetManager {
             _ => "jump",
         }
         .to_string();
+        settings.disco_duration_seconds = settings.disco_duration_seconds.clamp(10, 3_600);
         settings.enterprise_wechat_webhook = settings.enterprise_wechat_webhook.trim().to_string();
         settings.enterprise_wechat_template =
             settings.enterprise_wechat_template.trim().to_string();
