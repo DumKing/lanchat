@@ -2,7 +2,7 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import { api } from "../services/tauri-api";
 import { registerLanChatEvents } from "../services/event-bus";
-import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, CallSignal, ChannelMember, ChannelNoticePayload, Conversation, DebugLog, GameFrame, Message, Nudge, Peer, PetAlertMode, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset } from "../types/lanchat";
+import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AdminRemoteUpdate, CallSignal, ChannelMember, ChannelNoticePayload, Conversation, DebugLog, GameFrame, Message, Nudge, Peer, PetAlertMode, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset } from "../types/lanchat";
 import { sameDeviceId, sortPeersForDisplay } from "../utils/peerPresentation";
 
 export const DEFAULT_GROUP_ID = "lan-room";
@@ -40,6 +40,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
   const latestNudge = ref<Nudge | null>(null);
   const latestAdminAlertPushPolicy = ref<AdminAlertPushPolicy | null>(null);
   const adminNotifications = ref<AdminNotification[]>([]);
+  const latestAdminRemoteUpdate = ref<AdminRemoteUpdate | null>(null);
   let peerRefreshTimer: number | null = null;
   let peerRefreshRevision = 0;
   let conversationRefreshRevision = 0;
@@ -202,6 +203,10 @@ export const useLanChatStore = defineStore("lanchat", () => {
         },
         onAdminNotificationDecisionReceived(notification) {
           upsertAdminNotification(notification);
+        },
+        onAdminRemoteUpdateReceived(command) {
+          latestAdminRemoteUpdate.value = command;
+          pushDebugLog({ ts: Date.now(), level: "warn", scope: "admin-update", message: "收到远程强制更新", detail: `${command.target_version} ${command.issued_by_nickname}` });
         },
       });
       runtimeStarted = true;
@@ -734,7 +739,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
     }
   }
 
-  async function sendAdminDiscoMode(targetDeviceId: string, durationMs = 120_000) {
+  async function sendAdminDiscoMode(targetDeviceId: string, durationMs = 60_000) {
     error.value = "";
     try {
       const mode = await api.sendAdminDiscoMode(targetDeviceId, durationMs);
@@ -938,6 +943,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
     latestNudge,
     latestAdminAlertPushPolicy,
     adminNotifications,
+    latestAdminRemoteUpdate,
     initialize,
     stopRuntime,
     refreshPeers,

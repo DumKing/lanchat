@@ -96,6 +96,7 @@ export type DesktopPetSettings = {
   randomMoveEnabled: boolean;
   randomLifeEnabled: boolean;
   discoMovementMode: "linear" | "jump";
+  discoDurationSeconds: number;
   externalPushEnabled: boolean;
   externalPushMinCredibility: number;
   externalPushMinCredibilityLocked: boolean;

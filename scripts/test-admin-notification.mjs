@@ -20,7 +20,7 @@ for (const [name, source, needle] of [
   ["force open option", app, "强制打开目标主窗口"],
   ["recipient lock", app, "blockingAdminNotification"],
   ["recipient submit", app, "提交已完成"],
-  ["admin review", app, "超管通知审核"],
+  ["admin review", app, "查看通知审核记录"],
   ["history entry", app, "历史公告"],
   ["history modal", app, "adminNotificationHistoryOpen"],
   ["history bell", app, "rail-notification-bell"],

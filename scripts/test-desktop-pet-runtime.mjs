@@ -10,6 +10,11 @@ assert.ok(!fs.existsSync(legacyRuntimePath), "旧 native_frog_pet.rs 应被移�
 
 const runtime = fs.readFileSync(runtimePath, "utf8");
 const lib = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
+const appVue = fs.readFileSync("src/App.vue", "utf8");
+const feedbackPanel = runtime.slice(
+  runtime.indexOf("if state.feedbackable"),
+  runtime.indexOf("fn draw_call_details"),
+);
 const manifest = JSON.parse(fs.readFileSync(`${builtinRoot}/manifest.json`, "utf8"));
 
 assert.equal(manifest.id, "frog-buddy", "内置青蛙资源包 ID 应为 frog-buddy");
@@ -21,6 +26,7 @@ assert.match(lib, /mod desktop_pet_runtime;/, "Tauri 应注册通用桌宠运行
 assert.match(lib, /DesktopPetController::start/, "应用启动时应启动通用桌宠控制器");
 assert.match(lib, /register_desktop_pet_stop_hotkey/, "停止告警快捷键命令应使用通用桌宠命名");
 assert.match(lib, /desktop_pet_stop_hotkey_received/, "全局快捷键事件应使用通用桌宠命名");
+assert.match(lib, /is_stop[\s\S]{0,260}desktop_pet_controller\.stop_alert_visuals\(\)/, "停止快捷键必须直接停止原生桌宠动画");
 assert.doesNotMatch(lib, /native_frog|NativeFrog|set_frog_pet|register_frog/, "Rust 入口不应保留旧青蛙兼容接口");
 
 assert.match(runtime, /pub struct DesktopPetRuntimeState/, "运行时状态应与角色无关");
@@ -36,6 +42,12 @@ assert.match(runtime, /active_clip_duration/, "运行时应让随机动作在配
 assert.match(runtime, /sequence_target_count/, "运行时应按状态配置随机动作数量");
 assert.match(runtime, /sequence_interval/, "运行时应支持动作间随机停顿");
 assert.match(runtime, /disco_movement_mode/, "原生运行时应接收线性或跳跃蹦迪移动方式");
+assert.match(runtime, /pub fn stop_alert_visuals/, "原生桌宠控制器应提供立即停止告警动画能力");
+assert.match(runtime, /suppressed_alert_id/, "停止后的同一条告警不得被旧前端状态重新激活");
+assert.doesNotMatch(feedbackPanel, /details_open\s*=\s*false/, "存在未处理告警时反馈弹窗应保持打开并切换下一条");
+assert.match(runtime, /self\.details_open && state\.pending_count == 0[\s\S]{0,100}self\.details_open = false/, "全部告警反馈完成后才应自动关闭详情");
+assert.match(appVue, /function handleDesktopPetFeedbackAction/, "桌宠反馈应使用独立的严格路由函数");
+assert.doesNotMatch(appVue, /const cameraAlert =[\s\S]{0,320}\?\? latestPendingCameraFaceAlert\.value/, "携带告警 ID 时不能回退并误处理其他自动告警");
 assert.match(runtime, /pet_press_dragged[\s\S]{0,300}ViewportCommand::StartDrag/, "拖动桌宠时应切换到 Move 动作");
 assert.match(runtime, /emit_action\("open_main_window"/, "普通状态单击桌宠应请求打开主程序");
 assert.match(runtime, /alert_active[\s\S]{0,500}emit_action\("stop_visuals"/, "告警状态单击桌宠应停止告警而不是打开主程序");
