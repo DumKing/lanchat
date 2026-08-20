@@ -1,3 +1,4 @@
+pub mod activation;
 pub mod alert;
 pub mod manifest;
 pub mod matching;
@@ -8,6 +9,8 @@ pub mod tracking;
 pub mod types;
 pub mod worker;
 
+#[cfg(test)]
+mod activation_tests;
 #[cfg(test)]
 mod manifest_tests;
 #[cfg(test)]
