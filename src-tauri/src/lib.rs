@@ -62,6 +62,7 @@ use tauri::{
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
+use vision::worker::{decode_raw_frame, LatestFrameMailbox};
 
 #[cfg(target_os = "windows")]
 use winreg::enums::HKEY_CURRENT_USER;
@@ -674,6 +675,7 @@ struct AppState {
     desktop_pet_stop_hotkey: Arc<Mutex<Option<Shortcut>>>,
     super_admin_session: Arc<Mutex<bool>>,
     face_monitor: Arc<FaceMonitorRuntime>,
+    vision_mailbox: Arc<LatestFrameMailbox>,
 }
 
 fn ensure_full_client(state: &AppState, capability: &str) -> Result<(), String> {
@@ -986,6 +988,15 @@ async fn submit_face_monitor_frame(
         }
     }
     Ok(first_record)
+}
+
+/// 新视觉运行时的轻量入口：仅验证二进制 Envelope 并覆盖上一帧。
+/// 真正推理由专用 Worker 消费该邮箱，命令线程不执行模型与数据库读取。
+#[tauri::command]
+fn submit_vision_frame_raw(state: State<'_, AppState>, frame: Vec<u8>) -> Result<(), String> {
+    let frame = decode_raw_frame(&frame)?;
+    state.vision_mailbox.submit(frame);
+    Ok(())
 }
 
 /// 加载启用中录入人员的特征模板：优先用版本匹配的已存特征，
@@ -4497,6 +4508,7 @@ pub fn run() {
             let face_monitor = Arc::new(FaceMonitorRuntime::from_resource_dirs(
                 face_model_resource_dir,
             ));
+            let vision_mailbox = Arc::new(LatestFrameMailbox::default());
             let desktop_pet_controller = DesktopPetController::start(app.handle().clone());
             let pet_settings = desktop_pet.settings();
             desktop_pet_controller.set_enabled(pet_settings.enabled);
@@ -4517,6 +4529,7 @@ pub fn run() {
                 desktop_pet_stop_hotkey: Arc::new(Mutex::new(None)),
                 super_admin_session: Arc::new(Mutex::new(false)),
                 face_monitor,
+                vision_mailbox,
             });
             Ok(())
         })
@@ -4533,6 +4546,7 @@ pub fn run() {
             get_face_monitor_status,
             update_face_monitor_local_settings,
             submit_face_monitor_frame,
+            submit_vision_frame_raw,
             list_face_people,
             delete_face_person_local,
             save_face_reference_photo,
