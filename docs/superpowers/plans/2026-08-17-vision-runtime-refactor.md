@@ -109,9 +109,9 @@ git commit -m "feat: add vision runtime core types"
 - Create: `src-tauri/src/vision/manifest.rs`
 - Create: `src-tauri/src/vision/manifest_tests.rs`
 - Modify: `src-tauri/Cargo.toml`
-- Modify: `src-tauri/resources/object-models/manifest.json`
+- Create: `src-tauri/resources/object-models/manifest.v3.json`
 
-- [ ] **Step 1: 写入 Profile 版本和资产校验失败测试**
+- [x] **Step 1: 写入 Profile 版本和资产校验失败测试**
 
 ```rust
 #[test]
@@ -121,27 +121,27 @@ fn rejects_profile_when_profile_version_differs_from_package_version() { /* asse
 fn embedding_space_changes_when_preprocessing_changes() { /* assert_ne */ }
 ```
 
-- [ ] **Step 2: 运行失败测试**
+- [x] **Step 2: 运行失败测试**
 
 Run: `cargo test vision::manifest_tests`
 
 Expected: FAIL。
 
-- [ ] **Step 3: 增加最小依赖并实现校验器**
+- [x] **Step 3: 增加最小依赖并实现校验器**
 
-增加 `semver`、`ed25519-dalek`、`zip`、`argon2`、`aes-gcm` 前先确认 feature 最小化；实现 `package.version == profile.version`、严格递增版本、组件 SHA-256、Adapter Registry、EmbeddingSpace 语义指纹和模型尺寸限制。官方包只允许数据资产，拒绝 DLL、EXE、WASM 和未知可执行文件。
+本阶段只增加 `semver` 并实现 `package.version == profile.version`、严格递增版本、组件 SHA-256 格式、Adapter 标识和 EmbeddingSpace 语义指纹。`ed25519-dalek`、`zip`、`argon2`、`aes-gcm` 延后到 Registry/人员库任务按实际功能加入；官方包的资产类型限制也在 Registry 层执行。
 
-- [ ] **Step 4: 把当前四个 ONNX 模型转换为 baseline Manifest V3**
+- [x] **Step 4: 为当前四个 ONNX 模型新增 baseline Manifest V3 sidecar**
 
-保留原模型文件，补齐每个组件输入/输出、颜色空间、归一化、Adapter ID、许可证与资源声明；Smoke Test 未通过前不得标记兼容。
+保留旧 `manifest.json` 供旧 `face_monitor` 读取；新增 `manifest.v3.json`，补齐每个组件输入/输出、颜色空间、归一化、Adapter ID、许可证与资源声明。Smoke Test 未通过前不得标记兼容。
 
-- [ ] **Step 5: 验证 Manifest 与 Rust 编译**
+- [x] **Step 5: 验证 Manifest 与 Rust 编译**
 
 Run: `cargo test vision::manifest_tests; cargo check`
 
 Expected: PASS。
 
-- [ ] **Step 6: 提交 Manifest 层**
+- [x] **Step 6: 提交 Manifest 层**
 
 ```bash
 git add src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/resources/object-models src-tauri/src/vision

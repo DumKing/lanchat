@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 3,
+  "package": {
+    "id": "com.lanchat.vision.baseline",
+    "version": "1.0.0"
+  },
+  "profile": {
+    "id": "baseline",
+    "version": "1.0.0",
+    "tier": "low_resource"
+  },
+  "components": [
+    {
+      "id": "face-detector",
+      "category": "face_detector",
+      "file": "presence-detector.onnx",
+      "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+      "adapterId": "builtin.face-detector.yunet.v1"
+    },
+    {
+      "id": "face-recognizer",
+      "category": "face_recognizer",
+      "file": "face-recognizer.onnx",
+      "sha256": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
+      "adapterId": "builtin.face-recognizer.sface.v1",
+      "input": { "colorOrder": "RGB", "resizeMode": "aligned_112", "normalization": "sface_127_5" },
+      "output": { "embeddingDimension": 128, "distanceMetric": "cosine" }
+    },
+    {
+      "id": "person-detector",
+      "category": "person_detector",
+      "file": "person-detector.onnx",
+      "sha256": "01a3b0f400b30bc1e45230e991b2e499ab42622485a330021947333fbaf03935",
+      "adapterId": "builtin.person-detector.yolox.v1"
+    },
+    {
+      "id": "person-recognizer",
+      "category": "person_reid",
+      "file": "person-recognizer.onnx",
+      "sha256": "4757c4cb759b79030a9870abf29c064c2ee51e079a05700690800c81b16cf245",
+      "adapterId": "builtin.person-reid.youtu.v1",
+      "input": { "colorOrder": "RGB", "resizeMode": "128x256", "normalization": "imagenet" },
+      "output": { "embeddingDimension": 768, "distanceMetric": "cosine" }
+    }
+  ]
+}
