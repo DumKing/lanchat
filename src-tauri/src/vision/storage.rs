@@ -14,6 +14,25 @@ pub fn initialize(conn: &Connection) -> Result<(), String> {
             checksum TEXT NOT NULL,
             applied_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS person_reference_images_v2 (
+            id TEXT PRIMARY KEY,
+            person_id TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            quality_score REAL,
+            face_quality_score REAL,
+            body_quality_score REAL,
+            face_usage_enabled INTEGER NOT NULL DEFAULT 1,
+            body_usage_enabled INTEGER NOT NULL DEFAULT 1,
+            body_sample_kind TEXT,
+            body_weight REAL NOT NULL DEFAULT 1.0,
+            body_weight_decay_at INTEGER,
+            body_expires_at INTEGER,
+            detected_subject_count INTEGER NOT NULL DEFAULT 1,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            UNIQUE(person_id, sha256)
+        );
         CREATE TABLE IF NOT EXISTS vision_model_profiles (
             profile_id TEXT NOT NULL,
             profile_version TEXT NOT NULL,
@@ -94,5 +113,25 @@ pub fn initialize(conn: &Connection) -> Result<(), String> {
         (VISION_SCHEMA_VERSION, "vision-v5-initial"),
     )
     .map_err(|error| format!("记录视觉识别数据库版本失败：{error}"))?;
+    Ok(())
+}
+
+/// 从旧 `face_person_samples` 复制，而不是移动，确保迁移中断时旧运行时仍可工作。
+pub fn copy_legacy_reference_images(conn: &Connection) -> Result<(), String> {
+    conn.execute(
+        "INSERT OR IGNORE INTO person_reference_images_v2(
+            id,person_id,file_path,sha256,created_at,updated_at
+         )
+         SELECT
+            'legacy:' || sample_id,
+            person_id,
+            photo_url,
+            COALESCE(NULLIF(photo_sha256, ''), photo_url),
+            created_at,
+            created_at
+         FROM face_person_samples",
+        [],
+    )
+    .map_err(|error| format!("复制旧视觉参考图失败：{error}"))?;
     Ok(())
 }

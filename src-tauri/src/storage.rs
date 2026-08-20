@@ -645,6 +645,22 @@ impl Storage {
         }
     }
 
+    /// 可重复执行的兼容迁移。后续 V5 特征重算只读取新表，旧表保留一个兼容周期。
+    pub fn migrate_legacy_vision_data(&self) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        crate::vision::storage::copy_legacy_reference_images(&conn)
+    }
+
+    pub fn vision_reference_image_count(&self, person_id: &str) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        conn.query_row(
+            "SELECT COUNT(*) FROM person_reference_images_v2 WHERE person_id=?1",
+            params![person_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("读取视觉参考图数量失败：{error}"))
+    }
+
     pub fn upsert_face_person(
         &self,
         frame: &FacePersonPolicyFrame,
