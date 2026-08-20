@@ -2,16 +2,19 @@
 import { computed } from "vue";
 import { NButton, NCard, NTag } from "naive-ui";
 import type { FaceMonitorPolicy, FaceMonitorRuntimeStatus } from "../types/face-monitor";
+import type { VisionRuntimeSnapshot } from "../types/vision";
 import { t } from "../i18n";
 
 const props = defineProps<{
   status: FaceMonitorRuntimeStatus | null;
   policy: FaceMonitorPolicy | null;
+  snapshot?: VisionRuntimeSnapshot | null;
 }>();
 
 const emit = defineEmits<{ configure: [] }>();
 
-const activeProfile = computed(() => props.status?.modelVersion || t("vision.profile.baseline"));
+const activeProfile = computed(() => props.snapshot?.activeProfileId || "baseline");
+const activeVersion = computed(() => props.snapshot?.activeProfileVersion || props.status?.modelVersion || "-");
 </script>
 
 <template>
@@ -23,12 +26,12 @@ const activeProfile = computed(() => props.status?.modelVersion || t("vision.pro
     </template>
     <p class="vision-model-intro">{{ t('vision.workspace.description') }}</p>
     <div class="vision-profile-list">
-      <article class="vision-profile active">
+      <article class="vision-profile" :class="{ active: activeProfile === 'baseline' }">
         <div>
-          <strong>{{ t('vision.profile.balanced') }}</strong>
+          <strong>{{ t('vision.profile.baseline') }}</strong>
           <span>{{ t('vision.profile.balanced.description') }}</span>
         </div>
-        <NTag size="small" :bordered="false" type="success">{{ activeProfile }}</NTag>
+        <NTag size="small" :bordered="false" :type="activeProfile === 'baseline' ? 'success' : 'default'">{{ activeVersion }}</NTag>
       </article>
       <article class="vision-profile">
         <div>

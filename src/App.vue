@@ -7504,6 +7504,7 @@ async function closeWindow() {
                 <VisionModelCenter
                   :status="faceMonitorRuntimeStatus"
                   :policy="faceMonitorPolicy"
+                  :snapshot="visionRuntimeSnapshot"
                   @configure="() => { settingsCategory = 'camera'; openSection('settings'); }"
                 />
                 <VisionRuntimeStatus
