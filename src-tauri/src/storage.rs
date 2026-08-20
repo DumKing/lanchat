@@ -282,6 +282,23 @@ pub struct Storage {
     conn: Mutex<Connection>,
 }
 
+/// 远程视觉策略写入后的持久化收据。
+///
+/// 只有 `Accepted` 可以在事务提交后启动下载、激活或特征重算等后台工作；
+/// `Duplicate` 必须返回已经持久化的首个结果，`Stale` 则保留审计收据但不执行。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VisionRemoteCommandReceipt {
+    Accepted { result_json: String },
+    Duplicate { result_json: String },
+    Stale,
+}
+
+impl VisionRemoteCommandReceipt {
+    pub fn should_schedule(&self) -> bool {
+        matches!(self, Self::Accepted { .. })
+    }
+}
+
 impl Storage {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, String> {
         if let Some(parent) = path.as_ref().parent() {
@@ -639,6 +656,103 @@ impl Storage {
                 conn.execute_batch("COMMIT")
                     .map_err(|error| format!("提交远程视觉命令事务失败：{error}"))?;
                 Ok(result)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
+    /// 原子接受一条版本化视觉策略。事务内只记录意图和修订号，任何模型操作都必须
+    /// 在成功提交之后由调用方异步执行，避免半提交状态触发重复的昂贵任务。
+    #[allow(clippy::too_many_arguments)]
+    pub fn accept_vision_remote_policy_command(
+        &self,
+        issuer_device_id: &str,
+        target_device_id: &str,
+        command_id: &str,
+        nonce: &str,
+        revision: i64,
+        expires_at: i64,
+        processed_at: i64,
+        result_json: &str,
+    ) -> Result<VisionRemoteCommandReceipt, String> {
+        if expires_at <= processed_at {
+            return Err("VISION_POLICY_EXPIRED".to_string());
+        }
+        if revision <= 0 {
+            return Err("VISION_POLICY_INVALID".to_string());
+        }
+
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        conn.execute_batch("BEGIN IMMEDIATE")
+            .map_err(|error| format!("开始远程视觉策略事务失败：{error}"))?;
+        let result = (|| {
+            let existing = conn
+                .query_row(
+                    "SELECT result_json FROM vision_remote_command_nonces WHERE issuer_device_id=?1 AND target_device_id=?2 AND command_id=?3",
+                    params![issuer_device_id, target_device_id, command_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|error| format!("读取远程视觉策略收据失败：{error}"))?;
+            if let Some(result_json) = existing {
+                return Ok(VisionRemoteCommandReceipt::Duplicate { result_json });
+            }
+
+            let nonce_command = conn
+                .query_row(
+                    "SELECT command_id FROM vision_remote_command_nonces WHERE nonce=?1",
+                    params![nonce],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|error| format!("读取远程视觉策略 nonce 失败：{error}"))?;
+            if nonce_command.is_some() {
+                return Err("VISION_POLICY_NONCE_REUSED".to_string());
+            }
+
+            let highest_revision = conn
+                .query_row(
+                    "SELECT highest_revision FROM vision_remote_command_state WHERE issuer_device_id=?1 AND target_device_id=?2",
+                    params![issuer_device_id, target_device_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()
+                .map_err(|error| format!("读取远程视觉策略修订号失败：{error}"))?
+                .unwrap_or(0);
+
+            if revision <= highest_revision {
+                conn.execute(
+                    "INSERT INTO vision_remote_command_nonces(nonce,command_id,issuer_device_id,target_device_id,expires_at,result_json,processed_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                    params![nonce, command_id, issuer_device_id, target_device_id, expires_at, "{\"status\":\"stale\"}", processed_at],
+                )
+                .map_err(|error| format!("记录陈旧视觉策略收据失败：{error}"))?;
+                return Ok(VisionRemoteCommandReceipt::Stale);
+            }
+
+            conn.execute(
+                "INSERT INTO vision_remote_command_nonces(nonce,command_id,issuer_device_id,target_device_id,expires_at,result_json,processed_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                params![nonce, command_id, issuer_device_id, target_device_id, expires_at, result_json, processed_at],
+            )
+            .map_err(|error| format!("写入远程视觉策略收据失败：{error}"))?;
+            conn.execute(
+                "INSERT INTO vision_remote_command_state(issuer_device_id,target_device_id,highest_revision,updated_at) VALUES (?1,?2,?3,?4)
+                 ON CONFLICT(issuer_device_id,target_device_id) DO UPDATE SET highest_revision=excluded.highest_revision,updated_at=excluded.updated_at",
+                params![issuer_device_id, target_device_id, revision, processed_at],
+            )
+            .map_err(|error| format!("保存远程视觉策略修订号失败：{error}"))?;
+            Ok(VisionRemoteCommandReceipt::Accepted {
+                result_json: result_json.to_string(),
+            })
+        })();
+
+        match result {
+            Ok(receipt) => {
+                conn.execute_batch("COMMIT")
+                    .map_err(|error| format!("提交远程视觉策略事务失败：{error}"))?;
+                Ok(receipt)
             }
             Err(error) => {
                 let _ = conn.execute_batch("ROLLBACK");

@@ -1,6 +1,6 @@
 use crate::protocol::{CameraFaceAlertFrame, FacePersonPolicyFrame};
 use crate::storage::FacePersonSampleRecord;
-use crate::storage::Storage;
+use crate::storage::{Storage, VisionRemoteCommandReceipt};
 
 #[test]
 fn opening_legacy_database_creates_vision_v5_without_losing_existing_face_alerts() {
@@ -30,6 +30,64 @@ fn duplicate_remote_command_returns_the_first_persisted_result() {
 
     assert_eq!(first, "accepted");
     assert_eq!(duplicate, "accepted");
+}
+
+#[test]
+fn vision_policy_receipt_is_idempotent_and_rejects_stale_revisions() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let storage = Storage::open(temp.path().join("lanchat.sqlite3")).expect("storage opens");
+
+    let accepted = storage
+        .accept_vision_remote_policy_command(
+            "issuer",
+            "target",
+            "command-2",
+            "nonce-2",
+            2,
+            1_000,
+            100,
+            "{\"operation\":\"policy_patch\"}",
+        )
+        .expect("accepts latest revision");
+    assert_eq!(
+        accepted,
+        VisionRemoteCommandReceipt::Accepted {
+            result_json: "{\"operation\":\"policy_patch\"}".to_string()
+        }
+    );
+
+    let duplicate = storage
+        .accept_vision_remote_policy_command(
+            "issuer",
+            "target",
+            "command-2",
+            "other-nonce",
+            2,
+            1_000,
+            101,
+            "{\"operation\":\"profile_install\"}",
+        )
+        .expect("returns stored receipt");
+    assert_eq!(
+        duplicate,
+        VisionRemoteCommandReceipt::Duplicate {
+            result_json: "{\"operation\":\"policy_patch\"}".to_string()
+        }
+    );
+
+    let stale = storage
+        .accept_vision_remote_policy_command(
+            "issuer",
+            "target",
+            "command-3",
+            "nonce-3",
+            1,
+            1_000,
+            102,
+            "{\"operation\":\"policy_patch\"}",
+        )
+        .expect("stale revision is persisted without scheduling");
+    assert_eq!(stale, VisionRemoteCommandReceipt::Stale);
 }
 
 #[test]

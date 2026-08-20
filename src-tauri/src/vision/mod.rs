@@ -2,6 +2,7 @@ pub mod activation;
 pub mod alert;
 pub mod manifest;
 pub mod matching;
+pub mod protocol;
 pub mod registry;
 pub mod runtime;
 pub mod storage;
@@ -13,6 +14,8 @@ pub mod worker;
 mod activation_tests;
 #[cfg(test)]
 mod manifest_tests;
+#[cfg(test)]
+mod protocol_tests;
 #[cfg(test)]
 mod recognition_tests;
 #[cfg(test)]
