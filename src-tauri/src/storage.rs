@@ -581,7 +581,68 @@ impl Storage {
             "force_open_main_window",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
+        crate::vision::storage::initialize(&conn)?;
         Ok(())
+    }
+
+    pub fn vision_schema_version(&self) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        conn.query_row(
+            "SELECT MAX(version) FROM vision_schema_migrations",
+            [],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .map_err(|error| format!("读取视觉识别数据库版本失败：{error}"))?
+        .ok_or_else(|| "视觉识别数据库版本缺失".to_string())
+    }
+
+    pub fn legacy_face_alert_count(&self) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        conn.query_row("SELECT COUNT(*) FROM camera_face_alerts", [], |row| row.get(0))
+            .map_err(|error| format!("读取历史视觉告警失败：{error}"))
+    }
+
+    pub fn record_vision_remote_command(
+        &self,
+        issuer_device_id: &str,
+        target_device_id: &str,
+        command_id: &str,
+        nonce: &str,
+        processed_at: i64,
+        result_json: &str,
+    ) -> Result<String, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        conn.execute_batch("BEGIN IMMEDIATE")
+            .map_err(|error| format!("开始远程视觉命令事务失败：{error}"))?;
+        let result = (|| {
+            let existing = conn
+                .query_row(
+                    "SELECT result_json FROM vision_remote_command_nonces WHERE issuer_device_id=?1 AND target_device_id=?2 AND command_id=?3",
+                    (issuer_device_id, target_device_id, command_id),
+                    |row| row.get::<_, String>(0),
+                )
+                .ok();
+            if let Some(result) = existing {
+                return Ok(result);
+            }
+            conn.execute(
+                "INSERT INTO vision_remote_command_nonces(nonce,command_id,issuer_device_id,target_device_id,expires_at,result_json,processed_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                (nonce, command_id, issuer_device_id, target_device_id, processed_at + 300, result_json, processed_at),
+            )
+            .map_err(|error| format!("写入远程视觉命令收据失败：{error}"))?;
+            Ok(result_json.to_string())
+        })();
+        match result {
+            Ok(result) => {
+                conn.execute_batch("COMMIT")
+                    .map_err(|error| format!("提交远程视觉命令事务失败：{error}"))?;
+                Ok(result)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
     }
 
     pub fn upsert_face_person(
