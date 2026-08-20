@@ -1,12 +1,17 @@
+pub mod alert;
 pub mod manifest;
+pub mod matching;
 pub mod registry;
 pub mod runtime;
 pub mod storage;
+pub mod tracking;
 pub mod types;
 pub mod worker;
 
 #[cfg(test)]
 mod manifest_tests;
+#[cfg(test)]
+mod recognition_tests;
 #[cfg(test)]
 mod registry_tests;
 #[cfg(test)]
