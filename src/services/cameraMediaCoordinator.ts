@@ -1,7 +1,13 @@
-import type { CameraFrameSample, CameraMonitorSettings, CameraMonitorStatus } from "../types/face-monitor";
+import type { CameraMonitorSettings, CameraMonitorStatus } from "../types/face-monitor";
+import type { VisionFrameSample } from "../types/vision";
+import { VisionFrameTransport } from "./visionFrameTransport";
 
 type StatusListener = (status: CameraMonitorStatus) => void;
-type FrameListener = (sample: CameraFrameSample) => void | Promise<void>;
+type FrameListener = (sample: VisionFrameSample) => void | Promise<void>;
+type VideoFrameCallbackVideo = HTMLVideoElement & {
+  requestVideoFrameCallback?: (callback: () => void) => number;
+  cancelVideoFrameCallback?: (id: number) => void;
+};
 
 const clampFps = (value: number) => Math.max(1, Math.min(5, Math.round(value || 2)));
 
@@ -27,6 +33,9 @@ class CameraMediaCoordinator {
   private videoCallActive = false;
   private previewActive = false;
   private frameTimer: number | null = null;
+  private videoFrameCallbackId: number | null = null;
+  private samplingEpoch = 0;
+  private lastSampledAt = 0;
   private samplingBusy = false;
   private samplingAllowed = false;
   private statusListeners = new Set<StatusListener>();
@@ -34,9 +43,10 @@ class CameraMediaCoordinator {
   private lastError: string | null = null;
   private samplerVideo: HTMLVideoElement | null = null;
   private samplerCanvas: HTMLCanvasElement | null = null;
+  private visionTransport = new VisionFrameTransport();
 
   getStatus(): CameraMonitorStatus {
-    const sampling = !!this.frameTimer && this.monitoringActive() && !(this.videoCallActive && this.settings.pauseDuringCall);
+    const sampling = (this.frameTimer !== null || this.videoFrameCallbackId !== null) && this.monitoringActive() && !(this.videoCallActive && this.settings.pauseDuringCall);
     return {
       supported: true,
       enabled: this.settings.enabled,
@@ -131,8 +141,7 @@ class CameraMediaCoordinator {
   }
 
   dispose() {
-    if (this.frameTimer !== null) window.clearInterval(this.frameTimer);
-    this.frameTimer = null;
+    this.stopSampling();
     this.stopStream(this.videoStream);
     this.stopStream(this.callAudioStream);
     this.callVideoTrack?.stop();
@@ -149,6 +158,7 @@ class CameraMediaCoordinator {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("当前环境不支持摄像头访问");
     const deviceId = this.settings.deviceId?.trim();
     this.videoStream = await navigator.mediaDevices.getUserMedia({ video: deviceId ? { deviceId: { exact: deviceId } } : true, audio: false });
+    this.visionTransport.reset();
     return this.videoStream.getVideoTracks()[0];
   }
 
@@ -170,14 +180,47 @@ class CameraMediaCoordinator {
 
   private updateSampling() {
     const enabled = this.samplingAllowed && this.monitoringActive() && this.frameListeners.size > 0 && !!this.videoStream && !(this.videoCallActive && this.settings.pauseDuringCall);
-    if (this.frameTimer !== null) {
-      window.clearInterval(this.frameTimer);
-      this.frameTimer = null;
-    }
+    this.stopSampling();
     if (!enabled) return;
     const interval = Math.round(1000 / this.effectiveSampleFps());
+    const video = this.ensureSamplerVideo() as VideoFrameCallbackVideo;
+    const epoch = this.samplingEpoch;
+    const canUseVideoFrameCallback = typeof (video as unknown as { requestVideoFrameCallback?: unknown }).requestVideoFrameCallback === "function";
+    if (canUseVideoFrameCallback) {
+      void this.startVideoFrameSampling(video, interval, epoch);
+      return;
+    }
     this.frameTimer = window.setInterval(() => void this.captureFrame(), interval);
     void this.captureFrame();
+  }
+
+  private stopSampling() {
+    this.samplingEpoch += 1;
+    if (this.frameTimer !== null) window.clearInterval(this.frameTimer);
+    this.frameTimer = null;
+    const video = this.samplerVideo as VideoFrameCallbackVideo | null;
+    if (video && this.videoFrameCallbackId !== null) video.cancelVideoFrameCallback?.(this.videoFrameCallbackId);
+    this.videoFrameCallbackId = null;
+  }
+
+  private async startVideoFrameSampling(video: VideoFrameCallbackVideo, interval: number, epoch: number) {
+    if (!this.videoStream) return;
+    if (video.srcObject !== this.videoStream) video.srcObject = this.videoStream;
+    await video.play().catch(() => undefined);
+    const requestVideoFrame = video.requestVideoFrameCallback;
+    if (epoch !== this.samplingEpoch || !requestVideoFrame) return;
+    const schedule = () => {
+      this.videoFrameCallbackId = requestVideoFrame.call(video, () => {
+        if (epoch !== this.samplingEpoch) return;
+        const now = performance.now();
+        if (now - this.lastSampledAt >= interval) {
+          this.lastSampledAt = now;
+          void this.captureFrame();
+        }
+        schedule();
+      });
+    };
+    schedule();
   }
 
   private async captureFrame() {
@@ -197,10 +240,18 @@ class CameraMediaCoordinator {
       const canvas = this.ensureSamplerCanvas();
       canvas.width = width;
       canvas.height = height;
-      canvas.getContext("2d", { alpha: false })?.drawImage(video, 0, 0, width, height);
-      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.72));
-      if (!blob) return;
-      const sample: CameraFrameSample = { bytes: new Uint8Array(await blob.arrayBuffer()), mimeType: "image/jpeg", width, height, capturedAt: Date.now() };
+      const context = canvas.getContext("2d", { alpha: false });
+      if (!context) return;
+      context.drawImage(video, 0, 0, width, height);
+      const imageData = context.getImageData(0, 0, width, height);
+      const sample = this.visionTransport.next({
+        capturedAt: Date.now(),
+        width,
+        height,
+        stride: width * 4,
+        // Uint8ClampedArray 需要复制，避免下一帧 Canvas 操作影响正在通过 IPC 发送的帧。
+        rgba: new Uint8Array(imageData.data),
+      }) satisfies VisionFrameSample;
       for (const listener of this.frameListeners) await listener(sample);
     } catch (error) {
       this.lastError = error instanceof Error ? error.message : String(error);

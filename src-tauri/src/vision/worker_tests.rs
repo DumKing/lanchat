@@ -1,4 +1,6 @@
-use super::worker::{LatestFrameMailbox, VisionFrame};
+use super::worker::{LatestFrameMailbox, VisionFrame, VisionWorker};
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
 
 fn raw_frame(stream_id: uuid::Uuid, generation: u64, width: u16, height: u16) -> Vec<u8> {
     let stride = u32::from(width) * 4;
@@ -78,4 +80,43 @@ fn raw_envelope_rejects_mismatched_payload_length() {
         super::worker::decode_raw_frame(&bytes).unwrap_err(),
         "VISION_FRAME_LENGTH_INVALID"
     );
+}
+
+#[test]
+fn worker_converts_packed_rgba_to_a_local_jpeg_compatibility_frame() {
+    let image = super::worker::encode_frame_as_jpeg(&VisionFrame {
+        stream_id: "stream-a".to_string(),
+        stream_generation: 1,
+        frame_id: 1,
+        captured_at_ms: 1,
+        width: 2,
+        height: 1,
+        stride: 8,
+        rgba: vec![255, 0, 0, 255, 0, 255, 0, 255],
+    })
+    .expect("encodes rgba image");
+
+    let decoded = image::load_from_memory(&image).expect("jpeg decodes");
+    assert_eq!(decoded.width(), 2);
+    assert_eq!(decoded.height(), 1);
+}
+
+#[test]
+fn dedicated_worker_consumes_the_latest_mailbox_frame_off_the_command_thread() {
+    let mailbox = Arc::new(LatestFrameMailbox::default());
+    let (sender, receiver) = mpsc::channel();
+    let worker = VisionWorker::start(mailbox.clone(), move |frame| {
+        sender
+            .send(frame.frame_id)
+            .expect("reports processed frame");
+    });
+
+    mailbox.submit(frame("stream-a", 1, 9));
+    assert_eq!(
+        receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker receives frame"),
+        9
+    );
+    worker.shutdown();
 }

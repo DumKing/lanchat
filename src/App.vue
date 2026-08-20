@@ -46,6 +46,9 @@ import { storeToRefs } from "pinia";
 import { api } from "./services/tauri-api";
 import { cameraMediaCoordinator } from "./services/cameraMediaCoordinator";
 import ChatComposerInput from "./components/ChatComposerInput.vue";
+import VisionModelCenter from "./components/VisionModelCenter.vue";
+import VisionPeoplePanel from "./components/VisionPeoplePanel.vue";
+import VisionRuntimeStatus from "./components/VisionRuntimeStatus.vue";
 import { DEFAULT_GROUP_ID, useLanChatStore } from "./stores/lanchat";
 import { useDesktopPetStore } from "./stores/desktopPet";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, ExternalPushConfig, ExternalPushKind, PetPackageSource, PetStateKind, PetStatePlaybackConfig } from "./types/desktop-pet";
@@ -60,10 +63,11 @@ import { createGameRoomShell, gameDefinitionOf, gameRegistry, type GameRoomShell
 import { alertTemperature, alertTruthScore, senderCredibility } from "./utils/alertCredibility";
 import { detectMentionKind, trayConversationTitle, type MentionKind } from "./utils/messageMentions";
 import { peerDisplayName, peerOriginalName, sameDeviceId, sortPeersForDisplay } from "./utils/peerPresentation";
-import { DEFAULT_CAMERA_MONITOR_SETTINGS, type CameraFaceAlert, type CameraFrameSample, type CameraMonitorSettings, type CameraMonitorStatus, type FaceMonitorPolicy, type FaceMonitorRuntimeStatus, type FacePersonPolicy } from "./types/face-monitor";
+import { DEFAULT_CAMERA_MONITOR_SETTINGS, type CameraFaceAlert, type CameraMonitorSettings, type CameraMonitorStatus, type FaceMonitorPolicy, type FaceMonitorRuntimeStatus, type FacePersonPolicy } from "./types/face-monitor";
+import type { VisionFrameSample, VisionRuntimeDiagnostics } from "./types/vision";
 import { dateLocale, effectiveLocale, installUiTranslation, languagePreference, naiveLocale, setLanguagePreference, t } from "./i18n";
 type UiThemeKey = "theme-dingtalk" | "theme-work" | "theme-lan" | "theme-light";
-type MainSection = "chat" | "devices" | "games" | "alerts" | "settings";
+type MainSection = "chat" | "devices" | "games" | "alerts" | "vision" | "settings";
 type RecipientPickerMode = "gameInvite" | "privateChannelCreate" | "privateChannelInvite";
 type SimulationKind = "direct" | "channel" | "alert" | "disco";
 type UndoRequest = {
@@ -354,6 +358,7 @@ const avatarDraft = ref("");
 const faceMonitorSettings = ref<CameraMonitorSettings>({ ...DEFAULT_CAMERA_MONITOR_SETTINGS });
 const faceMonitorMediaStatus = ref<CameraMonitorStatus>(cameraMediaCoordinator.getStatus());
 const faceMonitorRuntimeStatus = ref<FaceMonitorRuntimeStatus | null>(null);
+const visionRuntimeDiagnostics = ref<VisionRuntimeDiagnostics | null>(null);
 const faceMonitorPolicy = ref<FaceMonitorPolicy | null>(null);
 const facePeople = ref<FacePersonPolicy[]>([]);
 const cameraFaceAlerts = ref<CameraFaceAlert[]>([]);
@@ -411,6 +416,7 @@ const cameraDeviceOptions = ref<{ label: string; value: string }[]>([]);
 const faceMonitorSaving = ref(false);
 let unlistenFaceMonitorMediaStatus: (() => void) | null = null;
 let unlistenFaceMonitorFrames: (() => void) | null = null;
+let latestCameraFrameSample: VisionFrameSample | null = null;
 let faceMonitorStatusTimer: number | null = null;
 const profileAvatarInput = ref<HTMLInputElement | null>(null);
 const adminNotificationImageInput = ref<HTMLInputElement | null>(null);
@@ -1753,7 +1759,12 @@ onMounted(async () => {
     await listen<FaceMonitorPolicy>("face_monitor_policy_received", (event) => {
       void applyReceivedFaceMonitorPolicy(event.payload);
     });
-    await listen<CameraFaceAlert>("camera_face_alert_received", (event) => { upsertCameraFaceAlert(event.payload); });
+    await listen<CameraFaceAlert>("camera_face_alert_received", (event) => {
+      upsertCameraFaceAlert(event.payload);
+      if (event.payload.sourceDeviceId === profile.value?.device_id && latestCameraFrameSample) {
+        void attachLocalCameraFacePreview(event.payload, latestCameraFrameSample);
+      }
+    });
     await listen<CameraFaceAlert>("camera_face_alert_feedback_received", (event) => { upsertCameraFaceAlert(event.payload, false); });
   } catch {
     // 浏览器预览时没有 Tauri 事件通道。
@@ -5657,7 +5668,12 @@ async function refreshCameraDeviceOptions() {
 }
 
 async function refreshFaceMonitorRuntimeStatus() {
-  faceMonitorRuntimeStatus.value = await api.getFaceMonitorStatus().catch(() => faceMonitorRuntimeStatus.value);
+  const [status, diagnostics] = await Promise.all([
+    api.getFaceMonitorStatus().catch(() => faceMonitorRuntimeStatus.value),
+    api.getVisionRuntimeDiagnostics().catch(() => visionRuntimeDiagnostics.value),
+  ]);
+  faceMonitorRuntimeStatus.value = status;
+  visionRuntimeDiagnostics.value = diagnostics;
   cameraMediaCoordinator.setSamplingAllowed(Boolean(faceMonitorRuntimeStatus.value?.modelReady));
 }
 
@@ -5734,10 +5750,22 @@ async function applyReceivedFaceMonitorPolicy(policy: FaceMonitorPolicy) {
 
 // Camera evidence is an ephemeral local Blob URL. It is never saved to SQLite
 // and is deliberately absent from the LAN alert frame.
-function attachLocalCameraFacePreview(record: CameraFaceAlert, sample: CameraFrameSample) {
+async function attachLocalCameraFacePreview(record: CameraFaceAlert, sample: VisionFrameSample) {
   const previous = cameraFacePreviewUrls.value[record.alertId];
   if (previous) URL.revokeObjectURL(previous);
-  const previewUrl = URL.createObjectURL(new Blob([sample.bytes], { type: sample.mimeType }));
+  const canvas = document.createElement("canvas");
+  canvas.width = sample.width;
+  canvas.height = sample.height;
+  const context = canvas.getContext("2d");
+  if (!context) return;
+  context.putImageData(
+    new ImageData(new Uint8ClampedArray(sample.rgba), sample.width, sample.height),
+    0,
+    0,
+  );
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.72));
+  if (!blob) return;
+  const previewUrl = URL.createObjectURL(blob);
   const next = { ...cameraFacePreviewUrls.value, [record.alertId]: previewUrl };
   const entries = Object.entries(next);
   while (entries.length > 8) {
@@ -5829,13 +5857,10 @@ async function initializeFaceMonitor() {
   unlistenFaceMonitorMediaStatus = cameraMediaCoordinator.subscribeStatus((status) => {
     faceMonitorMediaStatus.value = status;
   });
-    unlistenFaceMonitorFrames = cameraMediaCoordinator.subscribeFrames(async (sample) => {
+  unlistenFaceMonitorFrames = cameraMediaCoordinator.subscribeFrames(async (sample) => {
+      latestCameraFrameSample = sample;
       if (!faceMonitorRuntimeStatus.value?.modelReady) return;
-      const alert = await api.submitFaceMonitorFrame(sample).catch(() => null);
-      if (alert) {
-        upsertCameraFaceAlert(alert);
-        attachLocalCameraFacePreview(alert, sample);
-      }
+      await api.submitVisionFrameRaw(sample).catch(() => undefined);
       scheduleFaceMonitorRuntimeStatusRefresh();
     });
   try {
@@ -6388,6 +6413,16 @@ async function closeWindow() {
               >
                 <span class="nav-icon">🐸</span>
                 <span v-if="navExpanded" class="nav-label">狼来了</span>
+              </button>
+              <button
+                class="rail-action"
+                :class="{ active: activeSection === 'vision' }"
+                :title="t('nav.vision')"
+                @click="openSection('vision')"
+              >
+                <span class="nav-icon">◉</span>
+                <span v-if="navExpanded" class="nav-label">{{ t('nav.vision') }}</span>
+                <span v-if="faceMonitorSettings.enabled && !faceMonitorRuntimeStatus?.modelReady" class="nav-notification-dot"></span>
               </button>
               <button class="rail-action add" title="添加设备" @click="openSection('devices')">
                 <span class="nav-icon">＋</span>
@@ -7453,6 +7488,35 @@ async function closeWindow() {
                     </div>
                   </div>
                 </NCard>
+              </div>
+            </section>
+            <section v-else-if="activeSection === 'vision'" class="workspace-view vision-workspace">
+              <header class="workspace-header vision-workspace-header" data-tauri-drag-region>
+                <div>
+                  <h2>{{ t('vision.workspace.title') }}</h2>
+                  <p>{{ t('vision.workspace.description') }}</p>
+                </div>
+              </header>
+              <div class="vision-workspace-grid">
+                <VisionModelCenter
+                  :status="faceMonitorRuntimeStatus"
+                  :policy="faceMonitorPolicy"
+                  @configure="() => { settingsCategory = 'camera'; openSection('settings'); }"
+                />
+                <VisionRuntimeStatus
+                  :settings="faceMonitorSettings"
+                  :status="faceMonitorRuntimeStatus"
+                  :diagnostics="visionRuntimeDiagnostics"
+                  @refresh="refreshFaceMonitorRuntimeStatus"
+                  @toggle="(enabled) => updateFaceMonitorSettings({ enabled })"
+                />
+                <VisionPeoplePanel
+                  class="vision-people-workspace-card"
+                  :people="facePeople"
+                  @add="() => { settingsCategory = 'camera'; openSection('settings'); }"
+                  @detail="openFacePersonDetail"
+                  @remove="deleteLocalFacePerson"
+                />
               </div>
             </section>
             <section v-else class="workspace-view settings-view">

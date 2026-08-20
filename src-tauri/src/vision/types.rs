@@ -46,6 +46,20 @@ pub struct VisionRuntimeSnapshot {
     pub reason_code: Option<String>,
 }
 
+/// 仅包含聚合性能数据，禁止携带原始图像、Embedding 或可识别身份信息。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VisionRuntimeDiagnostics {
+    pub accepted_frames: u64,
+    pub dropped_frames: u64,
+    pub processed_frames: u64,
+    pub p50_processing_ms: u64,
+    pub p95_processing_ms: u64,
+    pub estimated_memory_bytes: u64,
+    pub worker_queue_depth: u8,
+    pub stream_resets: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VisionModality {

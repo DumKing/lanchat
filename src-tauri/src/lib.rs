@@ -62,7 +62,8 @@ use tauri::{
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
-use vision::worker::{decode_raw_frame, LatestFrameMailbox};
+use vision::worker::{decode_raw_frame, encode_frame_as_jpeg, LatestFrameMailbox, VisionWorker};
+use vision::{runtime::VisionRuntimeState, types::VisionRuntimeDiagnostics};
 
 #[cfg(target_os = "windows")]
 use winreg::enums::HKEY_CURRENT_USER;
@@ -676,6 +677,9 @@ struct AppState {
     super_admin_session: Arc<Mutex<bool>>,
     face_monitor: Arc<FaceMonitorRuntime>,
     vision_mailbox: Arc<LatestFrameMailbox>,
+    vision_runtime: Arc<VisionRuntimeState>,
+    // 由状态持有，确保应用生命周期内只有一个视觉推理 Worker。
+    _vision_worker: VisionWorker,
 }
 
 fn ensure_full_client(state: &AppState, capability: &str) -> Result<(), String> {
@@ -861,15 +865,14 @@ mod face_monitor_policy_resolution_tests {
     }
 }
 
-#[tauri::command]
-async fn submit_face_monitor_frame(
+/// 旧识别器的兼容处理路径。
+///
+/// Raw 帧由专用 Worker 转为 JPEG 后进入这里，因此前端不再承担编码和大对象传输。
+async fn process_face_monitor_frame(
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    bytes: Vec<u8>,
-    width: u32,
-    height: u32,
+    state: &AppState,
+    bytes: &[u8],
 ) -> Result<Option<CameraFaceAlertRecord>, String> {
-    let _ = (width, height);
     if bytes.is_empty() {
         return Ok(None);
     }
@@ -890,11 +893,11 @@ async fn submit_face_monitor_frame(
     if !face_ready && !body_ready {
         return Ok(None);
     }
-    let templates = load_recognition_templates(&state)?;
+    let templates = load_recognition_templates(state)?;
     if templates.is_empty() {
         return Ok(None);
     }
-    let Some(recognition) = state.face_monitor.recognize_frame(&bytes, &templates)? else {
+    let Some(recognition) = state.face_monitor.recognize_frame(bytes, &templates)? else {
         state.face_monitor.prepare_match_frame(&[]);
         return Ok(None);
     };
@@ -981,13 +984,25 @@ async fn submit_face_monitor_frame(
             continue;
         }
         let record =
-            publish_camera_face_alert(app.clone(), &state, &profile, &policy, &matched, now)
-                .await?;
+            publish_camera_face_alert(app.clone(), state, &profile, &policy, &matched, now).await?;
         if first_record.is_none() {
             first_record = Some(record);
         }
     }
     Ok(first_record)
+}
+
+/// 旧版 JPEG 接口保留到兼容切换完成，内部与新 Worker 共用同一套识别逻辑。
+#[tauri::command]
+async fn submit_face_monitor_frame(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    bytes: Vec<u8>,
+    width: u32,
+    height: u32,
+) -> Result<Option<CameraFaceAlertRecord>, String> {
+    let _ = (width, height);
+    process_face_monitor_frame(app, &state, &bytes).await
 }
 
 /// 新视觉运行时的轻量入口：仅验证二进制 Envelope 并覆盖上一帧。
@@ -996,7 +1011,18 @@ async fn submit_face_monitor_frame(
 fn submit_vision_frame_raw(state: State<'_, AppState>, frame: Vec<u8>) -> Result<(), String> {
     let frame = decode_raw_frame(&frame)?;
     state.vision_mailbox.submit(frame);
+    state.vision_runtime.record_frame_accepted(
+        state.vision_mailbox.dropped_frames(),
+        state.vision_mailbox.queue_depth(),
+        state.vision_mailbox.pending_frame_bytes(),
+        state.vision_mailbox.stream_reset_count(),
+    );
     Ok(())
+}
+
+#[tauri::command]
+fn get_vision_runtime_diagnostics(state: State<'_, AppState>) -> VisionRuntimeDiagnostics {
+    state.vision_runtime.diagnostics()
 }
 
 /// 加载启用中录入人员的特征模板：优先用版本匹配的已存特征，
@@ -4509,6 +4535,51 @@ pub fn run() {
                 face_model_resource_dir,
             ));
             let vision_mailbox = Arc::new(LatestFrameMailbox::default());
+            let vision_runtime = Arc::new(VisionRuntimeState::default());
+            let worker_app = app.handle().clone();
+            let worker_runtime = vision_runtime.clone();
+            let mut worker_active_stream: Option<(String, u64)> = None;
+            let vision_worker = VisionWorker::start(vision_mailbox.clone(), move |frame| {
+                let started_at = std::time::Instant::now();
+                let state = worker_app.state::<AppState>();
+                let stream_key = (frame.stream_id.clone(), frame.stream_generation);
+                if worker_active_stream.as_ref() != Some(&stream_key) {
+                    // 新流不能继承旧摄像头的连续命中和短时追踪状态。
+                    state.face_monitor.prepare_match_frame(&[]);
+                    worker_active_stream = Some(stream_key);
+                }
+                let encoded = match encode_frame_as_jpeg(&frame) {
+                    Ok(encoded) => encoded,
+                    Err(error) => {
+                        emit_debug_log(
+                            &worker_app,
+                            "warn",
+                            "vision",
+                            "视觉帧兼容编码失败，已跳过该帧",
+                            Some(error),
+                        );
+                        worker_runtime.record_processing_failure("VISION_FRAME_ENCODING_FAILED");
+                        return;
+                    }
+                };
+                let result = tauri::async_runtime::block_on(process_face_monitor_frame(
+                    worker_app.clone(),
+                    &state,
+                    &encoded,
+                ));
+                if let Err(error) = result {
+                    emit_debug_log(
+                        &worker_app,
+                        "warn",
+                        "vision",
+                        "视觉 Worker 处理帧失败",
+                        Some(error),
+                    );
+                    worker_runtime.record_processing_failure("VISION_INFERENCE_FAILED");
+                } else {
+                    worker_runtime.record_processing_duration(started_at.elapsed());
+                }
+            });
             let desktop_pet_controller = DesktopPetController::start(app.handle().clone());
             let pet_settings = desktop_pet.settings();
             desktop_pet_controller.set_enabled(pet_settings.enabled);
@@ -4530,6 +4601,8 @@ pub fn run() {
                 super_admin_session: Arc::new(Mutex::new(false)),
                 face_monitor,
                 vision_mailbox,
+                vision_runtime,
+                _vision_worker: vision_worker,
             });
             Ok(())
         })
@@ -4547,6 +4620,7 @@ pub fn run() {
             update_face_monitor_local_settings,
             submit_face_monitor_frame,
             submit_vision_frame_raw,
+            get_vision_runtime_diagnostics,
             list_face_people,
             delete_face_person_local,
             save_face_reference_photo,
