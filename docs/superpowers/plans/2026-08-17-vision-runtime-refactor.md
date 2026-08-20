@@ -63,7 +63,7 @@
 - Create: `src-tauri/src/vision/types_tests.rs`
 - Modify: `src-tauri/src/lib.rs`
 
-- [ ] **Step 1: 写入状态正交性失败测试**
+- [x] **Step 1: 写入状态正交性失败测试**
 
 ```rust
 #[test]
@@ -73,13 +73,13 @@ fn user_pause_survives_restart_but_resource_pause_does_not() {
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cargo test vision::types_tests::user_pause_survives_restart_but_resource_pause_does_not`
 
 Expected: FAIL，模块或函数不存在。
 
-- [ ] **Step 3: 实现最小公共 DTO 与状态机**
+- [x] **Step 3: 实现最小公共 DTO 与状态机**
 
 ```rust
 pub enum VisionLifecycleState { Disabled, Initializing, Ready, RebuildingSession, RollingBack, Failed }
@@ -90,13 +90,13 @@ pub struct VisionRuntimeSnapshot { /* 生命周期、采样、性能、活动 Pr
 
 `RecognitionResult`、`RecognitionEvidence`、`ProfileActivation`、`VisionTaskSnapshot` 和所有错误码必须只定义在此层；禁止继续在 `face_monitor.rs` 扩散新 DTO。
 
-- [ ] **Step 4: 运行模块测试**
+- [x] **Step 4: 运行模块测试**
 
 Run: `cargo test vision::types_tests`
 
 Expected: PASS。
 
-- [ ] **Step 5: 提交类型边界**
+- [x] **Step 5: 提交类型边界**
 
 ```bash
 git add src-tauri/src/vision src-tauri/src/lib.rs

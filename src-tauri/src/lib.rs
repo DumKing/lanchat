@@ -8,6 +8,7 @@ mod identity;
 mod network;
 mod protocol;
 mod storage;
+mod vision;
 
 #[cfg(test)]
 mod desktop_pet_tests;
