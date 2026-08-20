@@ -40,4 +40,7 @@ export type VisionProfileSummary = {
   active: boolean;
   compatible: boolean;
   compatibilityReason?: string | null;
+  downloadable: boolean;
+  packageSizeBytes: number;
+  restartRequired: boolean;
 };

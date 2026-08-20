@@ -8,13 +8,14 @@ use crate::protocol::{
 use crate::vision::{
     runtime::PersistedVisionRuntimeState,
     types::{
-        VisionLifecycleState, VisionPerformanceState, VisionRuntimeSnapshot, VisionSamplingState,
+        VisionLifecycleState, VisionModelProfileSummary, VisionPerformanceState,
+        VisionRuntimeSnapshot, VisionSamplingState,
     },
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 pub const DEFAULT_GROUP_ID: &str = "lan-room";
@@ -605,6 +606,7 @@ impl Storage {
             "INTEGER NOT NULL DEFAULT 0",
         )?;
         crate::vision::storage::initialize(&conn)?;
+        ensure_column(&conn, "vision_model_profiles", "install_path", "TEXT")?;
         Ok(())
     }
 
@@ -876,6 +878,76 @@ impl Storage {
         )
         .map_err(|error| format!("保存视觉运行时状态失败：{error}"))?;
         Ok(())
+    }
+
+    pub fn list_vision_model_profiles(&self) -> Result<Vec<VisionModelProfileSummary>, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let mut statement = conn.prepare(
+            "SELECT profile_id,profile_version,display_name,tier,install_state,is_active FROM vision_model_profiles ORDER BY is_active DESC,updated_at DESC",
+        ).map_err(|error| format!("读取视觉模型列表失败：{error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(VisionModelProfileSummary {
+                    profile_id: row.get(0)?,
+                    profile_version: row.get(1)?,
+                    display_name: row.get(2)?,
+                    tier: row.get(3)?,
+                    installed: row.get::<_, String>(4)? == "installed",
+                    active: row.get::<_, i32>(5)? != 0,
+                    compatible: true,
+                    compatibility_reason: None,
+                    downloadable: false,
+                    package_size_bytes: 0,
+                    restart_required: true,
+                })
+            })
+            .map_err(|error| format!("读取视觉模型列表失败：{error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("读取视觉模型列表失败：{error}"))
+    }
+
+    pub fn upsert_vision_model_profile(
+        &self,
+        summary: &VisionModelProfileSummary,
+        manifest_json: &str,
+        install_path: &Path,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let now = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT INTO vision_model_profiles(profile_id,profile_version,display_name,tier,manifest_json,source_kind,install_state,is_active,is_last_known_good,install_path,installed_at,updated_at)
+             VALUES (?1,?2,?3,?4,?5,'official_catalog','installed',0,0,?6,?7,?7)
+             ON CONFLICT(profile_id,profile_version) DO UPDATE SET display_name=excluded.display_name,tier=excluded.tier,manifest_json=excluded.manifest_json,source_kind=excluded.source_kind,install_state='installed',install_path=excluded.install_path,installed_at=excluded.installed_at,updated_at=excluded.updated_at",
+            params![summary.profile_id, summary.profile_version, summary.display_name, summary.tier, manifest_json, install_path.to_string_lossy(), now],
+        ).map_err(|error| format!("保存视觉模型状态失败：{error}"))?;
+        Ok(())
+    }
+
+    pub fn activate_vision_model_profile(
+        &self,
+        profile_id: &str,
+        profile_version: &str,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let changed = conn.execute(
+            "UPDATE vision_model_profiles SET is_active=CASE WHEN profile_id=?1 AND profile_version=?2 THEN 1 ELSE 0 END, updated_at=?3 WHERE install_state='installed'",
+            params![profile_id, profile_version, chrono::Utc::now().timestamp_millis()],
+        ).map_err(|error| format!("切换视觉模型失败：{error}"))?;
+        if changed == 0 {
+            return Err("VISION_MODEL_PROFILE_NOT_INSTALLED".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn active_vision_model_install_path(
+        &self,
+    ) -> Result<Option<(String, String, PathBuf)>, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        conn.query_row(
+            "SELECT profile_id,profile_version,install_path FROM vision_model_profiles WHERE is_active=1 AND install_state='installed' ORDER BY updated_at DESC LIMIT 1",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, PathBuf::from(row.get::<_, String>(2)?))),
+        ).optional().map_err(|error| format!("读取活动视觉模型失败：{error}"))
     }
 
     pub fn upsert_face_person(

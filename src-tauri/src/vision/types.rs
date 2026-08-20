@@ -60,6 +60,23 @@ pub struct VisionRuntimeDiagnostics {
     pub stream_resets: u64,
 }
 
+/// 模型中心的稳定展示 DTO。下载地址仅来自已验签官方目录，安装路径不暴露给前端。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VisionModelProfileSummary {
+    pub profile_id: String,
+    pub profile_version: String,
+    pub display_name: String,
+    pub tier: String,
+    pub installed: bool,
+    pub active: bool,
+    pub compatible: bool,
+    pub compatibility_reason: Option<String>,
+    pub downloadable: bool,
+    pub package_size_bytes: u64,
+    pub restart_required: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VisionModality {

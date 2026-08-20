@@ -64,7 +64,7 @@ import { alertTemperature, alertTruthScore, senderCredibility } from "./utils/al
 import { detectMentionKind, trayConversationTitle, type MentionKind } from "./utils/messageMentions";
 import { peerDisplayName, peerOriginalName, sameDeviceId, sortPeersForDisplay } from "./utils/peerPresentation";
 import { DEFAULT_CAMERA_MONITOR_SETTINGS, type CameraFaceAlert, type CameraMonitorSettings, type CameraMonitorStatus, type FaceMonitorPolicy, type FaceMonitorRuntimeStatus, type FacePersonPolicy } from "./types/face-monitor";
-import type { VisionFrameSample, VisionRuntimeDiagnostics, VisionRuntimeSnapshot } from "./types/vision";
+import type { VisionFrameSample, VisionProfileSummary, VisionRuntimeDiagnostics, VisionRuntimeSnapshot } from "./types/vision";
 import { dateLocale, effectiveLocale, installUiTranslation, languagePreference, naiveLocale, setLanguagePreference, t } from "./i18n";
 type UiThemeKey = "theme-dingtalk" | "theme-work" | "theme-lan" | "theme-light";
 type MainSection = "chat" | "devices" | "games" | "alerts" | "vision" | "settings";
@@ -358,6 +358,9 @@ const avatarDraft = ref("");
 const faceMonitorSettings = ref<CameraMonitorSettings>({ ...DEFAULT_CAMERA_MONITOR_SETTINGS });
 const faceMonitorMediaStatus = ref<CameraMonitorStatus>(cameraMediaCoordinator.getStatus());
 const faceMonitorRuntimeStatus = ref<FaceMonitorRuntimeStatus | null>(null);
+const visionModelProfiles = ref<VisionProfileSummary[]>([]);
+const visionModelCatalogRefreshing = ref(false);
+const visionModelInstallingKey = ref("");
 const visionRuntimeDiagnostics = ref<VisionRuntimeDiagnostics | null>(null);
 const visionRuntimeSnapshot = ref<VisionRuntimeSnapshot | null>(null);
 const faceMonitorPolicy = ref<FaceMonitorPolicy | null>(null);
@@ -686,7 +689,7 @@ const adminNotificationTargetOptions = computed(() => onlinePeers.value.map((pee
 })));
 const UPDATE_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
 const activeSection = ref<MainSection>("chat");
-const settingsCategory = ref<"basic" | "camera" | "pet" | "admin">("basic");
+const settingsCategory = ref<"basic" | "pet" | "admin">("basic");
 const listPaneCollapsed = ref(false);
 type ResizePaneKind = "list" | "group";
 type PaneResizeState = { kind: ResizePaneKind; startX: number; startWidth: number };
@@ -1992,8 +1995,8 @@ watch(latestAdminRemoteUpdate, (command: AdminRemoteUpdate | null) => {
     store.error = `执行远程强制更新失败：${stringifyError(err)}`;
   });
 });
-watch(settingsCategory, (next, previous) => {
-  if (previous === "camera" && next !== "camera") {
+watch(activeSection, (next, previous) => {
+  if (previous === "vision" && next !== "vision") {
     cameraLivePreviewEnabled.value = false;
     cameraFaceAlertPreviewOpen.value = false;
     if (cameraLivePreviewVideo.value) cameraLivePreviewVideo.value.srcObject = null;
@@ -4745,6 +4748,15 @@ function openSection(section: MainSection) {
     listPaneCollapsed.value = false;
   }
 }
+function openVisionCameraSettings() {
+  openSection("vision");
+  void nextTick(() => {
+    document.getElementById("vision-camera-settings")?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  });
+}
 function toggleListPane() {
   listPaneCollapsed.value = !listPaneCollapsed.value;
 }
@@ -5680,6 +5692,39 @@ async function refreshFaceMonitorRuntimeStatus() {
   cameraMediaCoordinator.setSamplingAllowed(Boolean(faceMonitorRuntimeStatus.value?.modelReady));
 }
 
+async function refreshVisionModelProfiles(refreshCatalog = false) {
+  visionModelCatalogRefreshing.value = refreshCatalog;
+  try {
+    visionModelProfiles.value = await (refreshCatalog ? api.refreshVisionModelCatalog() : api.listVisionModelProfiles());
+  } catch (error) {
+    if (refreshCatalog) operationNotice.value = `模型目录刷新失败：${stringifyError(error)}`;
+  } finally {
+    visionModelCatalogRefreshing.value = false;
+  }
+}
+
+async function installVisionModel(profile: VisionProfileSummary) {
+  const key = `${profile.profileId}@${profile.profileVersion}`;
+  visionModelInstallingKey.value = key;
+  try {
+    visionModelProfiles.value = await api.installVisionModelProfile(profile.profileId, profile.profileVersion);
+    operationNotice.value = "模型已安全安装，重启 LanChat 后可激活新模型。";
+  } catch (error) {
+    operationNotice.value = `模型安装失败：${stringifyError(error)}`;
+  } finally {
+    visionModelInstallingKey.value = "";
+  }
+}
+
+async function activateVisionModel(profile: VisionProfileSummary) {
+  try {
+    visionModelProfiles.value = await api.activateVisionModelProfile(profile.profileId, profile.profileVersion);
+    operationNotice.value = "已设为下次启动使用的模型；当前检测不中断，重启后自动切换。";
+  } catch (error) {
+    operationNotice.value = `启用模型失败：${stringifyError(error)}`;
+  }
+}
+
 async function refreshFaceMonitorRules() {
   const [policy, people] = await Promise.all([
     api.getEffectiveFaceMonitorPolicy().catch(() => null),
@@ -5878,6 +5923,7 @@ async function initializeFaceMonitor() {
   await refreshFaceMonitorRuntimeStatus();
   await refreshFaceMonitorRules();
   await refreshCameraFaceAlerts();
+  await refreshVisionModelProfiles();
 }
 
 const facePolicyTargetOptions = computed(() => [
@@ -7493,7 +7539,7 @@ async function closeWindow() {
                 </NCard>
               </div>
             </section>
-            <section v-else-if="activeSection === 'vision'" class="workspace-view vision-workspace">
+            <section v-if="activeSection === 'vision'" class="workspace-view vision-workspace">
               <header class="workspace-header vision-workspace-header" data-tauri-drag-region>
                 <div>
                   <h2>{{ t('vision.workspace.title') }}</h2>
@@ -7505,7 +7551,13 @@ async function closeWindow() {
                   :status="faceMonitorRuntimeStatus"
                   :policy="faceMonitorPolicy"
                   :snapshot="visionRuntimeSnapshot"
-                  @configure="() => { settingsCategory = 'camera'; openSection('settings'); }"
+                  :profiles="visionModelProfiles"
+                  :catalog-loading="visionModelCatalogRefreshing"
+                  :installing-key="visionModelInstallingKey"
+                  @configure="openVisionCameraSettings"
+                  @refresh-catalog="refreshVisionModelProfiles(true)"
+                  @install="installVisionModel"
+                  @activate="activateVisionModel"
                 />
                 <VisionRuntimeStatus
                   :settings="faceMonitorSettings"
@@ -7518,13 +7570,15 @@ async function closeWindow() {
                 <VisionPeoplePanel
                   class="vision-people-workspace-card"
                   :people="facePeople"
-                  @add="() => { settingsCategory = 'camera'; openSection('settings'); }"
+                  @add="openVisionCameraSettings"
                   @detail="openFacePersonDetail"
                   @remove="deleteLocalFacePerson"
                 />
+                <!-- 设置页中的既有摄像头表单通过 Teleport 挂载在这里，避免双份状态。 -->
+                <div id="vision-camera-settings" class="vision-camera-settings-anchor"></div>
               </div>
             </section>
-            <section v-else class="workspace-view settings-view">
+            <section v-show="activeSection === 'settings'" class="workspace-view settings-view">
               <div class="settings-layout">
                 <nav class="settings-subnav" aria-label="设置分类">
                   <button
@@ -7534,14 +7588,6 @@ async function closeWindow() {
                     @click="settingsCategory = 'basic'"
                   >
                     {{ t("settings.basic") }}
-                  </button>
-                  <button
-                    type="button"
-                    :class="{ active: settingsCategory === 'camera' }"
-                    :aria-current="settingsCategory === 'camera' ? 'page' : undefined"
-                    @click="settingsCategory = 'camera'"
-                  >
-                    {{ t("settings.camera") }}
                   </button>
                   <button
                     type="button"
@@ -7566,7 +7612,7 @@ async function closeWindow() {
                     <div class="settings-heading-row">
                       <h2 class="settings-title">设置<button class="settings-secret-trigger" type="button" aria-label="设置" @click="handleSuperAdminTap">✦</button></h2>
                     </div>
-                    <p>{{ settingsCategory === 'basic' ? '管理本机资料、网络、主题和语言。' : settingsCategory === 'camera' ? '管理本机人脸出现检测、临时画面提示和检测策略。' : settingsCategory === 'pet' ? '管理桌宠资源、行为与告警能力。' : '集中管理通知、桌宠告警、识别策略和设备更新。' }}</p>
+                    <p>{{ settingsCategory === 'basic' ? '管理本机资料、网络、主题和语言。' : settingsCategory === 'pet' ? '管理桌宠资源、行为与告警能力。' : '集中管理通知、桌宠告警、识别策略和设备更新。' }}</p>
                   </div>
                   <div class="settings-grid" :class="{ 'basic-settings-grid': settingsCategory === 'basic', 'admin-settings-grid': settingsCategory === 'admin' }">
                 <NCard v-if="settingsCategory === 'basic' && profile" title="本机资料" size="small">
@@ -7626,7 +7672,8 @@ async function closeWindow() {
                     </NSpace>
                   </NSpace>
                 </NCard>
-                <NCard v-if="settingsCategory === 'camera'" class="camera-face-settings-card" title="摄像头自动告警" size="small">
+                <Teleport v-if="activeSection === 'vision'" defer to="#vision-camera-settings">
+                <NCard class="camera-face-settings-card" title="摄像头与识别策略" size="small">
                   <NSpace vertical>
                     <div class="setting-switch-row">
                       <div>
@@ -7779,6 +7826,7 @@ async function closeWindow() {
                     <NText depth="3">检测与识别模型仅从本机安装包资源目录读取并进行摘要校验；人员特征不出本机，摄像头帧不会保存或通过局域网传输。</NText>
                   </NSpace>
                 </NCard>
+                </Teleport>
                 <NCard v-if="settingsCategory === 'basic'" title="图片缓存" size="small" class="basic-image-cache-card">
                   <NSpace vertical>
                     <NText depth="3">带预览能力的图片会自动下载到本机缓存，聊天历史仍可在发送方离线后查看。</NText>

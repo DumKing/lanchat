@@ -110,6 +110,7 @@ pub fn initialize(conn: &Connection) -> Result<(), String> {
             install_state TEXT NOT NULL,
             is_active INTEGER NOT NULL DEFAULT 0,
             is_last_known_good INTEGER NOT NULL DEFAULT 0,
+            install_path TEXT,
             installed_at INTEGER,
             updated_at INTEGER NOT NULL,
             PRIMARY KEY(profile_id, profile_version)

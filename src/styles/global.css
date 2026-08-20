@@ -1773,7 +1773,8 @@
   align-items: stretch;
   min-height: 0;
 }
-.vision-people-workspace-card { grid-column: 1 / -1; min-height: 0; }
+  .vision-people-workspace-card { grid-column: 1 / -1; min-height: 0; }
+  .vision-camera-settings-anchor { grid-column: 1 / -1; min-width: 0; }
 @media (max-width: 980px) {
   .vision-workspace-grid { grid-template-columns: 1fr; }
   .vision-people-workspace-card { grid-column: auto; }

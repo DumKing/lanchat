@@ -238,7 +238,12 @@ impl Default for FaceMonitorRuntime {
 
 impl FaceMonitorRuntime {
     pub fn from_resource_dirs(resource_dir: Option<PathBuf>) -> Self {
-        let mut candidates = resource_dir
+        Self::from_candidate_dirs(resource_dir.into_iter().collect())
+    }
+
+    /// 候选目录按顺序尝试；受控下载模型失败时自然回退内置资源。
+    pub fn from_candidate_dirs(resource_dirs: Vec<PathBuf>) -> Self {
+        let mut candidates = resource_dirs
             .into_iter()
             .flat_map(|path| {
                 vec![

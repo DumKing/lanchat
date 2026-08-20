@@ -64,8 +64,9 @@ use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 use vision::worker::{decode_raw_frame, encode_frame_as_jpeg, LatestFrameMailbox, VisionWorker};
 use vision::{
+    model_manager::{download_and_install, fetch_official_catalog, VisionCatalogProfile},
     runtime::VisionRuntimeState,
-    types::{VisionRuntimeDiagnostics, VisionRuntimeSnapshot},
+    types::{VisionModelProfileSummary, VisionRuntimeDiagnostics, VisionRuntimeSnapshot},
 };
 
 #[cfg(target_os = "windows")]
@@ -681,6 +682,8 @@ struct AppState {
     face_monitor: Arc<FaceMonitorRuntime>,
     vision_mailbox: Arc<LatestFrameMailbox>,
     vision_runtime: Arc<VisionRuntimeState>,
+    vision_model_catalog: Arc<Mutex<Vec<VisionCatalogProfile>>>,
+    vision_model_root: PathBuf,
     // 由状态持有，确保应用生命周期内只有一个视觉推理 Worker。
     _vision_worker: VisionWorker,
 }
@@ -1061,6 +1064,127 @@ fn submit_vision_frame_raw(state: State<'_, AppState>, frame: Vec<u8>) -> Result
 #[tauri::command]
 fn get_vision_runtime_diagnostics(state: State<'_, AppState>) -> VisionRuntimeDiagnostics {
     state.vision_runtime.diagnostics()
+}
+
+fn vision_model_profiles(state: &AppState) -> Result<Vec<VisionModelProfileSummary>, String> {
+    let snapshot = state.vision_runtime.snapshot();
+    let mut profiles = state.storage.list_vision_model_profiles()?;
+    profiles.insert(
+        0,
+        VisionModelProfileSummary {
+            profile_id: "baseline".to_string(),
+            profile_version: state
+                .face_monitor
+                .status()
+                .model_version
+                .unwrap_or_else(|| "1.0.0".to_string()),
+            display_name: "内置基础模型".to_string(),
+            tier: "low_resource".to_string(),
+            installed: state.face_monitor.status().model_assets_ready,
+            active: snapshot.active_profile_id.as_deref() == Some("baseline"),
+            compatible: state.face_monitor.status().model_assets_ready,
+            compatibility_reason: state.face_monitor.status().last_error,
+            downloadable: false,
+            package_size_bytes: 0,
+            restart_required: false,
+        },
+    );
+    let catalog = state
+        .vision_model_catalog
+        .lock()
+        .map_err(|_| "视觉模型目录状态不可用".to_string())?
+        .clone();
+    for profile in catalog {
+        if profiles.iter().any(|item| {
+            item.profile_id == profile.profile_id && item.profile_version == profile.profile_version
+        }) {
+            continue;
+        }
+        profiles.push(VisionModelProfileSummary {
+            profile_id: profile.profile_id,
+            profile_version: profile.profile_version,
+            display_name: profile.display_name,
+            tier: profile.tier,
+            installed: false,
+            active: false,
+            compatible: true,
+            compatibility_reason: None,
+            downloadable: true,
+            package_size_bytes: profile.package_size_bytes,
+            restart_required: true,
+        });
+    }
+    Ok(profiles)
+}
+
+#[tauri::command]
+fn list_vision_model_profiles(
+    state: State<'_, AppState>,
+) -> Result<Vec<VisionModelProfileSummary>, String> {
+    vision_model_profiles(&state)
+}
+
+#[tauri::command]
+async fn refresh_vision_model_catalog(
+    state: State<'_, AppState>,
+) -> Result<Vec<VisionModelProfileSummary>, String> {
+    let catalog = fetch_official_catalog(&update_http_client()).await?;
+    let mut target = state
+        .vision_model_catalog
+        .lock()
+        .map_err(|_| "视觉模型目录状态不可用".to_string())?;
+    *target = catalog.profiles;
+    drop(target);
+    vision_model_profiles(&state)
+}
+
+#[tauri::command]
+async fn install_vision_model_profile(
+    state: State<'_, AppState>,
+    profile_id: String,
+    profile_version: String,
+) -> Result<Vec<VisionModelProfileSummary>, String> {
+    let profile = state
+        .vision_model_catalog
+        .lock()
+        .map_err(|_| "视觉模型目录状态不可用".to_string())?
+        .iter()
+        .find(|item| item.profile_id == profile_id && item.profile_version == profile_version)
+        .cloned()
+        .ok_or_else(|| "VISION_MODEL_PROFILE_NOT_IN_CATALOG".to_string())?;
+    let installed =
+        download_and_install(&update_http_client(), &profile, &state.vision_model_root).await?;
+    let summary = VisionModelProfileSummary {
+        profile_id: installed.profile.profile_id.clone(),
+        profile_version: installed.profile.profile_version.clone(),
+        display_name: installed.profile.display_name.clone(),
+        tier: installed.profile.tier.clone(),
+        installed: true,
+        active: false,
+        compatible: true,
+        compatibility_reason: None,
+        downloadable: true,
+        package_size_bytes: installed.bytes,
+        restart_required: true,
+    };
+    state.storage.upsert_vision_model_profile(
+        &summary,
+        &installed.manifest_json,
+        &installed.install_dir,
+    )?;
+    vision_model_profiles(&state)
+}
+
+#[tauri::command]
+fn activate_vision_model_profile(
+    state: State<'_, AppState>,
+    profile_id: String,
+    profile_version: String,
+) -> Result<Vec<VisionModelProfileSummary>, String> {
+    state
+        .storage
+        .activate_vision_model_profile(&profile_id, &profile_version)?;
+    vision_model_profiles(&state)
 }
 
 /// 加载启用中录入人员的特征模板：优先用版本匹配的已存特征，
@@ -4600,25 +4724,35 @@ pub fn run() {
             network.start(app.handle().clone())?;
             let file_server = FileServer::new();
             file_server.start();
-            let face_model_resource_dir = app.path().resource_dir().ok();
-            let face_monitor = Arc::new(FaceMonitorRuntime::from_resource_dirs(
-                face_model_resource_dir,
-            ));
+            let persisted_vision_runtime = storage.load_vision_runtime_state()?;
+            let selected_model = storage.active_vision_model_install_path()?;
+            let mut face_model_dirs = selected_model
+                .as_ref()
+                .map(|(_, _, path)| vec![path.clone()])
+                .unwrap_or_default();
+            if let Ok(resource_dir) = app.path().resource_dir() {
+                face_model_dirs.push(resource_dir);
+            }
+            let face_monitor = Arc::new(FaceMonitorRuntime::from_candidate_dirs(face_model_dirs));
             let vision_mailbox = Arc::new(LatestFrameMailbox::default());
-            let vision_runtime = Arc::new(VisionRuntimeState::restore(
-                storage.load_vision_runtime_state()?,
-            ));
+            let vision_runtime = Arc::new(VisionRuntimeState::restore(persisted_vision_runtime));
             let face_monitor_status = face_monitor.status();
             vision_runtime.mark_model_availability(face_monitor_status.model_ready);
-            if face_monitor_status.model_ready
-                && vision_runtime.snapshot().active_profile_id.is_none()
-            {
-                vision_runtime.set_active_profile(
-                    "baseline",
-                    face_monitor_status
-                        .model_version
-                        .unwrap_or_else(|| "1.0.0".to_string()),
-                );
+            if face_monitor_status.model_ready {
+                if let Some((profile_id, profile_version, _)) =
+                    selected_model.filter(|(_, version, _)| {
+                        face_monitor_status.model_version.as_deref() == Some(version.as_str())
+                    })
+                {
+                    vision_runtime.set_active_profile(profile_id, profile_version);
+                } else {
+                    vision_runtime.set_active_profile(
+                        "baseline",
+                        face_monitor_status
+                            .model_version
+                            .unwrap_or_else(|| "1.0.0".to_string()),
+                    );
+                }
             }
             storage.save_vision_runtime_state(&vision_runtime.persisted_state())?;
             let worker_app = app.handle().clone();
@@ -4687,6 +4821,8 @@ pub fn run() {
                 face_monitor,
                 vision_mailbox,
                 vision_runtime,
+                vision_model_catalog: Arc::new(Mutex::new(Vec::new())),
+                vision_model_root: app_dir.join("vision-models"),
                 _vision_worker: vision_worker,
             });
             Ok(())
@@ -4708,6 +4844,10 @@ pub fn run() {
             submit_face_monitor_frame,
             submit_vision_frame_raw,
             get_vision_runtime_diagnostics,
+            list_vision_model_profiles,
+            refresh_vision_model_catalog,
+            install_vision_model_profile,
+            activate_vision_model_profile,
             list_face_people,
             delete_face_person_local,
             save_face_reference_photo,
