@@ -598,8 +598,10 @@ impl Storage {
 
     pub fn legacy_face_alert_count(&self) -> Result<i64, String> {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
-        conn.query_row("SELECT COUNT(*) FROM camera_face_alerts", [], |row| row.get(0))
-            .map_err(|error| format!("读取历史视觉告警失败：{error}"))
+        conn.query_row("SELECT COUNT(*) FROM camera_face_alerts", [], |row| {
+            row.get(0)
+        })
+        .map_err(|error| format!("读取历史视觉告警失败：{error}"))
     }
 
     pub fn record_vision_remote_command(
@@ -648,7 +650,7 @@ impl Storage {
     /// 可重复执行的兼容迁移。后续 V5 特征重算只读取新表，旧表保留一个兼容周期。
     pub fn migrate_legacy_vision_data(&self) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
-        crate::vision::storage::copy_legacy_reference_images(&conn)
+        crate::vision::storage::initialize(&conn)
     }
 
     pub fn vision_reference_image_count(&self, person_id: &str) -> Result<i64, String> {
@@ -659,6 +661,27 @@ impl Storage {
             |row| row.get(0),
         )
         .map_err(|error| format!("读取视觉参考图数量失败：{error}"))
+    }
+
+    pub fn vision_embedding_count(&self) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        conn.query_row("SELECT COUNT(*) FROM person_embeddings_v2", [], |row| {
+            row.get(0)
+        })
+        .map_err(|error| format!("读取视觉特征数量失败：{error}"))
+    }
+
+    pub fn vision_alert_event_count(&self) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        conn.query_row("SELECT COUNT(*) FROM vision_alert_events", [], |row| {
+            row.get(0)
+        })
+        .map_err(|error| format!("读取视觉告警事件数量失败：{error}"))
+    }
+
+    pub fn verify_vision_database_integrity(&self) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        crate::vision::storage::verify_integrity(&conn)
     }
 
     pub fn upsert_face_person(

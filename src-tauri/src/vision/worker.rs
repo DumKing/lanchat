@@ -46,14 +46,24 @@ impl LatestFrameMailbox {
     }
 
     pub fn take(&self) -> Option<VisionFrame> {
-        self.state.lock().expect("vision mailbox lock poisoned").latest.take()
+        self.state
+            .lock()
+            .expect("vision mailbox lock poisoned")
+            .latest
+            .take()
     }
 
     pub fn dropped_frames(&self) -> u64 {
-        self.state.lock().expect("vision mailbox lock poisoned").dropped_frames
+        self.state
+            .lock()
+            .expect("vision mailbox lock poisoned")
+            .dropped_frames
     }
 
     pub fn stream_reset_count(&self) -> u64 {
-        self.state.lock().expect("vision mailbox lock poisoned").stream_resets
+        self.state
+            .lock()
+            .expect("vision mailbox lock poisoned")
+            .stream_resets
     }
 }

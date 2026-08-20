@@ -1,7 +1,15 @@
 use super::worker::{LatestFrameMailbox, VisionFrame};
 
 fn frame(stream_id: &str, generation: u64, frame_id: u64) -> VisionFrame {
-    VisionFrame { stream_id: stream_id.to_string(), stream_generation: generation, frame_id, captured_at_ms: 1, width: 2, height: 2, rgba: vec![0; 16] }
+    VisionFrame {
+        stream_id: stream_id.to_string(),
+        stream_generation: generation,
+        frame_id,
+        captured_at_ms: 1,
+        width: 2,
+        height: 2,
+        rgba: vec![0; 16],
+    }
 }
 
 #[test]

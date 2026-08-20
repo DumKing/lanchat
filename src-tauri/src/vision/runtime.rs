@@ -39,16 +39,25 @@ impl VisionRuntimeState {
     pub fn restore(persisted: PersistedVisionRuntimeState) -> Self {
         let runtime = Self::default();
         {
-            let mut snapshot = runtime.snapshot.lock().expect("vision runtime lock poisoned");
+            let mut snapshot = runtime
+                .snapshot
+                .lock()
+                .expect("vision runtime lock poisoned");
             snapshot.sampling = restore_sampling_state(persisted.user_paused, persisted.sampling);
             snapshot.revision = persisted.revision;
         }
-        *runtime.user_paused.lock().expect("vision runtime lock poisoned") = persisted.user_paused;
+        *runtime
+            .user_paused
+            .lock()
+            .expect("vision runtime lock poisoned") = persisted.user_paused;
         runtime
     }
 
     pub fn pause_by_user(&self) {
-        *self.user_paused.lock().expect("vision runtime lock poisoned") = true;
+        *self
+            .user_paused
+            .lock()
+            .expect("vision runtime lock poisoned") = true;
         let mut snapshot = self.snapshot.lock().expect("vision runtime lock poisoned");
         snapshot.sampling = VisionSamplingState::PausedByUser;
         snapshot.revision += 1;
@@ -57,13 +66,19 @@ impl VisionRuntimeState {
     pub fn persisted_state(&self) -> PersistedVisionRuntimeState {
         let snapshot = self.snapshot.lock().expect("vision runtime lock poisoned");
         PersistedVisionRuntimeState {
-            user_paused: *self.user_paused.lock().expect("vision runtime lock poisoned"),
+            user_paused: *self
+                .user_paused
+                .lock()
+                .expect("vision runtime lock poisoned"),
             sampling: snapshot.sampling,
             revision: snapshot.revision,
         }
     }
 
     pub fn snapshot(&self) -> VisionRuntimeSnapshot {
-        self.snapshot.lock().expect("vision runtime lock poisoned").clone()
+        self.snapshot
+            .lock()
+            .expect("vision runtime lock poisoned")
+            .clone()
     }
 }

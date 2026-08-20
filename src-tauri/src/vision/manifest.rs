@@ -71,7 +71,10 @@ pub fn validate_manifest(manifest: &VisionManifestV3) -> Result<(), String> {
     if manifest.package.id.trim().is_empty() || manifest.profile.id.trim().is_empty() {
         return Err("VISION_MANIFEST_ID_EMPTY".to_string());
     }
-    if !matches!(manifest.profile.tier.as_str(), "low_resource" | "balanced" | "experimental") {
+    if !matches!(
+        manifest.profile.tier.as_str(),
+        "low_resource" | "balanced" | "experimental"
+    ) {
         return Err("VISION_MANIFEST_PROFILE_TIER_INVALID".to_string());
     }
 
@@ -81,7 +84,10 @@ pub fn validate_manifest(manifest: &VisionManifestV3) -> Result<(), String> {
             || component.file.trim().is_empty()
             || component.adapter_id.trim().is_empty()
             || component.sha256.len() != 64
-            || !component.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || !component
+                .sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
             || !ids.insert(component.id.as_str())
         {
             return Err("VISION_MANIFEST_COMPONENT_INVALID".to_string());
@@ -109,7 +115,10 @@ pub fn validate_manifest(manifest: &VisionManifestV3) -> Result<(), String> {
 }
 
 /// 由所有会影响向量数值语义的字段计算，不能信任 Manifest 自报 ID。
-pub fn embedding_space_id(manifest: &VisionManifestV3, component_id: &str) -> Result<String, String> {
+pub fn embedding_space_id(
+    manifest: &VisionManifestV3,
+    component_id: &str,
+) -> Result<String, String> {
     validate_manifest(manifest)?;
     let component = manifest
         .components

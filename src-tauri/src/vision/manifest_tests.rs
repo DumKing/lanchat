@@ -27,12 +27,17 @@ fn rejects_profile_when_profile_version_differs_from_package_version() {
 fn embedding_space_changes_when_preprocessing_changes() {
     let rgb: VisionManifestV3 = serde_json::from_str(&manifest_json("1.0.0", "RGB")).unwrap();
     let bgr: VisionManifestV3 = serde_json::from_str(&manifest_json("1.0.0", "BGR")).unwrap();
-    assert_ne!(embedding_space_id(&rgb, "face-recognizer").unwrap(), embedding_space_id(&bgr, "face-recognizer").unwrap());
+    assert_ne!(
+        embedding_space_id(&rgb, "face-recognizer").unwrap(),
+        embedding_space_id(&bgr, "face-recognizer").unwrap()
+    );
 }
 
 #[test]
 fn bundled_v3_manifest_is_valid() {
-    let manifest: VisionManifestV3 =
-        serde_json::from_str(include_str!("../../resources/object-models/manifest.v3.json")).unwrap();
+    let manifest: VisionManifestV3 = serde_json::from_str(include_str!(
+        "../../resources/object-models/manifest.v3.json"
+    ))
+    .unwrap();
     validate_manifest(&manifest).unwrap();
 }
