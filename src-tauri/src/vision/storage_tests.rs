@@ -1,6 +1,10 @@
 use crate::protocol::{CameraFaceAlertFrame, FacePersonPolicyFrame};
 use crate::storage::FacePersonSampleRecord;
 use crate::storage::{Storage, VisionRemoteCommandReceipt};
+use crate::vision::{
+    runtime::VisionRuntimeState,
+    types::{VisionLifecycleState, VisionSamplingState},
+};
 
 #[test]
 fn opening_legacy_database_creates_vision_v5_without_losing_existing_face_alerts() {
@@ -191,4 +195,31 @@ fn legacy_embeddings_and_alert_history_are_copied_without_mutating_legacy_tables
     storage
         .verify_vision_database_integrity()
         .expect("vision database integrity");
+}
+
+#[test]
+fn persists_only_user_pause_across_runtime_restart() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let storage = Storage::open(temp.path().join("lanchat.sqlite3")).expect("storage opens");
+    let runtime = VisionRuntimeState::restore(
+        storage
+            .load_vision_runtime_state()
+            .expect("default runtime state"),
+    );
+    runtime.mark_model_availability(true);
+    runtime.set_active_profile("baseline", "1.0.0");
+    runtime.pause_by_user();
+    storage
+        .save_vision_runtime_state(&runtime.persisted_state())
+        .expect("runtime state saved");
+
+    let restored = VisionRuntimeState::restore(
+        storage
+            .load_vision_runtime_state()
+            .expect("persisted runtime state"),
+    );
+    let snapshot = restored.snapshot();
+    assert_eq!(snapshot.sampling, VisionSamplingState::PausedByUser);
+    assert_eq!(snapshot.lifecycle, VisionLifecycleState::Initializing);
+    assert_eq!(snapshot.active_profile_id.as_deref(), Some("baseline"));
 }

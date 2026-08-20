@@ -63,7 +63,10 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 use vision::worker::{decode_raw_frame, encode_frame_as_jpeg, LatestFrameMailbox, VisionWorker};
-use vision::{runtime::VisionRuntimeState, types::VisionRuntimeDiagnostics};
+use vision::{
+    runtime::VisionRuntimeState,
+    types::{VisionRuntimeDiagnostics, VisionRuntimeSnapshot},
+};
 
 #[cfg(target_os = "windows")]
 use winreg::enums::HKEY_CURRENT_USER;
@@ -716,6 +719,26 @@ fn get_face_monitor_status(state: State<'_, AppState>) -> FaceMonitorStatus {
 }
 
 #[tauri::command]
+fn get_vision_runtime_snapshot(state: State<'_, AppState>) -> VisionRuntimeSnapshot {
+    state.vision_runtime.snapshot()
+}
+
+#[tauri::command]
+fn set_vision_runtime_paused(
+    state: State<'_, AppState>,
+    paused: bool,
+) -> Result<VisionRuntimeSnapshot, String> {
+    if paused {
+        state.vision_runtime.pause_by_user();
+    } else {
+        state.vision_runtime.resume_by_user();
+    }
+    let persisted = state.vision_runtime.persisted_state();
+    state.storage.save_vision_runtime_state(&persisted)?;
+    Ok(persisted.snapshot)
+}
+
+#[tauri::command]
 fn update_face_monitor_local_settings(
     state: State<'_, AppState>,
     mut settings: FaceMonitorLocalSettings,
@@ -739,7 +762,19 @@ fn update_face_monitor_local_settings(
             settings.applied_policy_version = policy.version;
         }
     }
-    Ok(state.face_monitor.update_settings(settings))
+    let saved = state.face_monitor.update_settings(settings);
+    if saved.enabled {
+        state.vision_runtime.resume_by_user();
+    } else {
+        state.vision_runtime.pause_by_user();
+    }
+    state
+        .vision_runtime
+        .mark_model_availability(state.face_monitor.status().model_ready);
+    state
+        .storage
+        .save_vision_runtime_state(&state.vision_runtime.persisted_state())?;
+    Ok(saved)
 }
 
 fn resolved_face_monitor_policy(
@@ -1010,6 +1045,9 @@ async fn submit_face_monitor_frame(
 #[tauri::command]
 fn submit_vision_frame_raw(state: State<'_, AppState>, frame: Vec<u8>) -> Result<(), String> {
     let frame = decode_raw_frame(&frame)?;
+    state
+        .vision_runtime
+        .mark_model_availability(state.face_monitor.status().model_ready);
     state.vision_mailbox.submit(frame);
     state.vision_runtime.record_frame_accepted(
         state.vision_mailbox.dropped_frames(),
@@ -1159,8 +1197,30 @@ fn list_face_people(state: State<'_, AppState>) -> Result<Vec<FacePersonRecord>,
 }
 
 #[tauri::command]
-fn delete_face_person_local(state: State<'_, AppState>, person_id: String) -> Result<(), String> {
-    state.storage.delete_face_person_local(person_id.trim())
+fn delete_face_person_local(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    person_id: String,
+) -> Result<(), String> {
+    let samples = state.storage.list_face_person_samples(person_id.trim())?;
+    state.storage.delete_face_person_local(person_id.trim())?;
+    let reference_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|err| format!("读取应用数据目录失败：{err}"))?
+        .join("face-reference-uploads");
+    let reference_root = std::fs::canonicalize(&reference_root).ok();
+    for sample in samples {
+        let path = std::path::PathBuf::from(sample.photo_url);
+        let can_remove = match (reference_root.as_ref(), std::fs::canonicalize(&path).ok()) {
+            (Some(root), Some(candidate)) => candidate.starts_with(root),
+            _ => false,
+        };
+        if can_remove {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1193,11 +1253,18 @@ fn create_local_face_person(
     let photo_paths = photo_paths
         .into_iter()
         .filter(|path| !path.trim().is_empty())
-        .take(12)
+        .take(vision::storage::MAX_REFERENCE_IMAGES)
         .collect::<Vec<_>>();
-    if person_id.is_empty() || display_name.is_empty() || photo_paths.is_empty() {
+    if person_id.is_empty() || display_name.is_empty() {
         return Err("请填写人员名称并提供参考照片".to_string());
     }
+    vision::storage::validate_new_reference_image_count(photo_paths.len()).map_err(|_| {
+        format!(
+            "请提供 {} 至 {} 张参考照片",
+            vision::storage::MIN_REFERENCE_IMAGES,
+            vision::storage::MAX_REFERENCE_IMAGES
+        )
+    })?;
     if !state.face_monitor.status().recognizer_ready {
         return Err("识别模型未安装，暂时无法录入识别人员".to_string());
     }
@@ -1205,6 +1272,9 @@ fn create_local_face_person(
     for photo_path in &photo_paths {
         let bytes = std::fs::read(photo_path).map_err(|err| format!("读取参考照片失败：{err}"))?;
         image::load_from_memory(&bytes).map_err(|err| format!("参考照片无法解码：{err}"))?;
+        let analysis = state.face_monitor.analyze_reference_photo(&bytes)?;
+        vision::storage::validate_reference_subject_count(analysis.detected_subject_count)
+            .map_err(|_| "参考照片中检测到多个人，请单独上传目标人员照片".to_string())?;
         let face_embedding = state.face_monitor.embedding_from_photo_bytes(&bytes).ok();
         let body_embedding = state
             .face_monitor
@@ -4535,7 +4605,22 @@ pub fn run() {
                 face_model_resource_dir,
             ));
             let vision_mailbox = Arc::new(LatestFrameMailbox::default());
-            let vision_runtime = Arc::new(VisionRuntimeState::default());
+            let vision_runtime = Arc::new(VisionRuntimeState::restore(
+                storage.load_vision_runtime_state()?,
+            ));
+            let face_monitor_status = face_monitor.status();
+            vision_runtime.mark_model_availability(face_monitor_status.model_ready);
+            if face_monitor_status.model_ready
+                && vision_runtime.snapshot().active_profile_id.is_none()
+            {
+                vision_runtime.set_active_profile(
+                    "baseline",
+                    face_monitor_status
+                        .model_version
+                        .unwrap_or_else(|| "1.0.0".to_string()),
+                );
+            }
+            storage.save_vision_runtime_state(&vision_runtime.persisted_state())?;
             let worker_app = app.handle().clone();
             let worker_runtime = vision_runtime.clone();
             let mut worker_active_stream: Option<(String, u64)> = None;
@@ -4617,6 +4702,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_platform_info,
             get_face_monitor_status,
+            get_vision_runtime_snapshot,
+            set_vision_runtime_paused,
             update_face_monitor_local_settings,
             submit_face_monitor_frame,
             submit_vision_frame_raw,

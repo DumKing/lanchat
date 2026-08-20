@@ -141,6 +141,14 @@ pub struct FaceRecognitionFrame {
     pub matches: Vec<FaceMatch>,
 }
 
+/// 录入人员参考图时的本地质量结论。它只包含计数和质量分，不包含图像或特征。
+#[derive(Debug, Clone, Copy)]
+pub struct ReferencePhotoAnalysis {
+    pub detected_subject_count: u8,
+    pub face_quality_score: Option<f32>,
+    pub body_quality_score: Option<f32>,
+}
+
 #[derive(Debug, Clone)]
 struct DetectedPerson {
     x: f32,
@@ -689,6 +697,45 @@ impl FaceMonitorRuntime {
         let scale_y = origin_height / DETECTOR_SIZE as f32;
         let landmarks: [(f32, f32); 5] = face.landmarks.map(|(x, y)| (x * scale_x, y * scale_y));
         self.extract_embedding(&photo, landmarks)
+    }
+
+    /// 在保存原图前做一次本地参考图检查。人脸和人体检测器都可用时，取两者
+    /// 中更大的主体数，避免把多人合照意外编码为某一个人的模板。
+    pub fn analyze_reference_photo(&self, bytes: &[u8]) -> Result<ReferencePhotoAnalysis, String> {
+        let photo = image::load_from_memory(bytes)
+            .map_err(|error| format!("参考照片无法解码：{error}"))?
+            .to_rgb8();
+        let mut detected_subject_count = 0_u8;
+        let mut face_quality_score = None;
+        let mut body_quality_score = None;
+
+        if self.detector.is_some() {
+            if let Some(detection) = self.detect_in_rgb(&photo)? {
+                detected_subject_count = detected_subject_count.max(detection.detected_faces);
+                face_quality_score = Some(
+                    detection
+                        .faces
+                        .iter()
+                        .map(|face| face.score)
+                        .fold(f32::from(detection.confidence) / 100.0, f32::max),
+                );
+            }
+        }
+        if self.person_detector.is_some() {
+            let people = self.detect_people(&photo)?;
+            detected_subject_count =
+                detected_subject_count.max(people.len().min(u8::MAX as usize) as u8);
+            body_quality_score = people
+                .iter()
+                .map(|person| person.score)
+                .max_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+        }
+
+        Ok(ReferencePhotoAnalysis {
+            detected_subject_count,
+            face_quality_score,
+            body_quality_score,
+        })
     }
 
     /// 参考照片的人体外观特征。只接受检测到的有效人体，避免把背景编码进人员模板。

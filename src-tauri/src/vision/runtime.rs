@@ -10,8 +10,7 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub struct PersistedVisionRuntimeState {
     pub user_paused: bool,
-    pub sampling: VisionSamplingState,
-    pub revision: u64,
+    pub snapshot: VisionRuntimeSnapshot,
 }
 
 pub struct VisionRuntimeState {
@@ -52,19 +51,24 @@ impl Default for VisionRuntimeState {
 
 impl VisionRuntimeState {
     pub fn restore(persisted: PersistedVisionRuntimeState) -> Self {
-        let runtime = Self::default();
+        let runtime = Self {
+            snapshot: Mutex::new(persisted.snapshot),
+            user_paused: Mutex::new(persisted.user_paused),
+            diagnostics: Mutex::new(RuntimeDiagnosticsState::default()),
+        };
         {
             let mut snapshot = runtime
                 .snapshot
                 .lock()
                 .expect("vision runtime lock poisoned");
-            snapshot.sampling = restore_sampling_state(persisted.user_paused, persisted.sampling);
-            snapshot.revision = persisted.revision;
+            snapshot.sampling = restore_sampling_state(persisted.user_paused, snapshot.sampling);
+            // 资源争用、推理重建等临时状态不能跨重启延续；模型 Profile 本身保留。
+            if !matches!(snapshot.lifecycle, VisionLifecycleState::Disabled) {
+                snapshot.lifecycle = VisionLifecycleState::Initializing;
+            }
+            snapshot.performance = VisionPerformanceState::Normal;
+            snapshot.reason_code = None;
         }
-        *runtime
-            .user_paused
-            .lock()
-            .expect("vision runtime lock poisoned") = persisted.user_paused;
         runtime
     }
 
@@ -78,6 +82,43 @@ impl VisionRuntimeState {
         snapshot.revision += 1;
     }
 
+    pub fn resume_by_user(&self) {
+        *self
+            .user_paused
+            .lock()
+            .expect("vision runtime lock poisoned") = false;
+        let mut snapshot = self.snapshot.lock().expect("vision runtime lock poisoned");
+        snapshot.sampling = VisionSamplingState::Running;
+        snapshot.revision += 1;
+    }
+
+    pub fn mark_model_availability(&self, model_ready: bool) {
+        let mut snapshot = self.snapshot.lock().expect("vision runtime lock poisoned");
+        snapshot.lifecycle = if model_ready {
+            VisionLifecycleState::Ready
+        } else {
+            VisionLifecycleState::Disabled
+        };
+        if !model_ready {
+            snapshot.reason_code = Some("VISION_MODEL_UNAVAILABLE".to_string());
+        } else if snapshot.reason_code.as_deref() == Some("VISION_MODEL_UNAVAILABLE") {
+            snapshot.reason_code = None;
+        }
+    }
+
+    pub fn set_active_profile(&self, id: impl Into<String>, version: impl Into<String>) {
+        let mut snapshot = self.snapshot.lock().expect("vision runtime lock poisoned");
+        let id = id.into();
+        let version = version.into();
+        if snapshot.active_profile_id.as_deref() != Some(id.as_str())
+            || snapshot.active_profile_version.as_deref() != Some(version.as_str())
+        {
+            snapshot.active_profile_id = Some(id);
+            snapshot.active_profile_version = Some(version);
+            snapshot.revision += 1;
+        }
+    }
+
     pub fn persisted_state(&self) -> PersistedVisionRuntimeState {
         let snapshot = self.snapshot.lock().expect("vision runtime lock poisoned");
         PersistedVisionRuntimeState {
@@ -85,8 +126,7 @@ impl VisionRuntimeState {
                 .user_paused
                 .lock()
                 .expect("vision runtime lock poisoned"),
-            sampling: snapshot.sampling,
-            revision: snapshot.revision,
+            snapshot: snapshot.clone(),
         }
     }
 
@@ -131,6 +171,12 @@ impl VisionRuntimeState {
         drop(diagnostics);
 
         let mut snapshot = self.snapshot.lock().expect("vision runtime lock poisoned");
+        if snapshot.lifecycle != VisionLifecycleState::Disabled {
+            snapshot.lifecycle = VisionLifecycleState::Ready;
+        }
+        if snapshot.sampling != VisionSamplingState::PausedByUser {
+            snapshot.sampling = VisionSamplingState::Running;
+        }
         if p95 > 300 {
             snapshot.performance = VisionPerformanceState::Degraded;
             snapshot.reason_code = Some("VISION_LATENCY_OVER_BUDGET".to_string());

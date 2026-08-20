@@ -64,7 +64,7 @@ import { alertTemperature, alertTruthScore, senderCredibility } from "./utils/al
 import { detectMentionKind, trayConversationTitle, type MentionKind } from "./utils/messageMentions";
 import { peerDisplayName, peerOriginalName, sameDeviceId, sortPeersForDisplay } from "./utils/peerPresentation";
 import { DEFAULT_CAMERA_MONITOR_SETTINGS, type CameraFaceAlert, type CameraMonitorSettings, type CameraMonitorStatus, type FaceMonitorPolicy, type FaceMonitorRuntimeStatus, type FacePersonPolicy } from "./types/face-monitor";
-import type { VisionFrameSample, VisionRuntimeDiagnostics } from "./types/vision";
+import type { VisionFrameSample, VisionRuntimeDiagnostics, VisionRuntimeSnapshot } from "./types/vision";
 import { dateLocale, effectiveLocale, installUiTranslation, languagePreference, naiveLocale, setLanguagePreference, t } from "./i18n";
 type UiThemeKey = "theme-dingtalk" | "theme-work" | "theme-lan" | "theme-light";
 type MainSection = "chat" | "devices" | "games" | "alerts" | "vision" | "settings";
@@ -359,6 +359,7 @@ const faceMonitorSettings = ref<CameraMonitorSettings>({ ...DEFAULT_CAMERA_MONIT
 const faceMonitorMediaStatus = ref<CameraMonitorStatus>(cameraMediaCoordinator.getStatus());
 const faceMonitorRuntimeStatus = ref<FaceMonitorRuntimeStatus | null>(null);
 const visionRuntimeDiagnostics = ref<VisionRuntimeDiagnostics | null>(null);
+const visionRuntimeSnapshot = ref<VisionRuntimeSnapshot | null>(null);
 const faceMonitorPolicy = ref<FaceMonitorPolicy | null>(null);
 const facePeople = ref<FacePersonPolicy[]>([]);
 const cameraFaceAlerts = ref<CameraFaceAlert[]>([]);
@@ -5668,12 +5669,14 @@ async function refreshCameraDeviceOptions() {
 }
 
 async function refreshFaceMonitorRuntimeStatus() {
-  const [status, diagnostics] = await Promise.all([
+  const [status, diagnostics, snapshot] = await Promise.all([
     api.getFaceMonitorStatus().catch(() => faceMonitorRuntimeStatus.value),
     api.getVisionRuntimeDiagnostics().catch(() => visionRuntimeDiagnostics.value),
+    api.getVisionRuntimeSnapshot().catch(() => visionRuntimeSnapshot.value),
   ]);
   faceMonitorRuntimeStatus.value = status;
   visionRuntimeDiagnostics.value = diagnostics;
+  visionRuntimeSnapshot.value = snapshot;
   cameraMediaCoordinator.setSamplingAllowed(Boolean(faceMonitorRuntimeStatus.value?.modelReady));
 }
 
@@ -5931,8 +5934,8 @@ async function saveLocalFacePhoto(file: Blob) {
   try {
     const bytes = new Uint8Array(await file.arrayBuffer());
     const path = await api.saveFaceReferencePhoto(bytes);
-    localFacePhotoPaths.value = [...localFacePhotoPaths.value, path].slice(0, 12);
-    localFacePhotoPreviews.value = [...localFacePhotoPreviews.value, URL.createObjectURL(file)].slice(0, 12);
+    localFacePhotoPaths.value = [...localFacePhotoPaths.value, path].slice(0, 30);
+    localFacePhotoPreviews.value = [...localFacePhotoPreviews.value, URL.createObjectURL(file)].slice(0, 30);
   } catch (error) {
     store.error = stringifyError(error);
   }
@@ -5976,8 +5979,8 @@ async function captureLocalFacePhoto() {
 }
 
 async function createLocalFacePerson() {
-  if (!localFacePersonName.value.trim() || localFacePhotoPaths.value.length === 0) {
-    store.error = "请填写人员名称并上传或拍摄参考照片";
+  if (!localFacePersonName.value.trim() || localFacePhotoPaths.value.length < 3) {
+    store.error = "请填写人员名称，并提供 3 至 30 张参考照片";
     return;
   }
   try {
@@ -7507,8 +7510,9 @@ async function closeWindow() {
                   :settings="faceMonitorSettings"
                   :status="faceMonitorRuntimeStatus"
                   :diagnostics="visionRuntimeDiagnostics"
+                  :snapshot="visionRuntimeSnapshot"
                   @refresh="refreshFaceMonitorRuntimeStatus"
-                  @toggle="(enabled) => updateFaceMonitorSettings({ enabled })"
+                  @toggle="async (enabled) => { await updateFaceMonitorSettings({ enabled }); await api.setVisionRuntimePaused(!enabled).catch(() => undefined); await refreshFaceMonitorRuntimeStatus(); }"
                 />
                 <VisionPeoplePanel
                   class="vision-people-workspace-card"
@@ -7744,9 +7748,9 @@ async function closeWindow() {
                       <NSpace>
                         <NButton size="small" secondary @click="triggerLocalFacePhotoSelect">上传本地照片</NButton>
                         <NButton size="small" secondary @click="openLocalFaceCapture">摄像头拍照</NButton>
-                        <NButton size="small" type="primary" :disabled="!localFacePersonName.trim() || localFacePhotoPaths.length === 0" @click="createLocalFacePerson">保存人员</NButton>
+                        <NButton size="small" type="primary" :disabled="!localFacePersonName.trim() || localFacePhotoPaths.length < 3" @click="createLocalFacePerson">保存人员</NButton>
                       </NSpace>
-                      <NText v-if="localFacePhotoPaths.length" depth="3">已选择 {{ localFacePhotoPaths.length }} 张参考照片</NText>
+                      <NText v-if="localFacePhotoPaths.length" depth="3">已选择 {{ localFacePhotoPaths.length }} / 30 张参考照片（至少 3 张）</NText>
                       <div v-if="localFacePhotoPreviews.length" class="face-person-preview-list"><img v-for="preview in localFacePhotoPreviews" :key="preview" class="face-person-preview-thumb" :src="preview" alt="待添加人员照片" /></div>
                       <NText v-if="facePeople.length === 0" depth="3">尚未保存人员配置。</NText>
                       <div v-for="person in facePeople" :key="person.personId" class="face-monitor-alert-row">

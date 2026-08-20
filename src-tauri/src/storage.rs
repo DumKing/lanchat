@@ -5,6 +5,12 @@ use crate::protocol::{
     AdminNotificationDecisionFrame, AdminNotificationFrame, CameraFaceAlertFeedbackFrame,
     CameraFaceAlertFrame, FaceMonitorPolicyFrame, FacePersonPolicyFrame, SimulationMeta,
 };
+use crate::vision::{
+    runtime::PersistedVisionRuntimeState,
+    types::{
+        VisionLifecycleState, VisionPerformanceState, VisionRuntimeSnapshot, VisionSamplingState,
+    },
+};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -798,6 +804,80 @@ impl Storage {
         crate::vision::storage::verify_integrity(&conn)
     }
 
+    pub fn load_vision_runtime_state(&self) -> Result<PersistedVisionRuntimeState, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let stored = conn
+            .query_row(
+                "SELECT revision,active_profile_id,active_profile_version,lifecycle,sampling_state,performance_state,user_paused,last_error_code FROM vision_runtime_state WHERE singleton_id=1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, i32>(6)? != 0,
+                        row.get::<_, Option<String>>(7)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| format!("读取视觉运行时状态失败：{error}"))?;
+        let Some((
+            revision,
+            profile_id,
+            profile_version,
+            lifecycle,
+            sampling,
+            performance,
+            user_paused,
+            reason_code,
+        )) = stored
+        else {
+            return Ok(default_persisted_vision_runtime_state());
+        };
+        Ok(PersistedVisionRuntimeState {
+            user_paused,
+            snapshot: VisionRuntimeSnapshot {
+                lifecycle: parse_vision_lifecycle(&lifecycle),
+                sampling: parse_vision_sampling(&sampling),
+                performance: parse_vision_performance(&performance),
+                active_profile_id: profile_id,
+                active_profile_version: profile_version,
+                revision: revision.max(0) as u64,
+                reason_code,
+            },
+        })
+    }
+
+    pub fn save_vision_runtime_state(
+        &self,
+        persisted: &PersistedVisionRuntimeState,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let snapshot = &persisted.snapshot;
+        conn.execute(
+            "INSERT INTO vision_runtime_state(singleton_id,revision,active_profile_id,active_profile_version,lifecycle,sampling_state,performance_state,user_paused,consecutive_failure_count,last_error_code,updated_at)
+             VALUES (1,?1,?2,?3,?4,?5,?6,?7,0,?8,?9)
+             ON CONFLICT(singleton_id) DO UPDATE SET revision=excluded.revision,active_profile_id=excluded.active_profile_id,active_profile_version=excluded.active_profile_version,lifecycle=excluded.lifecycle,sampling_state=excluded.sampling_state,performance_state=excluded.performance_state,user_paused=excluded.user_paused,last_error_code=excluded.last_error_code,updated_at=excluded.updated_at",
+            params![
+                snapshot.revision as i64,
+                snapshot.active_profile_id.as_deref(),
+                snapshot.active_profile_version.as_deref(),
+                vision_lifecycle_name(snapshot.lifecycle),
+                vision_sampling_name(snapshot.sampling),
+                vision_performance_name(snapshot.performance),
+                persisted.user_paused as i32,
+                snapshot.reason_code.as_deref(),
+                chrono::Utc::now().timestamp_millis(),
+            ],
+        )
+        .map_err(|error| format!("保存视觉运行时状态失败：{error}"))?;
+        Ok(())
+    }
+
     pub fn upsert_face_person(
         &self,
         frame: &FacePersonPolicyFrame,
@@ -937,17 +1017,48 @@ impl Storage {
     /// A target device can always stop monitoring a person locally. This is not
     /// broadcast, so it cannot alter another device's authorised rule set.
     pub fn delete_face_person_local(&self, person_id: &str) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
-        let changed = conn
+        let mut conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let transaction = conn
+            .transaction()
+            .map_err(|err| format!("删除本机识别人员失败：{err}"))?;
+        let changed = transaction
             .execute(
-                "UPDATE face_people SET enabled=0, deleted_at=?1 WHERE person_id=?2",
+                "UPDATE face_people SET enabled=0, deleted_at=?1, embedding=NULL, embedding_model_version=NULL WHERE person_id=?2",
                 params![chrono::Utc::now().timestamp_millis(), person_id],
             )
             .map_err(|err| format!("删除本机识别人员失败：{err}"))?;
         if changed == 0 {
             return Err("未找到识别人员".to_string());
         }
-        Ok(())
+        transaction
+            .execute(
+                "DELETE FROM face_person_samples WHERE person_id=?1",
+                params![person_id],
+            )
+            .map_err(|err| format!("清理本机人员样本失败：{err}"))?;
+        // V5 视觉库与旧表并存时同步删除特征与参考图；告警表只保留姓名快照，
+        // 因此历史告警不会随人员配置一起消失。
+        transaction
+            .execute(
+                "DELETE FROM person_embeddings_v2 WHERE person_id=?1",
+                params![person_id],
+            )
+            .map_err(|err| format!("清理视觉特征失败：{err}"))?;
+        transaction
+            .execute(
+                "DELETE FROM person_reference_images_v2 WHERE person_id=?1",
+                params![person_id],
+            )
+            .map_err(|err| format!("清理视觉参考图失败：{err}"))?;
+        transaction
+            .execute(
+                "UPDATE vision_people_v2 SET enabled=0, deleted_at=?1, updated_at=?1 WHERE person_id=?2",
+                params![chrono::Utc::now().timestamp_millis(), person_id],
+            )
+            .map_err(|err| format!("更新视觉人员状态失败：{err}"))?;
+        transaction
+            .commit()
+            .map_err(|err| format!("提交删除本机识别人员失败：{err}"))
     }
 
     pub fn upsert_face_monitor_policy(
@@ -2421,6 +2532,77 @@ pub fn system_login_nickname() -> String {
 fn default_nickname() -> String {
     system_login_nickname()
 }
+fn default_persisted_vision_runtime_state() -> PersistedVisionRuntimeState {
+    PersistedVisionRuntimeState {
+        user_paused: false,
+        snapshot: VisionRuntimeSnapshot {
+            lifecycle: VisionLifecycleState::Disabled,
+            sampling: VisionSamplingState::Running,
+            performance: VisionPerformanceState::Normal,
+            active_profile_id: None,
+            active_profile_version: None,
+            revision: 0,
+            reason_code: None,
+        },
+    }
+}
+
+fn vision_lifecycle_name(value: VisionLifecycleState) -> &'static str {
+    match value {
+        VisionLifecycleState::Disabled => "disabled",
+        VisionLifecycleState::Initializing => "initializing",
+        VisionLifecycleState::Ready => "ready",
+        VisionLifecycleState::RebuildingSession => "rebuilding_session",
+        VisionLifecycleState::RollingBack => "rolling_back",
+        VisionLifecycleState::Failed => "failed",
+    }
+}
+
+fn parse_vision_lifecycle(value: &str) -> VisionLifecycleState {
+    match value {
+        "initializing" => VisionLifecycleState::Initializing,
+        "ready" => VisionLifecycleState::Ready,
+        "rebuilding_session" => VisionLifecycleState::RebuildingSession,
+        "rolling_back" => VisionLifecycleState::RollingBack,
+        "failed" => VisionLifecycleState::Failed,
+        _ => VisionLifecycleState::Disabled,
+    }
+}
+
+fn vision_sampling_name(value: VisionSamplingState) -> &'static str {
+    match value {
+        VisionSamplingState::Running => "running",
+        VisionSamplingState::PausedByUser => "paused_by_user",
+        VisionSamplingState::PausedByResourceConflict => "paused_by_resource_conflict",
+        VisionSamplingState::Starved => "starved",
+    }
+}
+
+fn parse_vision_sampling(value: &str) -> VisionSamplingState {
+    match value {
+        "paused_by_user" => VisionSamplingState::PausedByUser,
+        "paused_by_resource_conflict" => VisionSamplingState::PausedByResourceConflict,
+        "starved" => VisionSamplingState::Starved,
+        _ => VisionSamplingState::Running,
+    }
+}
+
+fn vision_performance_name(value: VisionPerformanceState) -> &'static str {
+    match value {
+        VisionPerformanceState::Normal => "normal",
+        VisionPerformanceState::Degraded => "degraded",
+        VisionPerformanceState::Recovering => "recovering",
+    }
+}
+
+fn parse_vision_performance(value: &str) -> VisionPerformanceState {
+    match value {
+        "degraded" => VisionPerformanceState::Degraded,
+        "recovering" => VisionPerformanceState::Recovering,
+        _ => VisionPerformanceState::Normal,
+    }
+}
+
 fn ensure_column(
     conn: &Connection,
     table: &str,

@@ -11,13 +11,13 @@ export type VisionFrameSample = {
 };
 
 export type VisionRuntimeSnapshot = {
-  lifecycle: "running" | "paused" | "starved" | "failed";
-  samplingState: "running" | "paused_by_user" | "starved";
-  performanceState: "normal" | "degraded" | "overloaded";
+  lifecycle: "disabled" | "initializing" | "ready" | "rebuildingSession" | "rollingBack" | "failed";
+  sampling: "running" | "pausedByUser" | "pausedByResourceConflict" | "starved";
+  performance: "normal" | "degraded" | "recovering";
   activeProfileId?: string | null;
   activeProfileVersion?: string | null;
-  acceptedFrames: number;
-  droppedFrames: number;
+  revision: number;
+  reasonCode?: string | null;
 };
 
 export type VisionRuntimeDiagnostics = {

@@ -2,13 +2,14 @@
 import { computed } from "vue";
 import { NButton, NCard, NTag } from "naive-ui";
 import type { CameraMonitorSettings, FaceMonitorRuntimeStatus } from "../types/face-monitor";
-import type { VisionRuntimeDiagnostics } from "../types/vision";
+import type { VisionRuntimeDiagnostics, VisionRuntimeSnapshot } from "../types/vision";
 import { t } from "../i18n";
 
 const props = defineProps<{
   settings: CameraMonitorSettings;
   status: FaceMonitorRuntimeStatus | null;
   diagnostics?: VisionRuntimeDiagnostics | null;
+  snapshot?: VisionRuntimeSnapshot | null;
 }>();
 
 const emit = defineEmits<{
@@ -17,6 +18,9 @@ const emit = defineEmits<{
 }>();
 
 const runtimeLabel = computed(() => {
+  if (props.snapshot?.sampling === "pausedByUser") return t("vision.runtime.paused");
+  if (props.snapshot?.lifecycle === "rebuildingSession") return t("vision.runtime.recovering");
+  if (props.snapshot?.performance === "degraded") return t("vision.runtime.degraded");
   if (!props.settings.enabled) return t("vision.runtime.paused");
   if (!props.status?.modelReady) return t("vision.runtime.starting");
   if (props.status.queueBusy) return t("vision.runtime.busy");
@@ -24,6 +28,8 @@ const runtimeLabel = computed(() => {
 });
 
 const runtimeType = computed(() => {
+  if (props.snapshot?.lifecycle === "rebuildingSession") return "error";
+  if (props.snapshot?.performance === "degraded") return "warning";
   if (!props.settings.enabled) return "default";
   if (!props.status?.modelReady) return "warning";
   return props.status.queueBusy ? "warning" : "success";
@@ -35,14 +41,14 @@ const runtimeType = computed(() => {
     <div class="vision-runtime-main">
       <div>
         <strong>{{ runtimeLabel }}</strong>
-        <p>{{ status?.lastError || t('vision.runtime.hint') }}</p>
+        <p>{{ snapshot?.reasonCode || status?.lastError || t('vision.runtime.hint') }}</p>
       </div>
       <NTag size="small" :bordered="false" :type="runtimeType">{{ runtimeLabel }}</NTag>
     </div>
     <div class="vision-runtime-metrics">
       <span>{{ t('vision.runtime.frames') }}<b>{{ diagnostics?.acceptedFrames ?? status?.acceptedFrames ?? 0 }}</b></span>
       <span>{{ t('vision.runtime.dropped') }}<b>{{ diagnostics?.droppedFrames ?? status?.droppedFrames ?? 0 }}</b></span>
-      <span>{{ t('vision.runtime.model') }}<b>{{ status?.modelVersion || '-' }}</b></span>
+      <span>{{ t('vision.runtime.model') }}<b>{{ snapshot?.activeProfileVersion || status?.modelVersion || '-' }}</b></span>
     </div>
     <div v-if="diagnostics" class="vision-runtime-detail">
       {{ t('vision.runtime.latency', { p50: diagnostics.p50ProcessingMs, p95: diagnostics.p95ProcessingMs }) }}

@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AdminRemoteUpdate, AppVersionInfo, CallSignal, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Nudge, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem, UpdateCheckResult, UpdateGithubTokenInfo } from "../types/lanchat";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, PetStatePlaybackConfig } from "../types/desktop-pet";
 import type { CameraFaceAlert, CameraMonitorSettings, FaceMonitorPolicy, FaceMonitorRuntimeStatus, FacePersonPolicy } from "../types/face-monitor";
-import type { VisionFrameSample, VisionRuntimeDiagnostics } from "../types/vision";
+import type { VisionFrameSample, VisionRuntimeDiagnostics, VisionRuntimeSnapshot } from "../types/vision";
 import { encodeVisionFrameEnvelope } from "./visionFrameTransport";
 
 export const api = {
@@ -12,6 +12,8 @@ export const api = {
   submitVisionFrameRaw: (sample: VisionFrameSample) =>
     invoke<void>("submit_vision_frame_raw", { frame: encodeVisionFrameEnvelope(sample) }),
   getVisionRuntimeDiagnostics: () => invoke<VisionRuntimeDiagnostics>("get_vision_runtime_diagnostics"),
+  getVisionRuntimeSnapshot: () => invoke<VisionRuntimeSnapshot>("get_vision_runtime_snapshot"),
+  setVisionRuntimePaused: (paused: boolean) => invoke<VisionRuntimeSnapshot>("set_vision_runtime_paused", { paused }),
   // 过渡兼容：旧调用方继续使用原方法名，但实际只会进入新的 Raw RGBA 通道。
   submitFaceMonitorFrame: (sample: VisionFrameSample) =>
     invoke<void>("submit_vision_frame_raw", { frame: encodeVisionFrameEnvelope(sample) }),

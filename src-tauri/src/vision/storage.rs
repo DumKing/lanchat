@@ -8,6 +8,24 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub const VISION_SCHEMA_VERSION: i64 = 5;
+pub const MIN_REFERENCE_IMAGES: usize = 3;
+pub const MAX_REFERENCE_IMAGES: usize = 30;
+
+/// 新增人员必须录入足够多且数量可控的参考图。迁移进来的旧人员不使用此
+/// 校验，保证旧数据库可以无损升级后继续查看历史数据。
+pub fn validate_new_reference_image_count(count: usize) -> Result<(), String> {
+    if count < MIN_REFERENCE_IMAGES || count > MAX_REFERENCE_IMAGES {
+        return Err("VISION_REFERENCE_IMAGE_COUNT_INVALID".to_string());
+    }
+    Ok(())
+}
+
+pub fn validate_reference_subject_count(detected_subject_count: u8) -> Result<(), String> {
+    if detected_subject_count > 1 {
+        return Err("VISION_REFERENCE_IMAGE_MULTI_PERSON".to_string());
+    }
+    Ok(())
+}
 
 /// 只追加视觉域表。旧 face_people、face_person_samples 与告警表保留给兼容读取层。
 pub fn initialize(conn: &Connection) -> Result<(), String> {

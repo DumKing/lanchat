@@ -15,6 +15,8 @@ mod activation_tests;
 #[cfg(test)]
 mod manifest_tests;
 #[cfg(test)]
+mod people_tests;
+#[cfg(test)]
 mod protocol_tests;
 #[cfg(test)]
 mod recognition_tests;
