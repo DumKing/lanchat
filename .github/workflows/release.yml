@@ -160,6 +160,22 @@ jobs:
       - name: Setup Rust for vision catalog signing
         uses: dtolnay/rust-toolchain@stable
 
+      # 签名/验签工具复用主程序的可信目录解析代码，编译时需要 Tauri 的 Linux 原生依赖。
+      - name: Install native dependencies for vision catalog tools
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            pkg-config \
+            libglib2.0-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev
+
       - name: Generate signed vision model catalog
         shell: bash
         env:
@@ -172,7 +188,7 @@ jobs:
           TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
           VISION_DIR="release-downloads/vision-models"
           mkdir -p "${VISION_DIR}"
-          find release-downloads -type f -name 'lanchat-vision-*.zip' -exec cp {} "${VISION_DIR}/" \;
+          find release-downloads -type f -name 'lanchat-vision-*.zip' ! -path "${VISION_DIR}/*" -exec cp {} "${VISION_DIR}/" \;
           test "$(find "${VISION_DIR}" -maxdepth 1 -name 'lanchat-vision-*.zip' | wc -l)" -ge 3
           node scripts/write-vision-catalog.mjs "${VISION_DIR}" "${TAG}" "${VISION_DIR}/vision-catalog.unsigned.json"
           cargo run --manifest-path src-tauri/Cargo.toml --quiet --bin sign_vision_catalog -- \
