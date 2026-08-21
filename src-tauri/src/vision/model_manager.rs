@@ -22,7 +22,7 @@ pub const OFFICIAL_CATALOG_URL: &str =
 /// 发布目录的根公钥。发布模型时必须由配套的离线私钥签名 catalog 字段。
 const CATALOG_ROOT_KEY_ID: &str = "lanchat-vision-root-v1";
 const CATALOG_ROOT_PUBLIC_KEY_HEX: &str =
-    "405bf9126b9aedeb053457ae7ac65498f78de43e963486842eb23f4412939001";
+    "533dbbf94d409b4e8ecb0453e546cc6bd9ced8f88d3f4c0c4b8ca8ac7b796925";
 const MAX_MODEL_PACKAGE_BYTES: usize = 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
