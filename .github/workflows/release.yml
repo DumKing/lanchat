@@ -240,6 +240,19 @@ jobs:
         run: |
           find release-downloads -type f \( -name '*.exe' -o -name '*.zip' -o -name '*.dmg' \) -print0 | sort -z | xargs -0 sha256sum > release-downloads/SHA256SUMS.txt
 
+      - name: Resolve release visibility
+        id: release_flags
+        shell: bash
+        run: |
+          TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          RELEASE_CONFIG="docs/releases/${TAG}.json"
+          if [ -f "${RELEASE_CONFIG}" ]; then
+            PRERELEASE=$(jq -r '.prerelease // false' "${RELEASE_CONFIG}")
+          else
+            PRERELEASE=false
+          fi
+          echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
@@ -247,7 +260,7 @@ jobs:
           name: LanChat ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           body_path: docs/releases/${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}.md
           draft: false
-          prerelease: false
+          prerelease: ${{ steps.release_flags.outputs.prerelease }}
           overwrite_files: true
           files: |
             release-downloads/**/*
