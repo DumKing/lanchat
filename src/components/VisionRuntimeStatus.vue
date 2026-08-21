@@ -1,12 +1,11 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { NButton, NCard, NTag } from "naive-ui";
-import type { CameraMonitorSettings, FaceMonitorRuntimeStatus } from "../types/face-monitor";
+import type { FaceMonitorRuntimeStatus } from "../types/face-monitor";
 import type { VisionRuntimeDiagnostics, VisionRuntimeSnapshot } from "../types/vision";
 import { t } from "../i18n";
 
 const props = defineProps<{
-  settings: CameraMonitorSettings;
   status: FaceMonitorRuntimeStatus | null;
   diagnostics?: VisionRuntimeDiagnostics | null;
   snapshot?: VisionRuntimeSnapshot | null;
@@ -14,14 +13,13 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   refresh: [];
-  toggle: [enabled: boolean];
 }>();
 
 const runtimeLabel = computed(() => {
   if (props.snapshot?.sampling === "pausedByUser") return t("vision.runtime.paused");
   if (props.snapshot?.lifecycle === "rebuildingSession") return t("vision.runtime.recovering");
   if (props.snapshot?.performance === "degraded") return t("vision.runtime.degraded");
-  if (!props.settings.enabled) return t("vision.runtime.paused");
+  if (!props.status?.enabled) return t("vision.runtime.paused");
   if (!props.status?.modelReady) return t("vision.runtime.starting");
   if (props.status.queueBusy) return t("vision.runtime.busy");
   return t("vision.runtime.running");
@@ -30,7 +28,7 @@ const runtimeLabel = computed(() => {
 const runtimeType = computed(() => {
   if (props.snapshot?.lifecycle === "rebuildingSession") return "error";
   if (props.snapshot?.performance === "degraded") return "warning";
-  if (!props.settings.enabled) return "default";
+  if (!props.status?.enabled) return "default";
   if (!props.status?.modelReady) return "warning";
   return props.status.queueBusy ? "warning" : "success";
 });
@@ -56,9 +54,6 @@ const runtimeType = computed(() => {
     </div>
     <div class="vision-runtime-actions">
       <NButton size="small" secondary @click="emit('refresh')">{{ t('common.refresh') }}</NButton>
-      <NButton size="small" :type="settings.enabled ? 'warning' : 'primary'" @click="emit('toggle', !settings.enabled)">
-        {{ settings.enabled ? t('vision.runtime.pause') : t('vision.runtime.resume') }}
-      </NButton>
     </div>
   </NCard>
 </template>

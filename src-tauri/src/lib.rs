@@ -8,7 +8,7 @@ mod identity;
 mod network;
 mod protocol;
 mod storage;
-mod vision;
+pub mod vision;
 
 #[cfg(test)]
 mod desktop_pet_tests;
@@ -1087,6 +1087,7 @@ fn vision_model_profiles(state: &AppState) -> Result<Vec<VisionModelProfileSumma
             downloadable: false,
             package_size_bytes: 0,
             restart_required: false,
+            recommended_settings: None,
         },
     );
     let catalog = state
@@ -1112,6 +1113,7 @@ fn vision_model_profiles(state: &AppState) -> Result<Vec<VisionModelProfileSumma
             downloadable: true,
             package_size_bytes: profile.package_size_bytes,
             restart_required: true,
+            recommended_settings: profile.recommended_settings,
         });
     }
     Ok(profiles)
@@ -1166,6 +1168,7 @@ async fn install_vision_model_profile(
         downloadable: true,
         package_size_bytes: installed.bytes,
         restart_required: true,
+        recommended_settings: installed.profile.recommended_settings.clone(),
     };
     state.storage.upsert_vision_model_profile(
         &summary,

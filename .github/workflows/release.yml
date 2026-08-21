@@ -69,6 +69,23 @@ jobs:
             }
           }
 
+      - name: Build vision model profile packages
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $output = "release-assets/vision-models"
+          $staging = Join-Path $output "staging"
+          New-Item -ItemType Directory -Force $output | Out-Null
+          node scripts/build-vision-model-packages.mjs $staging
+          $profiles = Get-Content scripts/vision-model-profiles.json -Raw | ConvertFrom-Json
+          foreach ($profile in $profiles.profiles) {
+            $source = Join-Path $staging $profile.profileId
+            $target = Join-Path $output $profile.assetName
+            if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force }
+            Compress-Archive -Path (Join-Path $source "*") -DestinationPath $target -Force
+          }
+          Remove-Item -LiteralPath $staging -Recurse -Force
+
       - name: Build Tauri bundle
         env:
           APPLE_SIGNING_IDENTITY: "-"
@@ -123,6 +140,7 @@ jobs:
             release-assets/bundles/**/*.dmg
             release-assets/portable/*.zip
             release-assets/desktop-pets/*.zip
+            release-assets/vision-models/*.zip
 
   publish:
     name: Publish GitHub Release
@@ -138,6 +156,30 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: release-downloads
+
+      - name: Setup Rust for vision catalog signing
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate signed vision model catalog
+        shell: bash
+        env:
+          VISION_CATALOG_SIGNING_KEY: ${{ secrets.VISION_CATALOG_SIGNING_KEY }}
+        run: |
+          if [ -z "${VISION_CATALOG_SIGNING_KEY}" ]; then
+            echo "缺少 VISION_CATALOG_SIGNING_KEY Secret，无法发布受信任的视觉模型目录。"
+            exit 1
+          fi
+          TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          VISION_DIR="release-downloads/vision-models"
+          mkdir -p "${VISION_DIR}"
+          find release-downloads -type f -name 'lanchat-vision-*.zip' -exec cp {} "${VISION_DIR}/" \;
+          test "$(find "${VISION_DIR}" -maxdepth 1 -name 'lanchat-vision-*.zip' | wc -l)" -ge 3
+          node scripts/write-vision-catalog.mjs "${VISION_DIR}" "${TAG}" "${VISION_DIR}/vision-catalog.unsigned.json"
+          cargo run --manifest-path src-tauri/Cargo.toml --quiet --bin sign_vision_catalog -- \
+            "${VISION_DIR}/vision-catalog.unsigned.json" "${VISION_DIR}/vision-catalog.json"
+          cargo run --manifest-path src-tauri/Cargo.toml --quiet --bin verify_vision_catalog -- \
+            "${VISION_DIR}/vision-catalog.json"
+          rm "${VISION_DIR}/vision-catalog.unsigned.json"
 
       - name: Create update metadata
         shell: bash

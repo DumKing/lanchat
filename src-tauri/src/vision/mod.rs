@@ -16,6 +16,8 @@ mod activation_tests;
 #[cfg(test)]
 mod manifest_tests;
 #[cfg(test)]
+mod model_manager_tests;
+#[cfg(test)]
 mod people_tests;
 #[cfg(test)]
 mod protocol_tests;

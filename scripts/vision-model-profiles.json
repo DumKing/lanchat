@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "profiles": [
+    {
+      "profileId": "office-light",
+      "profileVersion": "1.0.0-light",
+      "displayName": "轻量巡检",
+      "tier": "low_resource",
+      "assetName": "lanchat-vision-office-light-1.0.0-light.zip",
+      "recommendedSettings": {
+        "sampleFps": 1,
+        "faceMinConfidence": 65,
+        "bodyMinConfidence": 75,
+        "consecutiveHits": 1
+      }
+    },
+    {
+      "profileId": "office-balanced",
+      "profileVersion": "1.0.0-balanced",
+      "displayName": "均衡识别",
+      "tier": "balanced",
+      "assetName": "lanchat-vision-office-balanced-1.0.0-balanced.zip",
+      "recommendedSettings": {
+        "sampleFps": 2,
+        "faceMinConfidence": 60,
+        "bodyMinConfidence": 68,
+        "consecutiveHits": 1
+      }
+    },
+    {
+      "profileId": "office-sensitive",
+      "profileVersion": "1.0.0-sensitive",
+      "displayName": "灵敏巡检",
+      "tier": "experimental",
+      "assetName": "lanchat-vision-office-sensitive-1.0.0-sensitive.zip",
+      "recommendedSettings": {
+        "sampleFps": 3,
+        "faceMinConfidence": 55,
+        "bodyMinConfidence": 60,
+        "consecutiveHits": 1
+      }
+    }
+  ]
+}

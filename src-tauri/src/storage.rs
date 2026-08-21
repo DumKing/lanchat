@@ -899,6 +899,7 @@ impl Storage {
                     downloadable: false,
                     package_size_bytes: 0,
                     restart_required: true,
+                    recommended_settings: None,
                 })
             })
             .map_err(|error| format!("读取视觉模型列表失败：{error}"))?;

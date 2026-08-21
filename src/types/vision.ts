@@ -43,4 +43,10 @@ export type VisionProfileSummary = {
   downloadable: boolean;
   packageSizeBytes: number;
   restartRequired: boolean;
+  recommendedSettings?: {
+    sampleFps: number;
+    faceMinConfidence: number;
+    bodyMinConfidence: number;
+    consecutiveHits: number;
+  } | null;
 };

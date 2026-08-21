@@ -32,6 +32,7 @@
     "test:settings-layout": "node scripts/test-settings-layout.mjs",
     "test:admin-remote-update": "node scripts/test-admin-remote-update.mjs",
     "test:i18n": "node scripts/test-i18n.mjs",
+    "vision:package": "powershell -ExecutionPolicy Bypass -File scripts/package-vision-models.ps1",
     "build": "node scripts/write-build-timestamp.mjs && vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri"

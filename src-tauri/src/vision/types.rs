@@ -5,6 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::model_manager::VisionProfileRecommendedSettings;
+
 /// Runtime 生命周期与采样/性能状态正交；不要把用户暂停混入生命周期枚举。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -75,6 +77,8 @@ pub struct VisionModelProfileSummary {
     pub downloadable: bool,
     pub package_size_bytes: u64,
     pub restart_required: bool,
+    #[serde(default)]
+    pub recommended_settings: Option<VisionProfileRecommendedSettings>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

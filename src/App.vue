@@ -4748,10 +4748,10 @@ function openSection(section: MainSection) {
     listPaneCollapsed.value = false;
   }
 }
-function openVisionCameraSettings() {
+function openVisionPersonRegistration() {
   openSection("vision");
   void nextTick(() => {
-    document.getElementById("vision-camera-settings")?.scrollIntoView({
+    document.getElementById("vision-person-registration")?.scrollIntoView({
       behavior: "smooth",
       block: "start",
     });
@@ -5719,6 +5719,14 @@ async function installVisionModel(profile: VisionProfileSummary) {
 async function activateVisionModel(profile: VisionProfileSummary) {
   try {
     visionModelProfiles.value = await api.activateVisionModelProfile(profile.profileId, profile.profileVersion);
+    if (profile.recommendedSettings) {
+      await updateFaceMonitorSettings({
+        sampleFps: profile.recommendedSettings.sampleFps,
+        faceMinConfidence: profile.recommendedSettings.faceMinConfidence,
+        bodyMinConfidence: profile.recommendedSettings.bodyMinConfidence,
+        consecutiveHits: profile.recommendedSettings.consecutiveHits,
+      });
+    }
     operationNotice.value = "已设为下次启动使用的模型；当前检测不中断，重启后自动切换。";
   } catch (error) {
     operationNotice.value = `启用模型失败：${stringifyError(error)}`;
@@ -7554,23 +7562,20 @@ async function closeWindow() {
                   :profiles="visionModelProfiles"
                   :catalog-loading="visionModelCatalogRefreshing"
                   :installing-key="visionModelInstallingKey"
-                  @configure="openVisionCameraSettings"
                   @refresh-catalog="refreshVisionModelProfiles(true)"
                   @install="installVisionModel"
                   @activate="activateVisionModel"
                 />
                 <VisionRuntimeStatus
-                  :settings="faceMonitorSettings"
                   :status="faceMonitorRuntimeStatus"
                   :diagnostics="visionRuntimeDiagnostics"
                   :snapshot="visionRuntimeSnapshot"
                   @refresh="refreshFaceMonitorRuntimeStatus"
-                  @toggle="async (enabled) => { await updateFaceMonitorSettings({ enabled }); await api.setVisionRuntimePaused(!enabled).catch(() => undefined); await refreshFaceMonitorRuntimeStatus(); }"
                 />
                 <VisionPeoplePanel
                   class="vision-people-workspace-card"
                   :people="facePeople"
-                  @add="openVisionCameraSettings"
+                  @add="openVisionPersonRegistration"
                   @detail="openFacePersonDetail"
                   @remove="deleteLocalFacePerson"
                 />
@@ -7782,13 +7787,7 @@ async function closeWindow() {
                     <NAlert v-else-if="faceMonitorSettings.enabled && ((faceMonitorSettings.faceRecognitionEnabled && !facePeople.some((person) => person.enabled && !person.deletedAt && person.hasEmbedding)) || (faceMonitorSettings.bodyRecognitionEnabled && !facePeople.some((person) => person.enabled && !person.deletedAt && person.hasBodyEmbedding)))" type="warning" :show-icon="false">
                       尚未录入可用的识别人员，摄像头监控不会产生告警。请先在下方上传参考照片或拍照录入。
                     </NAlert>
-                    <div v-if="facePeople.length" class="face-monitor-people">
-                      <strong>已保存的指定人员</strong>
-                      <NText v-for="person in facePeople" :key="person.personId" depth="3">
-                        {{ person.displayName }} · {{ person.enabled && !person.deletedAt ? '已启用' : '已停用' }} · v{{ person.version }}
-                      </NText>
-                    </div>
-                    <div class="face-monitor-people">
+                    <div id="vision-person-registration" class="face-monitor-people">
                       <strong>本机识别人员</strong>
                       <NText depth="3">可一次上传多张正脸、侧脸和不同光照照片；特征仅保存在本机，识别会对同一人员的 Top-3 样本加权比对。</NText>
                       <NFormItem label="人员名称" :show-feedback="false"><NInput v-model:value="localFacePersonName" maxlength="32" placeholder="例如：访客张三" /></NFormItem>
@@ -7800,14 +7799,6 @@ async function closeWindow() {
                       </NSpace>
                       <NText v-if="localFacePhotoPaths.length" depth="3">已选择 {{ localFacePhotoPaths.length }} / 30 张参考照片（至少 3 张）</NText>
                       <div v-if="localFacePhotoPreviews.length" class="face-person-preview-list"><img v-for="preview in localFacePhotoPreviews" :key="preview" class="face-person-preview-thumb" :src="preview" alt="待添加人员照片" /></div>
-                      <NText v-if="facePeople.length === 0" depth="3">尚未保存人员配置。</NText>
-                      <div v-for="person in facePeople" :key="person.personId" class="face-monitor-alert-row">
-                        <NText>{{ person.displayName }} · {{ person.enabled && !person.deletedAt ? '已启用' : '已删除/停用' }}</NText>
-                        <NSpace :size="6">
-                          <NTag size="small" :bordered="false" :type="person.hasEmbedding || person.hasBodyEmbedding ? 'success' : 'warning'">{{ person.hasEmbedding || person.hasBodyEmbedding ? `${person.hasEmbedding ? '人脸' : ''}${person.hasEmbedding && person.hasBodyEmbedding ? ' + ' : ''}${person.hasBodyEmbedding ? '人体' : ''}特征 · ${Math.max(1, person.sampleCount ?? 0)} 样本` : '特征不可用' }}</NTag>
-                          <NButton size="tiny" quaternary @click="openFacePersonDetail(person)">查看</NButton><NButton size="tiny" quaternary type="error" @click="deleteLocalFacePerson(person)">删除本机配置</NButton>
-                        </NSpace>
-                      </div>
                     </div>
                     <div class="face-monitor-people">
                       <strong>摄像头人物识别告警（独立于狼来了）</strong>

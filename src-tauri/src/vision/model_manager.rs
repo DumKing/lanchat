@@ -22,7 +22,7 @@ pub const OFFICIAL_CATALOG_URL: &str =
 /// 发布目录的根公钥。发布模型时必须由配套的离线私钥签名 catalog 字段。
 const CATALOG_ROOT_KEY_ID: &str = "lanchat-vision-root-v1";
 const CATALOG_ROOT_PUBLIC_KEY_HEX: &str =
-    "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+    "405bf9126b9aedeb053457ae7ac65498f78de43e963486842eb23f4412939001";
 const MAX_MODEL_PACKAGE_BYTES: usize = 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +43,18 @@ pub struct VisionCatalogProfile {
     pub package_sha256: String,
     #[serde(default)]
     pub package_size_bytes: u64,
+    /// 档位启用时应用的本机建议参数。超管锁定策略始终优先于这些建议值。
+    #[serde(default)]
+    pub recommended_settings: Option<VisionProfileRecommendedSettings>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VisionProfileRecommendedSettings {
+    pub sample_fps: u8,
+    pub face_min_confidence: u8,
+    pub body_min_confidence: u8,
+    pub consecutive_hits: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -54,9 +66,16 @@ pub struct InstalledVisionPackage {
 }
 
 pub fn parse_signed_catalog(bytes: &[u8]) -> Result<VisionCatalog, String> {
+    let key_ring = TrustedKeyRing::new(CATALOG_ROOT_KEY_ID, CATALOG_ROOT_PUBLIC_KEY_HEX);
+    parse_signed_catalog_with_key_ring(bytes, &key_ring)
+}
+
+pub(crate) fn parse_signed_catalog_with_key_ring(
+    bytes: &[u8],
+    key_ring: &TrustedKeyRing,
+) -> Result<VisionCatalog, String> {
     let signed: SignedCatalog =
         serde_json::from_slice(bytes).map_err(|_| "VISION_CATALOG_INVALID".to_string())?;
-    let key_ring = TrustedKeyRing::new(CATALOG_ROOT_KEY_ID, CATALOG_ROOT_PUBLIC_KEY_HEX);
     verify_catalog(&signed, &key_ring)?;
     let catalog: VisionCatalog = serde_json::from_value(signed.catalog)
         .map_err(|_| "VISION_CATALOG_PAYLOAD_INVALID".to_string())?;
@@ -68,6 +87,10 @@ pub fn parse_signed_catalog(bytes: &[u8]) -> Result<VisionCatalog, String> {
             || profile.profile_version.trim().is_empty()
             || profile.display_name.trim().is_empty()
             || profile.download_url.trim().is_empty()
+            || !matches!(
+                profile.tier.as_str(),
+                "low_resource" | "balanced" | "experimental"
+            )
             || profile.package_sha256.len() != 64
             || !profile
                 .package_sha256
@@ -75,6 +98,15 @@ pub fn parse_signed_catalog(bytes: &[u8]) -> Result<VisionCatalog, String> {
                 .all(|byte| byte.is_ascii_hexdigit())
         {
             return Err("VISION_CATALOG_PROFILE_INVALID".to_string());
+        }
+        if let Some(settings) = &profile.recommended_settings {
+            let valid = (1..=5).contains(&settings.sample_fps)
+                && (1..=100).contains(&settings.face_min_confidence)
+                && (1..=100).contains(&settings.body_min_confidence)
+                && (1..=20).contains(&settings.consecutive_hits);
+            if !valid {
+                return Err("VISION_CATALOG_RECOMMENDED_SETTINGS_INVALID".to_string());
+            }
         }
     }
     Ok(catalog)

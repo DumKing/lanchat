@@ -15,7 +15,6 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  configure: [];
   refreshCatalog: [];
   install: [profile: VisionProfileSummary];
   activate: [profile: VisionProfileSummary];
@@ -28,6 +27,12 @@ const isLowResource = (profile: VisionProfileSummary) => profile.tier === "light
 const profileDescription = (profile: VisionProfileSummary) => isLowResource(profile)
   ? "低资源优先，适合普通办公笔记本。"
   : profile.tier === "experimental" ? "实验性模型，需要额外验证。" : "兼顾识别质量与运行负载。";
+const recommendedSettings = (profile: VisionProfileSummary) => {
+  const settings = profile.recommendedSettings;
+  return settings
+    ? `建议 ${settings.sampleFps} 帧/秒 · 人脸 ${settings.faceMinConfidence}% · 人体 ${settings.bodyMinConfidence}%`
+    : "";
+};
 const formatBytes = (bytes: number) => bytes > 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : bytes > 1024 ? `${Math.ceil(bytes / 1024)} KB` : "待发布";
 </script>
 
@@ -43,7 +48,7 @@ const formatBytes = (bytes: number) => bytes > 1024 * 1024 ? `${(bytes / 1024 / 
       <article v-for="profile in profiles" :key="profileKey(profile)" class="vision-profile" :class="{ active: profile.active || activeProfile === profile.profileId }">
         <div>
           <strong>{{ profile.displayName }}</strong>
-          <span>{{ isLowResource(profile) ? t('vision.profile.low_resource') : profileDescription(profile) }} {{ profile.packageSizeBytes ? `· ${formatBytes(profile.packageSizeBytes)}` : '' }}</span>
+          <span>{{ isLowResource(profile) ? t('vision.profile.low_resource') : profileDescription(profile) }} {{ profile.packageSizeBytes ? `· ${formatBytes(profile.packageSizeBytes)}` : '' }} {{ recommendedSettings(profile) }}</span>
         </div>
         <div class="vision-profile-action">
           <NTag size="small" :bordered="false" :type="profile.active ? 'success' : profile.installed ? 'info' : 'default'">{{ profile.active ? activeVersion : profile.installed ? '已安装' : '可下载' }}</NTag>
@@ -58,7 +63,6 @@ const formatBytes = (bytes: number) => bytes > 1024 * 1024 ? `${(bytes / 1024 / 
     </div>
     <div class="vision-model-actions">
       <NButton size="small" secondary :loading="catalogLoading" @click="emit('refreshCatalog')">检查模型</NButton>
-      <NButton size="small" secondary type="primary" @click="emit('configure')">{{ t('vision.workspace.configure') }}</NButton>
     </div>
   </NCard>
 </template>
