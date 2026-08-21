@@ -1,7 +1,7 @@
 {
   "name": "lanchat",
   "private": true,
-  "version": "0.6.0-preview.1",
+  "version": "0.6.0-1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -32,6 +32,7 @@
     "test:settings-layout": "node scripts/test-settings-layout.mjs",
     "test:admin-remote-update": "node scripts/test-admin-remote-update.mjs",
     "test:i18n": "node scripts/test-i18n.mjs",
+    "test:tauri-main-binary": "node scripts/test-tauri-main-binary.mjs",
     "vision:package": "powershell -ExecutionPolicy Bypass -File scripts/package-vision-models.ps1",
     "build": "node scripts/write-build-timestamp.mjs && vue-tsc --noEmit && vite build",
     "preview": "vite preview",

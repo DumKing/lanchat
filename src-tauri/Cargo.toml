@@ -1,9 +1,10 @@
 [package]
 name = "lanchat"
-version = "0.6.0-preview.1"
+version = "0.6.0-1"
 description = "A serverless LAN chat desktop app"
 authors = ["LanChat"]
 edition = "2021"
+autobins = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -13,6 +14,18 @@ edition = "2021"
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "tauri_app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "lanchat"
+path = "src/main.rs"
+
+[[bin]]
+name = "sign_vision_catalog"
+path = "src/bin/sign_vision_catalog.rs"
+
+[[bin]]
+name = "verify_vision_catalog"
+path = "src/bin/verify_vision_catalog.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
