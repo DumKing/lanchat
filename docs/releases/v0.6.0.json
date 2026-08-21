@@ -1,5 +1,5 @@
 {
   "force_update": false,
   "min_supported_version": "0.5.1",
-  "prerelease": true
+  "prerelease": false
 }
