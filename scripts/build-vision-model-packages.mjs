@@ -67,9 +67,17 @@ for (const profile of config.profiles) {
   } catch {
     throw new Error(`模型 Profile ${profile.profileId} 的资源目录不存在：${sourceDir}`);
   }
+  const sourceV4Path = path.join(sourceDir, "manifest.v4.json");
+  try {
+    await access(sourceV4Path);
+  } catch {
+    throw new Error(`模型 Profile ${profile.profileId} 的源资源缺少 manifest.v4.json：${sourceV4Path}`);
+  }
   const profileDir = path.join(outputDir, profile.profileId);
   const modelsDir = path.join(profileDir, "object-models");
-  await cp(sourceDir, modelsDir, { recursive: true, filter: (entry) => !entry.endsWith("README.md") });
+  // Windows Node 的 cp filter 在部分 Runner 上会遗漏根目录文件；先完整复制，再仅清理说明文件。
+  await cp(sourceDir, modelsDir, { recursive: true });
+  await rm(path.join(modelsDir, "README.md"), { force: true });
 
   const v4Path = path.join(modelsDir, "manifest.v4.json");
   try {
