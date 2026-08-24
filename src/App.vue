@@ -63,7 +63,7 @@ import { createGameRoomShell, gameDefinitionOf, gameRegistry, type GameRoomShell
 import { alertTemperature, alertTruthScore, senderCredibility } from "./utils/alertCredibility";
 import { detectMentionKind, trayConversationTitle, type MentionKind } from "./utils/messageMentions";
 import { peerDisplayName, peerOriginalName, sameDeviceId, sortPeersForDisplay } from "./utils/peerPresentation";
-import { DEFAULT_CAMERA_MONITOR_SETTINGS, type CameraFaceAlert, type CameraMonitorSettings, type CameraMonitorStatus, type FaceMonitorPolicy, type FaceMonitorRuntimeStatus, type FacePersonPolicy } from "./types/face-monitor";
+import { DEFAULT_CAMERA_MONITOR_SETTINGS, type CameraFaceAlert, type CameraMonitorSettings, type CameraMonitorStatus, type FaceMonitorPolicy, type FaceMonitorRuntimeStatus, type FacePersonPolicy, type ReferencePhotoCandidate } from "./types/face-monitor";
 import type { VisionFrameSample, VisionProfileSummary, VisionRuntimeDiagnostics, VisionRuntimeSnapshot } from "./types/vision";
 import { dateLocale, effectiveLocale, installUiTranslation, languagePreference, naiveLocale, setLanguagePreference, t } from "./i18n";
 type UiThemeKey = "theme-dingtalk" | "theme-work" | "theme-lan" | "theme-light";
@@ -563,6 +563,15 @@ const localFacePhotoInput = ref<HTMLInputElement | null>(null);
 const localFaceCaptureOpen = ref(false);
 const localFaceCaptureVideo = ref<HTMLVideoElement | null>(null);
 let localFaceCaptureStream: MediaStream | null = null;
+type PendingLocalFacePhoto = {
+  bytes: Uint8Array;
+  previewUrl: string;
+  candidates: ReferencePhotoCandidate[];
+};
+const localFaceCandidatePickerOpen = ref(false);
+const localFaceCandidateSelectionId = ref("");
+const localFaceCandidateDraft = ref<PendingLocalFacePhoto | null>(null);
+let localFacePhotoQueue: Blob[] = [];
 const facePersonDetail = ref<FacePersonPolicy | null>(null);
 const facePersonDetailSelectedPhoto = ref("");
 type CallMedia = "audio" | "video";
@@ -6004,19 +6013,69 @@ async function deleteLocalFacePersonReferencePhoto(photoSource: string) {
 async function handleLocalFacePhotoSelected(event: Event) {
   const files = [...((event.target as HTMLInputElement).files ?? [])];
   if (files.length === 0) return;
-  for (const file of files) await saveLocalFacePhoto(file);
   (event.target as HTMLInputElement).value = "";
+  localFacePhotoQueue.push(...files);
+  await processNextLocalFacePhoto();
 }
 
-async function saveLocalFacePhoto(file: Blob) {
+async function processNextLocalFacePhoto() {
+  if (localFaceCandidateDraft.value || localFaceCandidatePickerOpen.value) return;
+  if (localFacePhotoPaths.value.length >= 30) {
+    localFacePhotoQueue = [];
+    store.error = "每名人员最多保存 30 张参考照片";
+    return;
+  }
+  const file = localFacePhotoQueue.shift();
+  if (!file) return;
   try {
     const bytes = new Uint8Array(await file.arrayBuffer());
-    const path = await api.saveFaceReferencePhoto(bytes);
-    localFacePhotoPaths.value = [...localFacePhotoPaths.value, path].slice(0, 30);
-    localFacePhotoPreviews.value = [...localFacePhotoPreviews.value, URL.createObjectURL(file)].slice(0, 30);
+    const analysis = await api.analyzeFaceReferencePhotoCandidates(bytes);
+    if (analysis.requiresSelection) {
+      localFaceCandidateDraft.value = {
+        bytes,
+        previewUrl: URL.createObjectURL(file),
+        candidates: analysis.candidates,
+      };
+      localFaceCandidateSelectionId.value = analysis.candidates[0]?.candidateId ?? "";
+      localFaceCandidatePickerOpen.value = true;
+      return;
+    }
+    await persistLocalFacePhoto(bytes, analysis.candidates[0]?.candidateId);
+    await processNextLocalFacePhoto();
+  } catch (error) {
+    store.error = stringifyError(error);
+    await processNextLocalFacePhoto();
+  }
+}
+
+async function persistLocalFacePhoto(bytes: Uint8Array, candidateId?: string) {
+  const path = await api.saveFaceReferencePhoto(bytes, candidateId);
+  localFacePhotoPaths.value = [...localFacePhotoPaths.value, path].slice(0, 30);
+  localFacePhotoPreviews.value = [...localFacePhotoPreviews.value, convertFileSrc(path)].slice(0, 30);
+}
+
+async function confirmLocalFaceCandidate() {
+  const draft = localFaceCandidateDraft.value;
+  if (!draft || !localFaceCandidateSelectionId.value) return;
+  try {
+    await persistLocalFacePhoto(draft.bytes, localFaceCandidateSelectionId.value);
+    closeLocalFaceCandidatePicker();
+    await processNextLocalFacePhoto();
   } catch (error) {
     store.error = stringifyError(error);
   }
+}
+
+function closeLocalFaceCandidatePicker() {
+  if (localFaceCandidateDraft.value) URL.revokeObjectURL(localFaceCandidateDraft.value.previewUrl);
+  localFaceCandidateDraft.value = null;
+  localFaceCandidateSelectionId.value = "";
+  localFaceCandidatePickerOpen.value = false;
+}
+
+function cancelLocalFaceCandidatePicker() {
+  closeLocalFaceCandidatePicker();
+  void processNextLocalFacePhoto();
 }
 
 async function openLocalFaceCapture() {
@@ -6052,7 +6111,10 @@ async function captureLocalFacePhoto() {
   canvas.height = video.videoHeight;
   canvas.getContext("2d")?.drawImage(video, 0, 0);
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.9));
-  if (blob) await saveLocalFacePhoto(blob);
+  if (blob) {
+    localFacePhotoQueue.push(blob);
+    await processNextLocalFacePhoto();
+  }
   closeLocalFaceCapture();
 }
 
@@ -8482,6 +8544,28 @@ async function closeWindow() {
           <NSpace justify="end"><NButton secondary @click="closeLocalFaceCapture">取消</NButton><NButton type="primary" @click="captureLocalFacePhoto">拍照使用</NButton></NSpace>
         </NSpace>
       </NModal>
+      <NModal :show="localFaceCandidatePickerOpen" preset="card" title="选择照片中的目标人员" class="reference-person-picker-modal" @update:show="(value) => { if (!value) cancelLocalFaceCandidatePicker(); }">
+        <NSpace v-if="localFaceCandidateDraft" vertical :size="12">
+          <NText depth="3">照片中检测到多个人。请点击要录入的人员，LanChat 只会保存选中区域，不会保存整张合照。</NText>
+          <div class="reference-person-picker-stage">
+            <img :src="localFaceCandidateDraft.previewUrl" alt="多人参考照片" />
+            <button
+              v-for="(candidate, index) in localFaceCandidateDraft.candidates"
+              :key="candidate.candidateId"
+              type="button"
+              class="reference-person-candidate"
+              :class="{ active: candidate.candidateId === localFaceCandidateSelectionId }"
+              :style="{ left: `${candidate.x * 100}%`, top: `${candidate.y * 100}%`, width: `${candidate.width * 100}%`, height: `${candidate.height * 100}%` }"
+              :title="`选择人员 ${index + 1}`"
+              @click="localFaceCandidateSelectionId = candidate.candidateId"
+            >
+              <span>人员 {{ index + 1 }}</span>
+            </button>
+          </div>
+          <NText depth="3">{{ localFaceCandidateDraft.candidates.length }} 位可选人员，当前已选人员 {{ localFaceCandidateDraft.candidates.findIndex((candidate) => candidate.candidateId === localFaceCandidateSelectionId) + 1 }}。</NText>
+          <NSpace justify="end"><NButton secondary @click="cancelLocalFaceCandidatePicker">跳过此照片</NButton><NButton type="primary" :disabled="!localFaceCandidateSelectionId" @click="confirmLocalFaceCandidate">使用选中人员</NButton></NSpace>
+        </NSpace>
+      </NModal>
       <NModal :show="!!facePersonDetail" preset="card" title="识别人员详情" class="face-person-detail-modal" @update:show="(value) => { if (!value) closeFacePersonDetail(); }">
         <NSpace v-if="facePersonDetail" vertical :size="12">
           <div v-if="facePersonDetailActivePhoto" class="face-person-detail-stage">
@@ -8665,6 +8749,12 @@ async function closeWindow() {
 .face-person-detail-thumbnail-remove { position: absolute; top: 3px; right: 3px; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; color: #fff; background: rgba(17, 24, 39, .72); font-size: 15px; line-height: 1; }
 .face-person-detail-thumbnail-remove:hover { background: #d03050; }
 .face-capture-video { display: block; width: min(480px, 80vw); max-height: 58vh; border-radius: 8px; background: #101820; object-fit: contain; }
+.reference-person-picker-modal { width: min(680px, calc(100vw - 40px)); }
+.reference-person-picker-stage { position: relative; width: fit-content; max-width: 100%; max-height: min(58vh, 460px); margin: 0 auto; overflow: hidden; border: 1px solid var(--panel-line); border-radius: 8px; background: var(--input-bg); line-height: 0; }
+.reference-person-picker-stage > img { display: block; width: auto; max-width: 100%; max-height: min(58vh, 460px); object-fit: contain; }
+.reference-person-candidate { position: absolute; display: grid; box-sizing: border-box; min-width: 28px; min-height: 28px; padding: 0; border: 2px solid color-mix(in srgb, var(--accent) 55%, #ffffff); border-radius: 6px; outline: 0; background: color-mix(in srgb, var(--accent) 10%, transparent); box-shadow: 0 0 0 1px rgba(16, 24, 40, .16); cursor: pointer; }
+.reference-person-candidate:hover, .reference-person-candidate.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 24%, transparent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+.reference-person-candidate span { position: absolute; top: -24px; left: -2px; padding: 3px 6px; border-radius: 4px; background: var(--accent); color: #fff; font-size: 12px; line-height: 16px; white-space: nowrap; }
 .camera-face-alert-detail { display: grid; gap: 12px; }
 .camera-face-alert-detail h2, .camera-face-alert-detail p { margin: 0; }
 .camera-face-alert-detail > img { display: block; width: 100%; max-height: min(62vh, 480px); border-radius: 8px; background: #111827; object-fit: contain; }

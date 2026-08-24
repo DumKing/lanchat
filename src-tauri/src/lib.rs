@@ -24,6 +24,7 @@ use desktop_pet_runtime::{DesktopPetController, DesktopPetRuntimeState};
 use face_monitor::{
     dynamic_embedding_bytes, dynamic_embedding_from_bytes, embedding_bytes, FaceMatch,
     FaceMonitorLocalSettings, FaceMonitorRuntime, FaceMonitorStatus, PersonTemplate,
+    ReferencePhotoCandidateAnalysis,
 };
 use file_server::FileServer;
 use fs2::FileExt;
@@ -1629,11 +1630,31 @@ fn delete_local_face_person_reference_photo(
 }
 
 #[tauri::command]
-fn save_face_reference_photo(app: tauri::AppHandle, bytes: Vec<u8>) -> Result<String, String> {
+fn analyze_face_reference_photo_candidates(
+    state: State<'_, AppState>,
+    bytes: Vec<u8>,
+) -> Result<ReferencePhotoCandidateAnalysis, String> {
     if bytes.is_empty() {
         return Err("参考照片内容为空".to_string());
     }
-    image::load_from_memory(&bytes).map_err(|err| format!("参考照片无法解码：{err}"))?;
+    state
+        .face_monitor
+        .analyze_reference_photo_candidates(&bytes)
+}
+
+#[tauri::command]
+fn save_face_reference_photo(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    bytes: Vec<u8>,
+    candidate_id: Option<String>,
+) -> Result<String, String> {
+    if bytes.is_empty() {
+        return Err("参考照片内容为空".to_string());
+    }
+    let cropped = state
+        .face_monitor
+        .crop_reference_photo_candidate(&bytes, candidate_id.as_deref())?;
     let root = app
         .path()
         .app_data_dir()
@@ -1641,7 +1662,7 @@ fn save_face_reference_photo(app: tauri::AppHandle, bytes: Vec<u8>) -> Result<St
         .join("face-reference-uploads");
     std::fs::create_dir_all(&root).map_err(|err| format!("创建参考照片目录失败：{err}"))?;
     let path = root.join(format!("{}.jpg", Uuid::new_v4()));
-    std::fs::write(&path, bytes).map_err(|err| format!("保存参考照片失败：{err}"))?;
+    std::fs::write(&path, cropped).map_err(|err| format!("保存参考照片失败：{err}"))?;
     Ok(path.to_string_lossy().to_string())
 }
 
@@ -1682,8 +1703,6 @@ fn create_local_face_person(
         let bytes = std::fs::read(photo_path).map_err(|err| format!("读取参考照片失败：{err}"))?;
         image::load_from_memory(&bytes).map_err(|err| format!("参考照片无法解码：{err}"))?;
         let analysis = state.face_monitor.analyze_reference_photo(&bytes)?;
-        vision::storage::validate_reference_subject_count(analysis.detected_subject_count)
-            .map_err(|_| "参考照片中检测到多个人，请单独上传目标人员照片".to_string())?;
         let face_embedding = state.face_monitor.embedding_from_photo_bytes(&bytes).ok();
         let body_embedding = state
             .face_monitor
@@ -5195,6 +5214,7 @@ pub fn run() {
             list_face_people,
             delete_face_person_local,
             delete_local_face_person_reference_photo,
+            analyze_face_reference_photo_candidates,
             save_face_reference_photo,
             create_local_face_person,
             get_effective_face_monitor_policy,

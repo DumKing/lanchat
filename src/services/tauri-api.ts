@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AdminRemoteUpdate, AppVersionInfo, CallSignal, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Nudge, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem, UpdateCheckResult, UpdateGithubTokenInfo } from "../types/lanchat";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, PetStatePlaybackConfig } from "../types/desktop-pet";
-import type { CameraFaceAlert, CameraMonitorSettings, FaceMonitorPolicy, FaceMonitorRuntimeStatus, FacePersonPolicy } from "../types/face-monitor";
+import type { CameraFaceAlert, CameraMonitorSettings, FaceMonitorPolicy, FaceMonitorRuntimeStatus, FacePersonPolicy, ReferencePhotoCandidateAnalysis } from "../types/face-monitor";
 import type { VisionFrameSample, VisionProfileSummary, VisionRuntimeDiagnostics, VisionRuntimeSnapshot } from "../types/vision";
 import { encodeVisionFrameEnvelope } from "./visionFrameTransport";
 
@@ -29,7 +29,10 @@ export const api = {
   deleteFacePersonLocal: (personId: string) => invoke<void>("delete_face_person_local", { personId }),
   deleteLocalFacePersonReferencePhoto: (personId: string, photoPath: string) =>
     invoke<FacePersonPolicy>("delete_local_face_person_reference_photo", { personId, photoPath }),
-  saveFaceReferencePhoto: (bytes: Uint8Array) => invoke<string>("save_face_reference_photo", { bytes: Array.from(bytes) }),
+  analyzeFaceReferencePhotoCandidates: (bytes: Uint8Array) =>
+    invoke<ReferencePhotoCandidateAnalysis>("analyze_face_reference_photo_candidates", { bytes: Array.from(bytes) }),
+  saveFaceReferencePhoto: (bytes: Uint8Array, candidateId?: string) =>
+    invoke<string>("save_face_reference_photo", { bytes: Array.from(bytes), candidateId }),
   createLocalFacePerson: (personId: string, displayName: string, photoPaths: string[]) =>
     invoke<FacePersonPolicy>("create_local_face_person", { personId, displayName, photoPaths }),
   getEffectiveFaceMonitorPolicy: () => invoke<FaceMonitorPolicy | null>("get_effective_face_monitor_policy"),
