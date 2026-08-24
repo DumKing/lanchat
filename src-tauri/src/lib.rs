@@ -22,9 +22,8 @@ use desktop_pet::{
 };
 use desktop_pet_runtime::{DesktopPetController, DesktopPetRuntimeState};
 use face_monitor::{
-    dynamic_embedding_bytes, dynamic_embedding_from_bytes, embedding_bytes, embedding_from_bytes,
-    FaceMatch, FaceMonitorLocalSettings, FaceMonitorRuntime, FaceMonitorStatus, PersonTemplate,
-    PERSON_REID_DIM,
+    dynamic_embedding_bytes, dynamic_embedding_from_bytes, embedding_bytes, FaceMatch,
+    FaceMonitorLocalSettings, FaceMonitorRuntime, FaceMonitorStatus, PersonTemplate,
 };
 use file_server::FileServer;
 use fs2::FileExt;
@@ -50,7 +49,7 @@ use std::time::Duration;
 use storage::{
     AdminNotificationRecord, CameraFaceAlertRecord, ChannelMember, ChannelMemberSeed, Conversation,
     FaceMonitorPolicyRecord, FacePersonRecord, FacePersonSampleRecord, Message, MessageType, Peer,
-    Profile, SimulationAudit, Storage, DEFAULT_GROUP_ID,
+    Profile, SimulationAudit, Storage, VisionEmbeddingWrite, DEFAULT_GROUP_ID,
 };
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItemBuilder, PredefinedMenuItem};
@@ -64,7 +63,11 @@ use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 use vision::worker::{decode_raw_frame, encode_frame_as_jpeg, LatestFrameMailbox, VisionWorker};
 use vision::{
-    model_manager::{download_and_install, fetch_official_catalog, VisionCatalogProfile},
+    backend::backend_activation_reason_by_name,
+    model_manager::{
+        download_and_install, fetch_official_catalog, validate_installed_package,
+        VisionCatalogProfile,
+    },
     runtime::VisionRuntimeState,
     types::{VisionModelProfileSummary, VisionRuntimeDiagnostics, VisionRuntimeSnapshot},
 };
@@ -1080,6 +1083,9 @@ fn vision_model_profiles(state: &AppState) -> Result<Vec<VisionModelProfileSumma
                 .unwrap_or_else(|| "1.0.0".to_string()),
             display_name: "内置基础模型".to_string(),
             tier: "low_resource".to_string(),
+            inference_engine: Some("onnxruntime".to_string()),
+            face_engine: Some("sface".to_string()),
+            person_re_id_engine: Some("youtureid".to_string()),
             installed: state.face_monitor.status().model_assets_ready,
             active: snapshot.active_profile_id.as_deref() == Some("baseline"),
             compatible: state.face_monitor.status().model_assets_ready,
@@ -1095,17 +1101,37 @@ fn vision_model_profiles(state: &AppState) -> Result<Vec<VisionModelProfileSumma
         .lock()
         .map_err(|_| "视觉模型目录状态不可用".to_string())?
         .clone();
+    for summary in &mut profiles {
+        if let Some(profile) = catalog.iter().find(|profile| {
+            profile.profile_id == summary.profile_id
+                && profile.profile_version == summary.profile_version
+        }) {
+            apply_catalog_stack_summary(summary, profile);
+        }
+    }
     for profile in catalog {
         if profiles.iter().any(|item| {
             item.profile_id == profile.profile_id && item.profile_version == profile.profile_version
         }) {
             continue;
         }
-        profiles.push(VisionModelProfileSummary {
-            profile_id: profile.profile_id,
-            profile_version: profile.profile_version,
-            display_name: profile.display_name,
-            tier: profile.tier,
+        let mut summary = VisionModelProfileSummary {
+            profile_id: profile.profile_id.clone(),
+            profile_version: profile.profile_version.clone(),
+            display_name: profile.display_name.clone(),
+            tier: profile.tier.clone(),
+            inference_engine: profile
+                .model_stack
+                .as_ref()
+                .map(|stack| stack.inference_engine.clone()),
+            face_engine: profile
+                .model_stack
+                .as_ref()
+                .map(|stack| stack.face_engine.clone()),
+            person_re_id_engine: profile
+                .model_stack
+                .as_ref()
+                .map(|stack| stack.person_re_id_engine.clone()),
             installed: false,
             active: false,
             compatible: true,
@@ -1113,10 +1139,28 @@ fn vision_model_profiles(state: &AppState) -> Result<Vec<VisionModelProfileSumma
             downloadable: true,
             package_size_bytes: profile.package_size_bytes,
             restart_required: true,
-            recommended_settings: profile.recommended_settings,
-        });
+            recommended_settings: profile.recommended_settings.clone(),
+        };
+        apply_catalog_stack_summary(&mut summary, &profile);
+        profiles.push(summary);
     }
     Ok(profiles)
+}
+
+fn apply_catalog_stack_summary(
+    summary: &mut VisionModelProfileSummary,
+    profile: &VisionCatalogProfile,
+) {
+    let Some(stack) = &profile.model_stack else {
+        return;
+    };
+    summary.inference_engine = Some(stack.inference_engine.clone());
+    summary.face_engine = Some(stack.face_engine.clone());
+    summary.person_re_id_engine = Some(stack.person_re_id_engine.clone());
+    if let Some(reason) = backend_activation_reason_by_name(&stack.inference_engine) {
+        summary.compatible = false;
+        summary.compatibility_reason = Some(reason.to_string());
+    }
 }
 
 #[tauri::command]
@@ -1161,6 +1205,21 @@ async fn install_vision_model_profile(
         profile_version: installed.profile.profile_version.clone(),
         display_name: installed.profile.display_name.clone(),
         tier: installed.profile.tier.clone(),
+        inference_engine: installed
+            .profile
+            .model_stack
+            .as_ref()
+            .map(|stack| stack.inference_engine.clone()),
+        face_engine: installed
+            .profile
+            .model_stack
+            .as_ref()
+            .map(|stack| stack.face_engine.clone()),
+        person_re_id_engine: installed
+            .profile
+            .model_stack
+            .as_ref()
+            .map(|stack| stack.person_re_id_engine.clone()),
         installed: true,
         active: false,
         compatible: true,
@@ -1179,28 +1238,129 @@ async fn install_vision_model_profile(
 }
 
 #[tauri::command]
+fn uninstall_vision_model_profile(
+    state: State<'_, AppState>,
+    profile_id: String,
+    profile_version: String,
+) -> Result<Vec<VisionModelProfileSummary>, String> {
+    let install_dir = state
+        .storage
+        .remove_vision_model_profile(&profile_id, &profile_version)?;
+    if !install_dir.starts_with(&state.vision_model_root) {
+        return Err("VISION_MODEL_INSTALL_PATH_INVALID".to_string());
+    }
+    if install_dir.exists() {
+        std::fs::remove_dir_all(&install_dir)
+            .map_err(|error| format!("删除视觉模型文件失败：{error}"))?;
+    }
+    vision_model_profiles(&state)
+}
+
+#[tauri::command]
 fn activate_vision_model_profile(
     state: State<'_, AppState>,
     profile_id: String,
     profile_version: String,
 ) -> Result<Vec<VisionModelProfileSummary>, String> {
+    let install_dir = state
+        .storage
+        .vision_model_install_path(&profile_id, &profile_version)?;
+    let package = validate_installed_package(&install_dir)?;
+    if package.profile_id != profile_id || package.profile_version != profile_version {
+        return Err("VISION_PACKAGE_PROFILE_MISMATCH".to_string());
+    }
+    let profile = state
+        .vision_model_catalog
+        .lock()
+        .map_err(|_| "视觉模型目录状态不可用".to_string())?
+        .iter()
+        .find(|item| item.profile_id == profile_id && item.profile_version == profile_version)
+        .cloned();
+    if let Some(profile) = profile {
+        if let Some(stack) = profile.model_stack {
+            if let Some(reason) = backend_activation_reason_by_name(&stack.inference_engine) {
+                return Err(reason.to_string());
+            }
+        }
+    }
+    FaceMonitorRuntime::validate_candidate_model_dir(&install_dir.join("object-models"))?;
     state
         .storage
         .activate_vision_model_profile(&profile_id, &profile_version)?;
     vision_model_profiles(&state)
 }
 
-/// 加载启用中录入人员的特征模板：优先用版本匹配的已存特征，
-/// 版本不一致时用参考照片重新提取并落库；照片不可读或无人脸时清空特征并跳过。
-fn load_recognition_templates(state: &AppState) -> Result<Vec<PersonTemplate>, String> {
-    let model_version = state
-        .face_monitor
-        .status()
+/// 运行时模型身份与每种模态的向量空间绑定。空间名是特征可比性的硬边界。
+fn ensure_active_embedding_spaces(state: &AppState) -> Result<(String, String), String> {
+    let face_embedding_space_id = state.face_monitor.face_embedding_space_id();
+    let body_embedding_space_id = state.face_monitor.body_embedding_space_id();
+    let runtime_status = state.face_monitor.status();
+    let profile_id = runtime_status
+        .model_profile_id
+        .clone()
+        .unwrap_or_else(|| "legacy".to_string());
+    let profile_version = runtime_status
         .model_version
-        .unwrap_or_default();
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
+    state.storage.ensure_vision_embedding_space(
+        &face_embedding_space_id,
+        &profile_id,
+        &profile_version,
+        "face",
+        &serde_json::json!({
+            "embeddingSpaceId": face_embedding_space_id,
+            "modality": "face",
+        })
+        .to_string(),
+    )?;
+    state.storage.ensure_vision_embedding_space(
+        &body_embedding_space_id,
+        &profile_id,
+        &profile_version,
+        "body",
+        &serde_json::json!({
+            "embeddingSpaceId": body_embedding_space_id,
+            "modality": "body",
+        })
+        .to_string(),
+    )?;
+    Ok((face_embedding_space_id, body_embedding_space_id))
+}
+
+/// 加载启用中录入人员的特征模板。V5 特征库按模型空间隔离，旧样本表仅用于兼容迁移。
+fn load_recognition_templates(state: &AppState) -> Result<Vec<PersonTemplate>, String> {
+    let (face_embedding_space_id, body_embedding_space_id) = ensure_active_embedding_spaces(state)?;
     let mut templates = Vec::new();
+    let face_embedding_dimension = state.face_monitor.face_embedding_dimension();
+    let person_reid_dimension = state.face_monitor.person_reid_embedding_dimension();
     for person in state.storage.list_face_people()? {
         if !person.enabled || person.deleted_at.is_some() {
+            continue;
+        }
+        let mut face_embeddings = state
+            .storage
+            .list_person_vision_embeddings(&person.person_id, &face_embedding_space_id, "face")?
+            .into_iter()
+            .filter(|embedding| embedding.vector.len() == face_embedding_dimension)
+            .map(|embedding| embedding.vector)
+            .collect::<Vec<_>>();
+        let mut body_embeddings = state
+            .storage
+            .list_person_vision_embeddings(&person.person_id, &body_embedding_space_id, "body")?
+            .into_iter()
+            .filter(|embedding| embedding.vector.len() == person_reid_dimension)
+            .map(|embedding| embedding.vector)
+            .collect::<Vec<_>>();
+        let needs_face_embeddings = face_embeddings.is_empty();
+        let needs_body_embeddings = body_embeddings.is_empty();
+        if !needs_face_embeddings && !needs_body_embeddings {
+            templates.push(PersonTemplate {
+                person_id: person.person_id,
+                display_name: person.display_name,
+                face_embeddings,
+                body_embeddings,
+            });
             continue;
         }
         let mut samples = state.storage.list_face_person_samples(&person.person_id)?;
@@ -1219,70 +1379,102 @@ fn load_recognition_templates(state: &AppState) -> Result<Vec<PersonTemplate>, S
                 });
             }
         }
-        let mut face_embeddings = Vec::new();
-        let mut body_embeddings = Vec::new();
         let mut refreshed_samples = Vec::new();
         let mut samples_dirty = false;
         for mut sample in samples {
             let bytes = std::fs::read(&sample.photo_url).ok();
-            let face_embedding =
-                if sample.embedding_model_version.as_deref() == Some(model_version.as_str()) {
-                    sample
-                        .embedding
-                        .as_deref()
-                        .and_then(|value| embedding_from_bytes(value).ok())
+            let face_embedding = if needs_face_embeddings {
+                let cached = if sample.embedding_model_version.as_deref()
+                    == Some(face_embedding_space_id.as_str())
+                {
+                    sample.embedding.as_deref().and_then(|value| {
+                        dynamic_embedding_from_bytes(value, face_embedding_dimension).ok()
+                    })
                 } else {
                     None
                 };
-            let face_embedding = face_embedding.or_else(|| {
-                let generated = bytes
-                    .as_deref()
-                    .and_then(|value| state.face_monitor.embedding_from_photo_bytes(value).ok());
-                if generated.is_some() {
-                    samples_dirty = true;
-                }
-                generated
-            });
-            let body_embedding =
-                if sample.body_embedding_model_version.as_deref() == Some(model_version.as_str()) {
-                    sample
-                        .body_embedding
-                        .as_deref()
-                        .and_then(|value| dynamic_embedding_from_bytes(value, PERSON_REID_DIM).ok())
+                cached.or_else(|| {
+                    let generated = bytes.as_deref().and_then(|value| {
+                        state.face_monitor.embedding_from_photo_bytes(value).ok()
+                    });
+                    if generated.is_some() {
+                        samples_dirty = true;
+                    }
+                    generated
+                })
+            } else {
+                None
+            };
+            let body_embedding = if needs_body_embeddings {
+                let cached = if sample.body_embedding_model_version.as_deref()
+                    == Some(body_embedding_space_id.as_str())
+                {
+                    sample.body_embedding.as_deref().and_then(|value| {
+                        dynamic_embedding_from_bytes(value, person_reid_dimension).ok()
+                    })
                 } else {
                     None
                 };
-            let body_embedding = body_embedding.or_else(|| {
-                let generated = bytes.as_deref().and_then(|value| {
-                    state
-                        .face_monitor
-                        .body_embedding_from_photo_bytes(value)
-                        .ok()
-                });
-                if generated.is_some() {
-                    samples_dirty = true;
-                }
-                generated
-            });
-            if body_embedding.is_none() && sample.body_embedding.is_some() {
+                cached.or_else(|| {
+                    let generated = bytes.as_deref().and_then(|value| {
+                        state
+                            .face_monitor
+                            .body_embedding_from_photo_bytes(value)
+                            .ok()
+                    });
+                    if generated.is_some() {
+                        samples_dirty = true;
+                    }
+                    generated
+                })
+            } else {
+                None
+            };
+            if needs_body_embeddings && body_embedding.is_none() && sample.body_embedding.is_some()
+            {
                 sample.body_embedding = None;
                 sample.body_embedding_model_version = None;
                 samples_dirty = true;
             }
             if let Some(embedding) = face_embedding {
                 sample.embedding = Some(embedding_bytes(&embedding));
-                sample.embedding_model_version = Some(model_version.clone());
+                sample.embedding_model_version = Some(face_embedding_space_id.clone());
                 face_embeddings.push(embedding);
             }
             if let Some(embedding) = body_embedding {
                 sample.body_embedding = Some(dynamic_embedding_bytes(&embedding));
-                sample.body_embedding_model_version = Some(model_version.clone());
+                sample.body_embedding_model_version = Some(body_embedding_space_id.clone());
                 body_embeddings.push(embedding);
             }
             if sample.embedding.is_none() && sample.body_embedding.is_none() {
                 continue;
             }
             refreshed_samples.push(sample);
+        }
+        if needs_face_embeddings && !face_embeddings.is_empty() {
+            let writes = face_embeddings
+                .iter()
+                .map(|embedding| VisionEmbeddingWrite::new(embedding.to_vec(), 1.0))
+                .collect::<Vec<_>>();
+            state.storage.replace_person_vision_embeddings(
+                &person.person_id,
+                &face_embedding_space_id,
+                "face",
+                &writes,
+            )?;
+        }
+        if needs_body_embeddings && !body_embeddings.is_empty() {
+            let writes = body_embeddings
+                .iter()
+                .cloned()
+                .map(|embedding| VisionEmbeddingWrite::new(embedding, 1.0))
+                .collect::<Vec<_>>();
+            state.storage.replace_person_vision_embeddings(
+                &person.person_id,
+                &body_embedding_space_id,
+                "body",
+                &writes,
+            )?;
         }
         if !refreshed_samples.is_empty() {
             if samples_dirty || person.sample_count == 0 {
@@ -1298,17 +1490,19 @@ fn load_recognition_templates(state: &AppState) -> Result<Vec<PersonTemplate>, S
                     .update_face_person_embedding(
                         &person.person_id,
                         first_face,
-                        Some(model_version.clone()),
+                        Some(face_embedding_space_id.clone()),
                     )
                     .ok();
             }
+        }
+        if !face_embeddings.is_empty() || !body_embeddings.is_empty() {
             templates.push(PersonTemplate {
                 person_id: person.person_id,
                 display_name: person.display_name,
                 face_embeddings,
                 body_embeddings,
             });
-        } else {
+        } else if refreshed_samples.is_empty() {
             state
                 .storage
                 .update_face_person_embedding(&person.person_id, None, None)
@@ -1320,7 +1514,22 @@ fn load_recognition_templates(state: &AppState) -> Result<Vec<PersonTemplate>, S
 
 #[tauri::command]
 fn list_face_people(state: State<'_, AppState>) -> Result<Vec<FacePersonRecord>, String> {
-    state.storage.list_face_people()
+    let (face_embedding_space_id, body_embedding_space_id) =
+        ensure_active_embedding_spaces(&state)?;
+    let mut people = state.storage.list_face_people()?;
+    for person in &mut people {
+        person.active_face_embedding_count = state
+            .storage
+            .list_person_vision_embeddings(&person.person_id, &face_embedding_space_id, "face")?
+            .len()
+            .min(u32::MAX as usize) as u32;
+        person.active_body_embedding_count = state
+            .storage
+            .list_person_vision_embeddings(&person.person_id, &body_embedding_space_id, "body")?
+            .len()
+            .min(u32::MAX as usize) as u32;
+    }
+    Ok(people)
 }
 
 #[tauri::command]
@@ -1348,6 +1557,75 @@ fn delete_face_person_local(
         }
     }
     Ok(())
+}
+
+#[tauri::command]
+fn delete_local_face_person_reference_photo(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    person_id: String,
+    photo_path: String,
+) -> Result<FacePersonRecord, String> {
+    let person_id = person_id.trim();
+    let photo_path = photo_path.trim();
+    if person_id.is_empty() || photo_path.is_empty() {
+        return Err("VISION_REFERENCE_IMAGE_INVALID".to_string());
+    }
+    let remaining = state
+        .storage
+        .remove_face_person_sample(person_id, photo_path)?;
+    let (face_embedding_space_id, body_embedding_space_id) =
+        ensure_active_embedding_spaces(&state)?;
+    let mut face_writes = Vec::new();
+    let mut body_writes = Vec::new();
+    for sample in &remaining {
+        let bytes = std::fs::read(&sample.photo_url)
+            .map_err(|error| format!("读取保留参考照片失败：{error}"))?;
+        let analysis = state.face_monitor.analyze_reference_photo(&bytes)?;
+        if let Ok(embedding) = state.face_monitor.embedding_from_photo_bytes(&bytes) {
+            face_writes.push(VisionEmbeddingWrite::new(
+                embedding.to_vec(),
+                analysis.face_quality_score.unwrap_or(0.8),
+            ));
+        }
+        if let Ok(embedding) = state.face_monitor.body_embedding_from_photo_bytes(&bytes) {
+            body_writes.push(VisionEmbeddingWrite::new(
+                embedding,
+                analysis.body_quality_score.unwrap_or(0.7),
+            ));
+        }
+    }
+    state.storage.replace_person_vision_embeddings(
+        person_id,
+        &face_embedding_space_id,
+        "face",
+        &face_writes,
+    )?;
+    state.storage.replace_person_vision_embeddings(
+        person_id,
+        &body_embedding_space_id,
+        "body",
+        &body_writes,
+    )?;
+    let reference_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("读取应用数据目录失败：{error}"))?
+        .join("face-reference-uploads");
+    if let (Ok(root), Ok(candidate)) = (
+        std::fs::canonicalize(&reference_root),
+        std::fs::canonicalize(photo_path),
+    ) {
+        if candidate.starts_with(root) {
+            let _ = std::fs::remove_file(candidate);
+        }
+    }
+    state
+        .storage
+        .list_face_people()?
+        .into_iter()
+        .find(|person| person.person_id == person_id)
+        .ok_or_else(|| "删除参考照片后无法读取人员".to_string())
 }
 
 #[tauri::command]
@@ -1395,7 +1673,11 @@ fn create_local_face_person(
     if !state.face_monitor.status().recognizer_ready {
         return Err("识别模型未安装，暂时无法录入识别人员".to_string());
     }
+    let (face_embedding_space_id, body_embedding_space_id) =
+        ensure_active_embedding_spaces(&state)?;
     let mut samples = Vec::new();
+    let mut face_writes = Vec::new();
+    let mut body_writes = Vec::new();
     for photo_path in &photo_paths {
         let bytes = std::fs::read(photo_path).map_err(|err| format!("读取参考照片失败：{err}"))?;
         image::load_from_memory(&bytes).map_err(|err| format!("参考照片无法解码：{err}"))?;
@@ -1410,24 +1692,35 @@ fn create_local_face_person(
         if face_embedding.is_none() && body_embedding.is_none() {
             return Err("参考照片中未检测到可用的人脸或人物".to_string());
         }
+        if let Some(embedding) = face_embedding.as_ref() {
+            face_writes.push(VisionEmbeddingWrite::new(
+                embedding.to_vec(),
+                analysis.face_quality_score.unwrap_or(0.8),
+            ));
+        }
+        if let Some(embedding) = body_embedding.as_ref() {
+            body_writes.push(VisionEmbeddingWrite::new(
+                embedding.clone(),
+                analysis.body_quality_score.unwrap_or(0.7),
+            ));
+        }
         samples.push(FacePersonSampleRecord {
             sample_id: Uuid::new_v4().to_string(),
             person_id: person_id.to_string(),
             photo_url: photo_path.clone(),
             photo_sha256: Some(hex::encode(sha2::Sha256::digest(&bytes))),
-            embedding: face_embedding.as_ref().map(embedding_bytes),
+            embedding: face_embedding.as_ref().map(|value| embedding_bytes(value)),
             embedding_model_version: face_embedding
                 .as_ref()
-                .and(state.face_monitor.status().model_version.clone()),
+                .map(|_| face_embedding_space_id.clone()),
             body_embedding: body_embedding
                 .as_ref()
                 .map(|value| dynamic_embedding_bytes(value)),
             body_embedding_model_version: body_embedding
                 .as_ref()
-                .and(state.face_monitor.status().model_version.clone()),
+                .map(|_| body_embedding_space_id.clone()),
         });
     }
-    let model_version = state.face_monitor.status().model_version;
     let record = state
         .storage
         .upsert_face_person(&protocol::FacePersonPolicyFrame {
@@ -1448,10 +1741,26 @@ fn create_local_face_person(
     state
         .storage
         .replace_face_person_samples(&record.person_id, &samples)?;
+    if !face_writes.is_empty() {
+        state.storage.replace_person_vision_embeddings(
+            &record.person_id,
+            &face_embedding_space_id,
+            "face",
+            &face_writes,
+        )?;
+    }
+    if !body_writes.is_empty() {
+        state.storage.replace_person_vision_embeddings(
+            &record.person_id,
+            &body_embedding_space_id,
+            "body",
+            &body_writes,
+        )?;
+    }
     state.storage.update_face_person_embedding(
         &record.person_id,
         samples[0].embedding.clone(),
-        model_version,
+        Some(face_embedding_space_id),
     )?;
     state
         .storage
@@ -4728,26 +5037,57 @@ pub fn run() {
             let file_server = FileServer::new();
             file_server.start();
             let persisted_vision_runtime = storage.load_vision_runtime_state()?;
-            let selected_model = storage.active_vision_model_install_path()?;
-            let mut face_model_dirs = selected_model
-                .as_ref()
-                .map(|(_, _, path)| vec![path.clone()])
-                .unwrap_or_default();
-            if let Ok(resource_dir) = app.path().resource_dir() {
-                face_model_dirs.push(resource_dir);
+            let resource_dir = app.path().resource_dir().ok();
+            let build_model_dirs = |selected: Option<&(String, String, PathBuf)>| {
+                let mut dirs = selected
+                    .map(|(_, _, path)| vec![path.clone()])
+                    .unwrap_or_default();
+                if let Some(resource_dir) = resource_dir.as_ref() {
+                    dirs.push(resource_dir.clone());
+                }
+                dirs
+            };
+            let mut selected_model = storage.active_vision_model_install_path()?;
+            let mut face_monitor = Arc::new(FaceMonitorRuntime::from_candidate_dirs(
+                build_model_dirs(selected_model.as_ref()),
+            ));
+            let mut face_monitor_status = face_monitor.status();
+            let selected_loaded =
+                selected_model
+                    .as_ref()
+                    .is_some_and(|(profile_id, version, _)| {
+                        face_monitor_status.model_profile_id.as_deref() == Some(profile_id.as_str())
+                            && face_monitor_status.model_version.as_deref()
+                                == Some(version.as_str())
+                            && face_monitor_status.model_ready
+                    });
+            if selected_model.is_some() && !selected_loaded {
+                let (failed_profile_id, failed_profile_version, _) = selected_model
+                    .as_ref()
+                    .expect("selected vision model exists")
+                    .clone();
+                selected_model = storage.rollback_failed_vision_model_profile(
+                    &failed_profile_id,
+                    &failed_profile_version,
+                )?;
+                face_monitor = Arc::new(FaceMonitorRuntime::from_candidate_dirs(build_model_dirs(
+                    selected_model.as_ref(),
+                )));
+                face_monitor_status = face_monitor.status();
             }
-            let face_monitor = Arc::new(FaceMonitorRuntime::from_candidate_dirs(face_model_dirs));
             let vision_mailbox = Arc::new(LatestFrameMailbox::default());
             let vision_runtime = Arc::new(VisionRuntimeState::restore(persisted_vision_runtime));
-            let face_monitor_status = face_monitor.status();
             vision_runtime.mark_model_availability(face_monitor_status.model_ready);
             if face_monitor_status.model_ready {
                 if let Some((profile_id, profile_version, _)) =
-                    selected_model.filter(|(_, version, _)| {
-                        face_monitor_status.model_version.as_deref() == Some(version.as_str())
+                    selected_model.as_ref().filter(|(profile_id, version, _)| {
+                        face_monitor_status.model_profile_id.as_deref() == Some(profile_id.as_str())
+                            && face_monitor_status.model_version.as_deref()
+                                == Some(version.as_str())
                     })
                 {
-                    vision_runtime.set_active_profile(profile_id, profile_version);
+                    vision_runtime.set_active_profile(profile_id.clone(), profile_version.clone());
+                    storage.mark_vision_model_profile_healthy(profile_id, profile_version)?;
                 } else {
                     vision_runtime.set_active_profile(
                         "baseline",
@@ -4850,9 +5190,11 @@ pub fn run() {
             list_vision_model_profiles,
             refresh_vision_model_catalog,
             install_vision_model_profile,
+            uninstall_vision_model_profile,
             activate_vision_model_profile,
             list_face_people,
             delete_face_person_local,
+            delete_local_face_person_reference_photo,
             save_face_reference_photo,
             create_local_face_person,
             get_effective_face_monitor_policy,

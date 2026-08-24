@@ -55,6 +55,23 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Setup Python for official vision model profiles
+        if: matrix.os == 'windows-latest'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Prepare official vision model profile sources
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check openvino-dev
+          omz_downloader --name face-detection-retail-0004 --name face-reidentification-retail-0095 --name person-detection-0203 --name person-reidentification-retail-0288 --name person-reidentification-retail-0286 --precisions FP16 --output_dir .model-cache/openvino
+          node scripts/prepare-omz-model-profiles.mjs .model-cache/openvino
+          Invoke-WebRequest -Uri "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip" -OutFile ".model-cache/buffalo_sc.zip"
+          Expand-Archive -Path ".model-cache/buffalo_sc.zip" -DestinationPath ".model-cache/buffalo_sc" -Force
+          node scripts/prepare-insightface-arcface-profile.mjs .model-cache/buffalo_sc
+
       - name: Build external desktop pet packages
         if: matrix.os == 'windows-latest'
         shell: pwsh
@@ -73,6 +90,8 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
+          node scripts/test-vision-model-catalog.mjs
+          node scripts/test-vision-package-distinctness.mjs
           $output = "release-assets/vision-models"
           $staging = Join-Path $output "staging"
           New-Item -ItemType Directory -Force $output | Out-Null
@@ -141,6 +160,7 @@ jobs:
             release-assets/portable/*.zip
             release-assets/desktop-pets/*.zip
             release-assets/vision-models/*.zip
+            release-assets/vision-models/model-diff.json
 
   publish:
     name: Publish GitHub Release
@@ -188,7 +208,12 @@ jobs:
           TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
           VISION_DIR="release-downloads/vision-models"
           mkdir -p "${VISION_DIR}"
-          find release-downloads -type f -name 'lanchat-vision-*.zip' ! -path "${VISION_DIR}/*" -exec cp {} "${VISION_DIR}/" \;
+          while IFS= read -r package; do
+            destination="${VISION_DIR}/$(basename "${package}")"
+            if [ "$(realpath "${package}")" != "$(realpath -m "${destination}")" ]; then
+              cp "${package}" "${destination}"
+            fi
+          done < <(find release-downloads -type f -name 'lanchat-vision-*.zip')
           test "$(find "${VISION_DIR}" -maxdepth 1 -name 'lanchat-vision-*.zip' | wc -l)" -ge 3
           node scripts/write-vision-catalog.mjs "${VISION_DIR}" "${TAG}" "${VISION_DIR}/vision-catalog.unsigned.json"
           cargo run --manifest-path src-tauri/Cargo.toml --quiet --bin sign_vision_catalog -- \

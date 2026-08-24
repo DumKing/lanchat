@@ -1,12 +1,20 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "profiles": [
     {
-      "profileId": "office-light",
-      "profileVersion": "1.0.0-light",
-      "displayName": "轻量巡检",
+      "profileId": "baseline",
+      "profileVersion": "1.0.0",
+      "displayName": "SFace + YoutuReID 基线",
       "tier": "low_resource",
-      "assetName": "lanchat-vision-office-light-1.0.0-light.zip",
+      "modelStack": {
+        "inferenceEngine": "onnxruntime",
+        "personDetector": "yolox",
+        "faceEngine": "sface",
+        "personReIdEngine": "youtureid",
+        "provider": "LanChat bundled",
+        "license": "Bundled model license"
+      },
+      "assetName": "lanchat-vision-baseline-sface-youtu-1.0.0.zip",
       "recommendedSettings": {
         "sampleFps": 1,
         "faceMinConfidence": 65,
@@ -15,28 +23,65 @@
       }
     },
     {
-      "profileId": "office-balanced",
-      "profileVersion": "1.0.0-balanced",
-      "displayName": "均衡识别",
+      "profileId": "office-omz-retail-0288",
+      "profileVersion": "1.0.0",
+      "displayName": "OMZ Retail-0288",
       "tier": "balanced",
-      "assetName": "lanchat-vision-office-balanced-1.0.0-balanced.zip",
+      "modelStack": {
+        "inferenceEngine": "openvino",
+        "personDetector": "omz-person-detection",
+        "faceEngine": "omz-face-reid",
+        "personReIdEngine": "omz-person-reid-0288",
+        "provider": "Open Model Zoo",
+        "license": "Apache-2.0"
+      },
+      "assetName": "lanchat-vision-office-omz-retail-0288-1.0.0.zip",
       "recommendedSettings": {
-        "sampleFps": 2,
-        "faceMinConfidence": 60,
-        "bodyMinConfidence": 68,
+        "sampleFps": 1,
+        "faceMinConfidence": 65,
+        "bodyMinConfidence": 70,
         "consecutiveHits": 1
       }
     },
     {
-      "profileId": "office-sensitive",
-      "profileVersion": "1.0.0-sensitive",
-      "displayName": "灵敏巡检",
+      "profileId": "office-omz-retail-0286",
+      "profileVersion": "1.0.0",
+      "displayName": "OMZ Retail-0286",
       "tier": "experimental",
-      "assetName": "lanchat-vision-office-sensitive-1.0.0-sensitive.zip",
+      "modelStack": {
+        "inferenceEngine": "openvino",
+        "personDetector": "omz-person-detection",
+        "faceEngine": "omz-face-reid",
+        "personReIdEngine": "omz-person-reid-0286",
+        "provider": "Open Model Zoo",
+        "license": "Apache-2.0"
+      },
+      "assetName": "lanchat-vision-office-omz-retail-0286-1.0.0.zip",
       "recommendedSettings": {
-        "sampleFps": 3,
-        "faceMinConfidence": 55,
-        "bodyMinConfidence": 60,
+        "sampleFps": 1,
+        "faceMinConfidence": 68,
+        "bodyMinConfidence": 72,
+        "consecutiveHits": 1
+      }
+    },
+    {
+      "profileId": "office-arcface-buffalo-sc",
+      "profileVersion": "1.0.0",
+      "displayName": "ArcFace Buffalo-SC",
+      "tier": "experimental",
+      "modelStack": {
+        "inferenceEngine": "onnxruntime",
+        "personDetector": "yolox",
+        "faceEngine": "arcface",
+        "personReIdEngine": "youtureid",
+        "provider": "InsightFace buffalo_sc",
+        "license": "Non-commercial research only"
+      },
+      "assetName": "lanchat-vision-office-arcface-buffalo-sc-1.0.0.zip",
+      "recommendedSettings": {
+        "sampleFps": 1,
+        "faceMinConfidence": 68,
+        "bodyMinConfidence": 75,
         "consecutiveHits": 1
       }
     }

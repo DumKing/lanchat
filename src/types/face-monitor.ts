@@ -39,6 +39,11 @@ export type FaceMonitorRuntimeStatus = {
   acceptedFrames: number;
   droppedFrames: number;
   modelVersion?: string | null;
+  modelProfileId?: string | null;
+  faceEmbeddingSpaceId?: string | null;
+  bodyEmbeddingSpaceId?: string | null;
+  faceEmbeddingDimension?: number;
+  bodyEmbeddingDimension?: number;
   lastDetectionScore?: number | null;
   detectedFaces?: number;
   lastError?: string | null;
@@ -65,6 +70,8 @@ export type FacePersonPolicy = {
   embeddingModelVersion?: string | null;
   hasEmbedding?: boolean;
   hasBodyEmbedding?: boolean;
+  activeFaceEmbeddingCount?: number;
+  activeBodyEmbeddingCount?: number;
 };
 
 export type FaceMonitorPolicy = {

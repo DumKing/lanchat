@@ -1,4 +1,6 @@
 use super::alert::{fuse_track_evidence, AlertDispatch};
+use super::embedding::{match_identity_in_space, EmbeddingSpaceId, ScopedReferenceEmbedding};
+use super::fusion::{FusionEvidence, FusionPolicy, TemporalIdentityFusion};
 use super::matching::{match_identity, ReferenceEmbedding};
 use super::tracking::{BoundingBox, Detection, TrackStore};
 use super::types::{IdentityDecision, VisionModality};
@@ -25,6 +27,63 @@ fn same_face_and_body_track_emit_one_upgraded_alert() {
     let fused = fuse_track_evidence(Some(("alice", 92)), Some(("alice", 86)));
     assert_eq!(fused.decision, IdentityDecision::ConfirmedFusion);
     assert_eq!(fused.dispatch, AlertDispatch::LanAndLocal);
+}
+
+#[test]
+fn embeddings_only_match_against_their_own_space() {
+    let face_space = EmbeddingSpaceId::new("sface-128-v1").expect("face space");
+    let body_space = EmbeddingSpaceId::new("osnet-512-v1").expect("body space");
+    let references = vec![
+        ScopedReferenceEmbedding::new("alice", face_space.clone(), vec![1.0, 0.0], 1.0),
+        ScopedReferenceEmbedding::new("alice", body_space, vec![1.0, 0.0], 1.0),
+    ];
+
+    let matched = match_identity_in_space(&face_space, &[1.0, 0.0], &references, 1, 70.0, 8.0)
+        .expect("same-space face reference matches");
+
+    assert_eq!(matched.person_id, "alice");
+    assert_eq!(matched.supporting_samples, 1);
+}
+
+#[test]
+fn temporal_fusion_requires_three_consistent_hits_inside_five_frames() {
+    let mut fusion = TemporalIdentityFusion::new(FusionPolicy::default());
+    let face = || FusionEvidence::face("alice", 92.0, 0.95);
+
+    assert!(fusion.observe("track-1", 1, Some(face()), None).is_none());
+    assert!(fusion.observe("track-1", 2, Some(face()), None).is_none());
+    let decision = fusion
+        .observe("track-1", 3, Some(face()), None)
+        .expect("third consistent frame confirms");
+
+    assert_eq!(decision.person_id.as_deref(), Some("alice"));
+    assert_eq!(
+        decision.decision,
+        super::types::IdentityDecision::ConfirmedFace
+    );
+    assert_eq!(decision.supporting_frames, 3);
+}
+
+#[test]
+fn body_only_evidence_remains_local_probable_identity() {
+    let mut fusion = TemporalIdentityFusion::new(FusionPolicy::default());
+    let body = || FusionEvidence::body("alice", 84.0, 0.92);
+
+    for frame_id in 1..=2 {
+        assert!(fusion
+            .observe("track-1", frame_id, None, Some(body()))
+            .is_none());
+    }
+    let decision = fusion
+        .observe("track-1", 3, None, Some(body()))
+        .expect("consistent body evidence is observable locally");
+
+    assert_eq!(decision.person_id.as_deref(), Some("alice"));
+    assert_eq!(
+        decision.decision,
+        super::types::IdentityDecision::ProbableBody
+    );
+    assert_eq!(decision.dispatch, AlertDispatch::LocalOnly);
 }
 
 #[test]

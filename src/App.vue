@@ -5733,6 +5733,15 @@ async function activateVisionModel(profile: VisionProfileSummary) {
   }
 }
 
+async function uninstallVisionModel(profile: VisionProfileSummary) {
+  try {
+    visionModelProfiles.value = await api.uninstallVisionModelProfile(profile.profileId, profile.profileVersion);
+    operationNotice.value = "模型已卸载。";
+  } catch (error) {
+    operationNotice.value = `模型卸载失败：${stringifyError(error)}`;
+  }
+}
+
 async function refreshFaceMonitorRules() {
   const [policy, people] = await Promise.all([
     api.getEffectiveFaceMonitorPolicy().catch(() => null),
@@ -5975,6 +5984,21 @@ function openFacePersonDetail(person: FacePersonPolicy) {
 function closeFacePersonDetail() {
   facePersonDetail.value = null;
   facePersonDetailSelectedPhoto.value = "";
+}
+
+async function deleteLocalFacePersonReferencePhoto(photoSource: string) {
+  const person = facePersonDetail.value;
+  if (!person) return;
+  const rawPhoto = (person.photoUrls?.length ? person.photoUrls : [person.photoUrl ?? ""])
+    .find((source) => (source.startsWith("http") || source.startsWith("data:") ? source : convertFileSrc(source)) === photoSource) ?? photoSource;
+  try {
+    const updated = await api.deleteLocalFacePersonReferencePhoto(person.personId, rawPhoto);
+    facePersonDetail.value = updated;
+    facePersonDetailSelectedPhoto.value = facePersonImageSources(updated)[0] ?? "";
+    await refreshFaceMonitorRules();
+  } catch (error) {
+    store.error = stringifyError(error);
+  }
 }
 
 async function handleLocalFacePhotoSelected(event: Event) {
@@ -7565,6 +7589,7 @@ async function closeWindow() {
                   @refresh-catalog="refreshVisionModelProfiles(true)"
                   @install="installVisionModel"
                   @activate="activateVisionModel"
+                  @uninstall="uninstallVisionModel"
                 />
                 <VisionRuntimeStatus
                   :status="faceMonitorRuntimeStatus"
@@ -8473,6 +8498,7 @@ async function closeWindow() {
               @click="facePersonDetailSelectedPhoto = photo"
             >
               <img :src="photo" alt="" />
+              <span v-if="facePersonDetailPhotos.length > 3" class="face-person-detail-thumbnail-remove" title="删除这张照片（至少保留三张）" @click.stop="deleteLocalFacePersonReferencePhoto(photo)">×</span>
             </button>
           </div>
           <strong>{{ facePersonDetail.displayName }}</strong>
@@ -8632,9 +8658,12 @@ async function closeWindow() {
 .face-person-detail-image { display: block; }
 .face-person-detail-thumbnails { display: flex; gap: 8px; width: 100%; padding: 2px 1px 5px; overflow-x: auto; scrollbar-width: thin; }
 .face-person-detail-thumbnail { flex: 0 0 64px; width: 64px; height: 64px; padding: 2px; overflow: hidden; border: 1px solid var(--panel-line); border-radius: 7px; background: var(--panel-bg); cursor: pointer; }
+.face-person-detail-thumbnail { position: relative; }
 .face-person-detail-thumbnail:hover { border-color: color-mix(in srgb, var(--accent) 55%, var(--panel-line)); }
 .face-person-detail-thumbnail.active { border: 2px solid var(--accent); background: var(--soft-accent); }
 .face-person-detail-thumbnail img { display: block; width: 100%; height: 100%; border-radius: 4px; object-fit: cover; }
+.face-person-detail-thumbnail-remove { position: absolute; top: 3px; right: 3px; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; color: #fff; background: rgba(17, 24, 39, .72); font-size: 15px; line-height: 1; }
+.face-person-detail-thumbnail-remove:hover { background: #d03050; }
 .face-capture-video { display: block; width: min(480px, 80vw); max-height: 58vh; border-radius: 8px; background: #101820; object-fit: contain; }
 .camera-face-alert-detail { display: grid; gap: 12px; }
 .camera-face-alert-detail h2, .camera-face-alert-detail p { margin: 0; }

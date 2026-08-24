@@ -17,6 +17,8 @@ export const api = {
   refreshVisionModelCatalog: () => invoke<VisionProfileSummary[]>("refresh_vision_model_catalog"),
   installVisionModelProfile: (profileId: string, profileVersion: string) =>
     invoke<VisionProfileSummary[]>("install_vision_model_profile", { profileId, profileVersion }),
+  uninstallVisionModelProfile: (profileId: string, profileVersion: string) =>
+    invoke<VisionProfileSummary[]>("uninstall_vision_model_profile", { profileId, profileVersion }),
   activateVisionModelProfile: (profileId: string, profileVersion: string) =>
     invoke<VisionProfileSummary[]>("activate_vision_model_profile", { profileId, profileVersion }),
   setVisionRuntimePaused: (paused: boolean) => invoke<VisionRuntimeSnapshot>("set_vision_runtime_paused", { paused }),
@@ -25,6 +27,8 @@ export const api = {
     invoke<void>("submit_vision_frame_raw", { frame: encodeVisionFrameEnvelope(sample) }),
   listFacePeople: () => invoke<FacePersonPolicy[]>("list_face_people"),
   deleteFacePersonLocal: (personId: string) => invoke<void>("delete_face_person_local", { personId }),
+  deleteLocalFacePersonReferencePhoto: (personId: string, photoPath: string) =>
+    invoke<FacePersonPolicy>("delete_local_face_person_reference_photo", { personId, photoPath }),
   saveFaceReferencePhoto: (bytes: Uint8Array) => invoke<string>("save_face_reference_photo", { bytes: Array.from(bytes) }),
   createLocalFacePerson: (personId: string, displayName: string, photoPaths: string[]) =>
     invoke<FacePersonPolicy>("create_local_face_person", { personId, displayName, photoPaths }),

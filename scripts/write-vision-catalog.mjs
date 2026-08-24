@@ -24,6 +24,7 @@ for (const profile of config.profiles) {
     profileVersion: profile.profileVersion,
     displayName: profile.displayName,
     tier: profile.tier,
+    modelStack: profile.modelStack,
     downloadUrl: `${releaseBase}/${profile.assetName}`,
     packageSha256: createHash("sha256").update(archive).digest("hex"),
     packageSizeBytes: archive.byteLength,
@@ -31,5 +32,5 @@ for (const profile of config.profiles) {
   });
 }
 
-await writeFile(outputPath, `${JSON.stringify({ schemaVersion: 1, profiles }, null, 2)}\n`, "utf8");
+await writeFile(outputPath, `${JSON.stringify({ schemaVersion: 2, profiles }, null, 2)}\n`, "utf8");
 console.log(`已写入待签名视觉模型目录：${outputPath}`);

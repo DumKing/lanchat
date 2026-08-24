@@ -36,6 +36,9 @@ export type VisionProfileSummary = {
   profileVersion: string;
   displayName: string;
   tier: "lightweight" | "balanced" | "experimental";
+  inferenceEngine?: string | null;
+  faceEngine?: string | null;
+  personReIdEngine?: string | null;
   installed: boolean;
   active: boolean;
   compatible: boolean;

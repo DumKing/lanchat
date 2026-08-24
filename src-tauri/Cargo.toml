@@ -1,10 +1,15 @@
 [package]
 name = "lanchat"
-version = "0.6.0"
+version = "0.6.1"
 description = "A serverless LAN chat desktop app"
 authors = ["LanChat"]
 edition = "2021"
 autobins = false
+
+[features]
+default = []
+# OpenVINO 通过运行时动态链接加载，只有随模型包分发 OpenVINO Runtime 时才启用。
+openvino-runtime = ["dep:openvino"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -62,6 +67,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "download-binaries", "copy-dylibs", "tls-rustls"] }
 ndarray = "0.17.2"
 tauri-plugin-autostart = "2"
+openvino = { version = "0.11.0", default-features = false, features = ["runtime-linking"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

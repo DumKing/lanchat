@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "profiles": [
+    {
+      "profileId": "baseline",
+      "sourceDir": "src-tauri/resources/object-models",
+      "engine": "onnxruntime",
+      "faceEngine": {
+        "family": "sface",
+        "source": "face-recognizer.onnx"
+      },
+      "personReIdEngine": {
+        "family": "youtureid",
+        "source": "person-recognizer.onnx"
+      }
+    },
+    {
+      "profileId": "office-omz-retail-0288",
+      "sourceDir": "src-tauri/resources/model-profiles/office-omz-retail-0288",
+      "engine": "openvino",
+      "faceEngine": {
+        "family": "omz-face-reid",
+        "source": "face-recognizer.xml"
+      },
+      "personReIdEngine": {
+        "family": "omz-person-reid-0288",
+        "source": "person-reid-0288.xml"
+      }
+    },
+    {
+      "profileId": "office-omz-retail-0286",
+      "sourceDir": "src-tauri/resources/model-profiles/office-omz-retail-0286",
+      "engine": "openvino",
+      "faceEngine": {
+        "family": "omz-face-reid",
+        "source": "face-recognizer.xml"
+      },
+      "personReIdEngine": {
+        "family": "omz-person-reid-0286",
+        "source": "person-reid-0286.xml"
+      }
+    },
+    {
+      "profileId": "office-arcface-buffalo-sc",
+      "sourceDir": "src-tauri/resources/model-profiles/office-arcface-buffalo-sc",
+      "engine": "onnxruntime",
+      "faceEngine": {
+        "family": "arcface",
+        "source": "face-recognizer-arcface.onnx"
+      },
+      "personReIdEngine": {
+        "family": "youtureid",
+        "source": "person-recognizer.onnx"
+      }
+    }
+  ]
+}

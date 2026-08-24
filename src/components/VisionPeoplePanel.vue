@@ -28,6 +28,7 @@ function initials(name: string) {
         <div class="vision-person-main">
           <strong>{{ person.displayName }}</strong>
           <span>{{ t('vision.people.samples', { count: Math.max(0, person.sampleCount ?? 0) }) }}</span>
+          <span>{{ t('vision.people.coverage', { face: Math.max(0, person.activeFaceEmbeddingCount ?? 0), body: Math.max(0, person.activeBodyEmbeddingCount ?? 0) }) }}</span>
         </div>
         <NTag size="small" :bordered="false" :type="person.enabled && !person.deletedAt ? 'success' : 'default'">
           {{ person.enabled && !person.deletedAt ? t('vision.people.active') : t('vision.people.disabled') }}

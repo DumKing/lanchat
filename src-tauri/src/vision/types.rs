@@ -70,6 +70,12 @@ pub struct VisionModelProfileSummary {
     pub profile_version: String,
     pub display_name: String,
     pub tier: String,
+    #[serde(default)]
+    pub inference_engine: Option<String>,
+    #[serde(default)]
+    pub face_engine: Option<String>,
+    #[serde(default)]
+    pub person_re_id_engine: Option<String>,
     pub installed: bool,
     pub active: bool,
     pub compatible: bool,

@@ -16,6 +16,9 @@ assert.match(app, /openSection\('vision'\)/);
 assert.match(i18n, /vision\.profile\.balanced/);
 assert.match(i18n, /vision\.workspace\.title/);
 assert.match(modelCenter, /vision\.profile\.low_resource/);
+assert.match(modelCenter, /已启用/, "模型中心必须明确展示已选中的启用模型");
+assert.match(modelCenter, /卸载/, "下载模型必须提供卸载入口");
+assert.match(modelCenter, /uninstall/, "模型中心必须向上层触发卸载操作");
 assert.match(peoplePanel, /vision\.people\.title/);
 assert.match(runtimeStatus, /vision\.runtime\.pause/);
 

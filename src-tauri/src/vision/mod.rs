@@ -1,8 +1,13 @@
 pub mod activation;
 pub mod alert;
+pub mod backend;
+pub mod embedding;
+pub mod fusion;
 pub mod manifest;
 pub mod matching;
 pub mod model_manager;
+pub mod openvino_runtime;
+pub mod profile;
 pub mod protocol;
 pub mod registry;
 pub mod runtime;

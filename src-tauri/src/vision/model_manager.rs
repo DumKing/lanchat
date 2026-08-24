@@ -6,6 +6,7 @@
 
 use super::{
     manifest::{validate_manifest, VisionManifestV3},
+    profile::manifest_v4::{validate_manifest_v4, VisionManifestV4},
     registry::{validate_package_entries, verify_catalog, SignedCatalog, TrustedKeyRing},
 };
 use serde::{Deserialize, Serialize};
@@ -39,6 +40,9 @@ pub struct VisionCatalogProfile {
     pub profile_version: String,
     pub display_name: String,
     pub tier: String,
+    /// V2 目录强制声明实际模型组合，防止同一权重被伪装为多个 Profile。
+    #[serde(default)]
+    pub model_stack: Option<VisionModelStack>,
     pub download_url: String,
     pub package_sha256: String,
     #[serde(default)]
@@ -46,6 +50,41 @@ pub struct VisionCatalogProfile {
     /// 档位启用时应用的本机建议参数。超管锁定策略始终优先于这些建议值。
     #[serde(default)]
     pub recommended_settings: Option<VisionProfileRecommendedSettings>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VisionModelStack {
+    pub inference_engine: String,
+    pub person_detector: String,
+    pub face_engine: String,
+    pub person_re_id_engine: String,
+    pub provider: String,
+    pub license: String,
+}
+
+impl VisionModelStack {
+    fn validate(&self) -> bool {
+        matches!(self.inference_engine.as_str(), "onnxruntime" | "openvino")
+            && matches!(
+                self.person_detector.as_str(),
+                "yolox" | "omz-person-detection"
+            )
+            && matches!(
+                self.face_engine.as_str(),
+                "sface" | "arcface" | "omz-face-reid"
+            )
+            && matches!(
+                self.person_re_id_engine.as_str(),
+                "youtureid"
+                    | "osnet-x025"
+                    | "omz-person-reid-0288"
+                    | "omz-person-reid-0286"
+                    | "fastreid"
+            )
+            && !self.provider.trim().is_empty()
+            && !self.license.trim().is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -65,6 +104,126 @@ pub struct InstalledVisionPackage {
     pub bytes: u64,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct PackageManifest {
+    pub profile_id: String,
+    pub profile_version: String,
+    pub components: Vec<PackageComponentAsset>,
+    requires_legacy_manifest: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PackageComponentAsset {
+    pub adapter_id: String,
+    pub file: String,
+    pub sha256: String,
+    pub engine: Option<String>,
+    pub is_primary_model: bool,
+}
+
+/// V3 只为现有基线兼容保留；新模型包应使用 V4 来声明真正的模型组合。
+pub(crate) fn parse_package_manifest(manifest_json: &str) -> Result<PackageManifest, String> {
+    let value: serde_json::Value = serde_json::from_str(manifest_json)
+        .map_err(|_| "VISION_PACKAGE_MANIFEST_INVALID".to_string())?;
+    match value
+        .get("schemaVersion")
+        .and_then(serde_json::Value::as_u64)
+    {
+        Some(3) => {
+            let manifest: VisionManifestV3 = serde_json::from_value(value)
+                .map_err(|_| "VISION_PACKAGE_MANIFEST_INVALID".to_string())?;
+            validate_manifest(&manifest)?;
+            Ok(PackageManifest {
+                profile_id: manifest.profile.id,
+                profile_version: manifest.profile.version,
+                components: manifest
+                    .components
+                    .into_iter()
+                    .map(|component| PackageComponentAsset {
+                        adapter_id: component.adapter_id,
+                        file: component.file,
+                        sha256: component.sha256,
+                        engine: None,
+                        is_primary_model: true,
+                    })
+                    .collect(),
+                requires_legacy_manifest: true,
+            })
+        }
+        Some(4) => {
+            let manifest: VisionManifestV4 = serde_json::from_value(value)
+                .map_err(|_| "VISION_PACKAGE_MANIFEST_INVALID".to_string())?;
+            validate_manifest_v4(&manifest)?;
+            let components = manifest
+                .components
+                .iter()
+                .flat_map(|component| {
+                    std::iter::once(PackageComponentAsset {
+                        adapter_id: component.adapter_id.clone(),
+                        file: component.file.clone(),
+                        sha256: component.sha256.clone(),
+                        engine: Some(component.engine.clone()),
+                        is_primary_model: true,
+                    })
+                    .chain(component.auxiliary_files.iter().map(|asset| {
+                        PackageComponentAsset {
+                            adapter_id: String::new(),
+                            file: asset.file.clone(),
+                            sha256: asset.sha256.clone(),
+                            engine: Some(component.engine.clone()),
+                            is_primary_model: false,
+                        }
+                    }))
+                })
+                .collect();
+            Ok(PackageManifest {
+                profile_id: manifest.profile.id,
+                profile_version: manifest.profile.version,
+                components,
+                requires_legacy_manifest: false,
+            })
+        }
+        _ => Err("VISION_MANIFEST_SCHEMA_UNSUPPORTED".to_string()),
+    }
+}
+
+/// 官方目录的模型组合描述必须与 ZIP 内实际 V4 管线一致。
+/// 这能防止模型资产被错误标注为另一个 Profile，而不仅仅依赖显示名称。
+pub(crate) fn validate_catalog_model_stack(
+    manifest_json: &str,
+    stack: &VisionModelStack,
+) -> Result<(), String> {
+    let value: serde_json::Value = serde_json::from_str(manifest_json)
+        .map_err(|_| "VISION_PACKAGE_MODEL_STACK_MISMATCH".to_string())?;
+    if value
+        .get("schemaVersion")
+        .and_then(serde_json::Value::as_u64)
+        != Some(4)
+    {
+        return Err("VISION_PACKAGE_MODEL_STACK_MISMATCH".to_string());
+    }
+    let manifest: VisionManifestV4 = serde_json::from_value(value)
+        .map_err(|_| "VISION_PACKAGE_MODEL_STACK_MISMATCH".to_string())?;
+    let component = |id: &str| {
+        manifest
+            .components
+            .iter()
+            .find(|component| component.id == id)
+            .ok_or_else(|| "VISION_PACKAGE_MODEL_STACK_MISMATCH".to_string())
+    };
+    let face = component(&manifest.pipeline.face_engine)?;
+    let person_detector = component(&manifest.pipeline.person_detector)?;
+    let person_reid = component(&manifest.pipeline.person_re_id_engine)?;
+    if manifest.profile.engine != stack.inference_engine
+        || face.family != stack.face_engine
+        || person_detector.family != stack.person_detector
+        || person_reid.family != stack.person_re_id_engine
+    {
+        return Err("VISION_PACKAGE_MODEL_STACK_MISMATCH".to_string());
+    }
+    Ok(())
+}
+
 pub fn parse_signed_catalog(bytes: &[u8]) -> Result<VisionCatalog, String> {
     let key_ring = TrustedKeyRing::new(CATALOG_ROOT_KEY_ID, CATALOG_ROOT_PUBLIC_KEY_HEX);
     parse_signed_catalog_with_key_ring(bytes, &key_ring)
@@ -79,7 +238,7 @@ pub(crate) fn parse_signed_catalog_with_key_ring(
     verify_catalog(&signed, &key_ring)?;
     let catalog: VisionCatalog = serde_json::from_value(signed.catalog)
         .map_err(|_| "VISION_CATALOG_PAYLOAD_INVALID".to_string())?;
-    if catalog.schema_version != 1 || catalog.profiles.is_empty() {
+    if !matches!(catalog.schema_version, 1 | 2) || catalog.profiles.is_empty() {
         return Err("VISION_CATALOG_SCHEMA_UNSUPPORTED".to_string());
     }
     for profile in &catalog.profiles {
@@ -98,6 +257,21 @@ pub(crate) fn parse_signed_catalog_with_key_ring(
                 .all(|byte| byte.is_ascii_hexdigit())
         {
             return Err("VISION_CATALOG_PROFILE_INVALID".to_string());
+        }
+        if catalog.schema_version >= 2
+            && profile
+                .model_stack
+                .as_ref()
+                .is_none_or(|stack| !stack.validate())
+        {
+            return Err("VISION_CATALOG_MODEL_STACK_INVALID".to_string());
+        }
+        if profile
+            .model_stack
+            .as_ref()
+            .is_some_and(|stack| !stack.validate())
+        {
+            return Err("VISION_CATALOG_MODEL_STACK_INVALID".to_string());
         }
         if let Some(settings) = &profile.recommended_settings {
             let valid = (1..=5).contains(&settings.sample_fps)
@@ -190,22 +364,15 @@ pub async fn download_and_install(
                 .map_err(|error| format!("VISION_PACKAGE_INSTALL_FAILED:{error}"))?;
         }
         let model_dir = staging.join("object-models");
-        let manifest_path = model_dir.join("manifest.v3.json");
-        let manifest_json = fs::read_to_string(&manifest_path)
-            .map_err(|_| "VISION_PACKAGE_MANIFEST_MISSING".to_string())?;
-        let manifest: VisionManifestV3 = serde_json::from_str(&manifest_json)
-            .map_err(|_| "VISION_PACKAGE_MANIFEST_INVALID".to_string())?;
-        validate_manifest(&manifest)?;
-        if manifest.profile.id != profile.profile_id
-            || manifest.profile.version != profile.profile_version
+        let (manifest_json, manifest) = read_and_validate_package_manifest(&model_dir)?;
+        if manifest.profile_id != profile.profile_id
+            || manifest.profile_version != profile.profile_version
         {
             return Err("VISION_PACKAGE_PROFILE_MISMATCH".to_string());
         }
-        // 旧推理适配层仍读取 manifest.json，模型包必须带它以保持一个兼容发布周期。
-        if !model_dir.join("manifest.json").is_file() {
-            return Err("VISION_PACKAGE_LEGACY_MANIFEST_MISSING".to_string());
+        if let Some(stack) = &profile.model_stack {
+            validate_catalog_model_stack(&manifest_json, stack)?;
         }
-        verify_component_assets(&model_dir, &manifest)?;
         let destination = profile_root.join(safe_segment(&profile.profile_version)?);
         let backup = profile_root.join(format!(".backup-{}", Uuid::new_v4()));
         if destination.exists() {
@@ -234,6 +401,28 @@ pub async fn download_and_install(
     result
 }
 
+/// Profile 激活前的同一套预检：已安装目录不会因数据库状态而绕过清单校验。
+pub(crate) fn validate_installed_package(install_dir: &Path) -> Result<PackageManifest, String> {
+    let model_dir = install_dir.join("object-models");
+    read_and_validate_package_manifest(&model_dir).map(|(_, manifest)| manifest)
+}
+
+fn read_and_validate_package_manifest(
+    model_dir: &Path,
+) -> Result<(String, PackageManifest), String> {
+    let manifest_path_v4 = model_dir.join("manifest.v4.json");
+    let manifest_path_v3 = model_dir.join("manifest.v3.json");
+    let manifest_json = fs::read_to_string(&manifest_path_v4)
+        .or_else(|_| fs::read_to_string(&manifest_path_v3))
+        .map_err(|_| "VISION_PACKAGE_MANIFEST_MISSING".to_string())?;
+    let manifest = parse_package_manifest(&manifest_json)?;
+    if manifest.requires_legacy_manifest && !model_dir.join("manifest.json").is_file() {
+        return Err("VISION_PACKAGE_LEGACY_MANIFEST_MISSING".to_string());
+    }
+    verify_component_assets(model_dir, &manifest.components)?;
+    Ok((manifest_json, manifest))
+}
+
 fn safe_segment(value: &str) -> Result<&str, String> {
     let value = value.trim();
     if value.is_empty() || value.contains(['/', '\\']) || value == "." || value == ".." {
@@ -243,8 +432,11 @@ fn safe_segment(value: &str) -> Result<&str, String> {
     }
 }
 
-fn verify_component_assets(model_dir: &Path, manifest: &VisionManifestV3) -> Result<(), String> {
-    for component in &manifest.components {
+fn verify_component_assets(
+    model_dir: &Path,
+    components: &[PackageComponentAsset],
+) -> Result<(), String> {
+    for component in components {
         let relative = Path::new(component.file.trim());
         if relative.is_absolute()
             || relative
@@ -255,8 +447,13 @@ fn verify_component_assets(model_dir: &Path, manifest: &VisionManifestV3) -> Res
         }
         let bytes = fs::read(model_dir.join(relative))
             .map_err(|_| "VISION_PACKAGE_COMPONENT_MISSING".to_string())?;
-        if !hex::encode(Sha256::digest(bytes)).eq_ignore_ascii_case(&component.sha256) {
+        if (component.is_primary_model && component.adapter_id.trim().is_empty())
+            || !hex::encode(Sha256::digest(bytes)).eq_ignore_ascii_case(&component.sha256)
+        {
             return Err("VISION_PACKAGE_COMPONENT_HASH_MISMATCH".to_string());
+        }
+        if component.is_primary_model && component.engine.as_deref() == Some("openvino") {
+            super::openvino_runtime::validate_ir_pair(&model_dir.join(relative))?;
         }
     }
     Ok(())
