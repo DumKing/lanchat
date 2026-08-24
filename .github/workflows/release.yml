@@ -65,12 +65,22 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          python -m pip install --disable-pip-version-check openvino-dev
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m pip install --disable-pip-version-check "openvino-dev==2024.6.0"
+          Get-Command omz_downloader -ErrorAction Stop | Out-Null
           omz_downloader --name face-detection-retail-0004 --name face-reidentification-retail-0095 --name person-detection-0203 --name person-reidentification-retail-0288 --name person-reidentification-retail-0286 --precisions FP16 --output_dir .model-cache/openvino
           node scripts/prepare-omz-model-profiles.mjs .model-cache/openvino
           Invoke-WebRequest -Uri "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip" -OutFile ".model-cache/buffalo_sc.zip"
           Expand-Archive -Path ".model-cache/buffalo_sc.zip" -DestinationPath ".model-cache/buffalo_sc" -Force
           node scripts/prepare-insightface-arcface-profile.mjs .model-cache/buffalo_sc
+          foreach ($profile in @("office-omz-retail-0288", "office-omz-retail-0286", "office-arcface-buffalo-sc")) {
+            $manifest = Join-Path "src-tauri/resources/model-profiles/$profile" "manifest.v4.json"
+            if (-not (Test-Path -LiteralPath $manifest)) {
+              throw "模型 Profile $profile 未生成 manifest.v4.json"
+            }
+          }
 
       - name: Build external desktop pet packages
         if: matrix.os == 'windows-latest'
@@ -90,6 +100,9 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           node scripts/test-vision-model-catalog.mjs
           node scripts/test-vision-package-distinctness.mjs
           $output = "release-assets/vision-models"
