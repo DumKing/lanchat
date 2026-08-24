@@ -12,8 +12,9 @@ use crate::protocol::{
 };
 use crate::storage::{
     system_login_nickname, ChannelMemberSeed, Message, MessageStatus, MessageType, Peer, Profile,
-    Storage, DEFAULT_GROUP_ID,
+    Storage, VisionRemoteCommandReceipt, DEFAULT_GROUP_ID,
 };
+use crate::vision::protocol::{validate_policy_frame, VisionPolicyFrame};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
@@ -748,6 +749,26 @@ impl Network {
             if delivered { "info" } else { "warn" },
             "face-monitor",
             "摄像头识别策略已下发",
+            Some(target),
+        );
+        Ok(delivered)
+    }
+
+    pub async fn send_vision_policy(
+        &self,
+        app: AppHandle,
+        target_device_id: &str,
+        frame: VisionPolicyFrame,
+    ) -> Result<bool, String> {
+        let target = normalize_device_id(target_device_id);
+        let delivered = self
+            .send_direct_frame(app.clone(), &target, WireFrame::VisionPolicy(frame))
+            .await?;
+        emit_debug_log(
+            &app,
+            if delivered { "info" } else { "warn" },
+            "vision-policy",
+            "视觉策略已下发",
             Some(target),
         );
         Ok(delivered)
@@ -1793,6 +1814,85 @@ impl Network {
                                 "保存指定人员规则失败",
                                 Some(err),
                             ),
+                        }
+                    }
+                    Ok(WireFrame::VisionPolicy(frame)) => {
+                        if frame.target_device_id == "*"
+                            || normalize_device_id(&frame.target_device_id) == local_device_id
+                        {
+                            let now = chrono::Utc::now().timestamp_millis();
+                            if let Err(error) = validate_policy_frame(&frame, now) {
+                                emit_debug_log(
+                                    &read_app,
+                                    "warn",
+                                    "vision-policy",
+                                    "已拒绝视觉策略帧",
+                                    Some(error),
+                                );
+                                continue;
+                            }
+                            let intent = match serde_json::to_string(&frame) {
+                                Ok(intent) => intent,
+                                Err(error) => {
+                                    emit_debug_log(
+                                        &read_app,
+                                        "error",
+                                        "vision-policy",
+                                        "序列化视觉策略意图失败",
+                                        Some(error.to_string()),
+                                    );
+                                    continue;
+                                }
+                            };
+                            match read_storage.accept_vision_remote_policy_command(
+                                &frame.issued_by_device_id,
+                                &frame.target_device_id,
+                                &frame.command_id,
+                                &frame.nonce,
+                                frame.revision,
+                                frame.expires_at,
+                                now,
+                                &intent,
+                            ) {
+                                Ok(receipt) if receipt.should_schedule() => {
+                                    emit_debug_log(
+                                        &read_app,
+                                        "info",
+                                        "vision-policy",
+                                        "收到视觉策略并已持久化执行意图",
+                                        Some(format!("{} r{}", frame.operation, frame.revision)),
+                                    );
+                                    // 仅在事务提交后通知运行时；下载、激活和重算由后续
+                                    // VisionRuntime 任务调度器异步执行。
+                                    read_app.emit("vision_policy_received", frame).ok();
+                                }
+                                Ok(VisionRemoteCommandReceipt::Duplicate { .. }) => {
+                                    emit_debug_log(
+                                        &read_app,
+                                        "info",
+                                        "vision-policy",
+                                        "忽略重复视觉策略",
+                                        Some(frame.command_id),
+                                    );
+                                }
+                                Ok(VisionRemoteCommandReceipt::Stale) => {
+                                    emit_debug_log(
+                                        &read_app,
+                                        "info",
+                                        "vision-policy",
+                                        "忽略陈旧视觉策略",
+                                        Some(format!("r{}", frame.revision)),
+                                    );
+                                }
+                                Ok(VisionRemoteCommandReceipt::Accepted { .. }) => unreachable!(),
+                                Err(error) => emit_debug_log(
+                                    &read_app,
+                                    "warn",
+                                    "vision-policy",
+                                    "保存视觉策略失败",
+                                    Some(error),
+                                ),
+                            }
                         }
                     }
                     Ok(WireFrame::FaceMonitorPolicy(frame)) => {

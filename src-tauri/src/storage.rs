@@ -5,11 +5,20 @@ use crate::protocol::{
     AdminNotificationDecisionFrame, AdminNotificationFrame, CameraFaceAlertFeedbackFrame,
     CameraFaceAlertFrame, FaceMonitorPolicyFrame, FacePersonPolicyFrame, SimulationMeta,
 };
+use crate::vision::{
+    profile::manifest_v4::VisionManifestV4,
+    runtime::PersistedVisionRuntimeState,
+    types::{
+        VisionLifecycleState, VisionModelProfileSummary, VisionPerformanceState,
+        VisionRuntimeSnapshot, VisionSamplingState,
+    },
+};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use uuid::Uuid;
 
 pub const DEFAULT_GROUP_ID: &str = "lan-room";
 
@@ -119,6 +128,12 @@ pub struct FacePersonRecord {
     pub has_body_embedding: bool,
     #[serde(default)]
     pub sample_count: u32,
+    /// 当前激活人脸模型空间内已完成的参考特征数。
+    #[serde(default)]
+    pub active_face_embedding_count: u32,
+    /// 当前激活人体 ReID 模型空间内已完成的参考特征数。
+    #[serde(default)]
+    pub active_body_embedding_count: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +146,22 @@ pub struct FacePersonSampleRecord {
     pub embedding_model_version: Option<String>,
     pub body_embedding: Option<Vec<u8>>,
     pub body_embedding_model_version: Option<String>,
+}
+
+/// V5 特征库的单条写入值。向量只保存在本机，按模型空间隔离，不参与局域网同步。
+#[derive(Debug, Clone, PartialEq)]
+pub struct VisionEmbeddingWrite {
+    pub vector: Vec<f32>,
+    pub quality_score: f32,
+}
+
+impl VisionEmbeddingWrite {
+    pub fn new(vector: Vec<f32>, quality_score: f32) -> Self {
+        Self {
+            vector,
+            quality_score: quality_score.clamp(0.05, 1.0),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -280,6 +311,23 @@ impl MessageStatus {
 
 pub struct Storage {
     conn: Mutex<Connection>,
+}
+
+/// 远程视觉策略写入后的持久化收据。
+///
+/// 只有 `Accepted` 可以在事务提交后启动下载、激活或特征重算等后台工作；
+/// `Duplicate` 必须返回已经持久化的首个结果，`Stale` 则保留审计收据但不执行。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VisionRemoteCommandReceipt {
+    Accepted { result_json: String },
+    Duplicate { result_json: String },
+    Stale,
+}
+
+impl VisionRemoteCommandReceipt {
+    pub fn should_schedule(&self) -> bool {
+        matches!(self, Self::Accepted { .. })
+    }
 }
 
 impl Storage {
@@ -581,7 +629,699 @@ impl Storage {
             "force_open_main_window",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
+        crate::vision::storage::initialize(&conn)?;
+        ensure_column(&conn, "vision_model_profiles", "install_path", "TEXT")?;
         Ok(())
+    }
+
+    pub fn vision_schema_version(&self) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        conn.query_row(
+            "SELECT MAX(version) FROM vision_schema_migrations",
+            [],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .map_err(|error| format!("读取视觉识别数据库版本失败：{error}"))?
+        .ok_or_else(|| "视觉识别数据库版本缺失".to_string())
+    }
+
+    pub fn legacy_face_alert_count(&self) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        conn.query_row("SELECT COUNT(*) FROM camera_face_alerts", [], |row| {
+            row.get(0)
+        })
+        .map_err(|error| format!("读取历史视觉告警失败：{error}"))
+    }
+
+    pub fn record_vision_remote_command(
+        &self,
+        issuer_device_id: &str,
+        target_device_id: &str,
+        command_id: &str,
+        nonce: &str,
+        processed_at: i64,
+        result_json: &str,
+    ) -> Result<String, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        conn.execute_batch("BEGIN IMMEDIATE")
+            .map_err(|error| format!("开始远程视觉命令事务失败：{error}"))?;
+        let result = (|| {
+            let existing = conn
+                .query_row(
+                    "SELECT result_json FROM vision_remote_command_nonces WHERE issuer_device_id=?1 AND target_device_id=?2 AND command_id=?3",
+                    (issuer_device_id, target_device_id, command_id),
+                    |row| row.get::<_, String>(0),
+                )
+                .ok();
+            if let Some(result) = existing {
+                return Ok(result);
+            }
+            conn.execute(
+                "INSERT INTO vision_remote_command_nonces(nonce,command_id,issuer_device_id,target_device_id,expires_at,result_json,processed_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                (nonce, command_id, issuer_device_id, target_device_id, processed_at + 300, result_json, processed_at),
+            )
+            .map_err(|error| format!("写入远程视觉命令收据失败：{error}"))?;
+            Ok(result_json.to_string())
+        })();
+        match result {
+            Ok(result) => {
+                conn.execute_batch("COMMIT")
+                    .map_err(|error| format!("提交远程视觉命令事务失败：{error}"))?;
+                Ok(result)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
+    /// 原子接受一条版本化视觉策略。事务内只记录意图和修订号，任何模型操作都必须
+    /// 在成功提交之后由调用方异步执行，避免半提交状态触发重复的昂贵任务。
+    #[allow(clippy::too_many_arguments)]
+    pub fn accept_vision_remote_policy_command(
+        &self,
+        issuer_device_id: &str,
+        target_device_id: &str,
+        command_id: &str,
+        nonce: &str,
+        revision: i64,
+        expires_at: i64,
+        processed_at: i64,
+        result_json: &str,
+    ) -> Result<VisionRemoteCommandReceipt, String> {
+        if expires_at <= processed_at {
+            return Err("VISION_POLICY_EXPIRED".to_string());
+        }
+        if revision <= 0 {
+            return Err("VISION_POLICY_INVALID".to_string());
+        }
+
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        conn.execute_batch("BEGIN IMMEDIATE")
+            .map_err(|error| format!("开始远程视觉策略事务失败：{error}"))?;
+        let result = (|| {
+            let existing = conn
+                .query_row(
+                    "SELECT result_json FROM vision_remote_command_nonces WHERE issuer_device_id=?1 AND target_device_id=?2 AND command_id=?3",
+                    params![issuer_device_id, target_device_id, command_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|error| format!("读取远程视觉策略收据失败：{error}"))?;
+            if let Some(result_json) = existing {
+                return Ok(VisionRemoteCommandReceipt::Duplicate { result_json });
+            }
+
+            let nonce_command = conn
+                .query_row(
+                    "SELECT command_id FROM vision_remote_command_nonces WHERE nonce=?1",
+                    params![nonce],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|error| format!("读取远程视觉策略 nonce 失败：{error}"))?;
+            if nonce_command.is_some() {
+                return Err("VISION_POLICY_NONCE_REUSED".to_string());
+            }
+
+            let highest_revision = conn
+                .query_row(
+                    "SELECT highest_revision FROM vision_remote_command_state WHERE issuer_device_id=?1 AND target_device_id=?2",
+                    params![issuer_device_id, target_device_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()
+                .map_err(|error| format!("读取远程视觉策略修订号失败：{error}"))?
+                .unwrap_or(0);
+
+            if revision <= highest_revision {
+                conn.execute(
+                    "INSERT INTO vision_remote_command_nonces(nonce,command_id,issuer_device_id,target_device_id,expires_at,result_json,processed_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                    params![nonce, command_id, issuer_device_id, target_device_id, expires_at, "{\"status\":\"stale\"}", processed_at],
+                )
+                .map_err(|error| format!("记录陈旧视觉策略收据失败：{error}"))?;
+                return Ok(VisionRemoteCommandReceipt::Stale);
+            }
+
+            conn.execute(
+                "INSERT INTO vision_remote_command_nonces(nonce,command_id,issuer_device_id,target_device_id,expires_at,result_json,processed_at) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                params![nonce, command_id, issuer_device_id, target_device_id, expires_at, result_json, processed_at],
+            )
+            .map_err(|error| format!("写入远程视觉策略收据失败：{error}"))?;
+            conn.execute(
+                "INSERT INTO vision_remote_command_state(issuer_device_id,target_device_id,highest_revision,updated_at) VALUES (?1,?2,?3,?4)
+                 ON CONFLICT(issuer_device_id,target_device_id) DO UPDATE SET highest_revision=excluded.highest_revision,updated_at=excluded.updated_at",
+                params![issuer_device_id, target_device_id, revision, processed_at],
+            )
+            .map_err(|error| format!("保存远程视觉策略修订号失败：{error}"))?;
+            Ok(VisionRemoteCommandReceipt::Accepted {
+                result_json: result_json.to_string(),
+            })
+        })();
+
+        match result {
+            Ok(receipt) => {
+                conn.execute_batch("COMMIT")
+                    .map_err(|error| format!("提交远程视觉策略事务失败：{error}"))?;
+                Ok(receipt)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
+    /// 可重复执行的兼容迁移。后续 V5 特征重算只读取新表，旧表保留一个兼容周期。
+    pub fn migrate_legacy_vision_data(&self) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        crate::vision::storage::initialize(&conn)
+    }
+
+    pub fn vision_reference_image_count(&self, person_id: &str) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        conn.query_row(
+            "SELECT COUNT(*) FROM person_reference_images_v2 WHERE person_id=?1",
+            params![person_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("读取视觉参考图数量失败：{error}"))
+    }
+
+    pub fn vision_embedding_count(&self) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        conn.query_row("SELECT COUNT(*) FROM person_embeddings_v2", [], |row| {
+            row.get(0)
+        })
+        .map_err(|error| format!("读取视觉特征数量失败：{error}"))
+    }
+
+    /// 注册模型的特征空间。一个空间 ID 一旦落库，就不能被另一个模型重定义。
+    pub fn ensure_vision_embedding_space(
+        &self,
+        embedding_space_id: &str,
+        profile_id: &str,
+        profile_version: &str,
+        modality: &str,
+        semantics_json: &str,
+    ) -> Result<(), String> {
+        crate::vision::embedding::EmbeddingSpaceId::new(embedding_space_id.to_string())?;
+        let semantics = serde_json::from_str::<serde_json::Value>(semantics_json)
+            .map_err(|_| "VISION_EMBEDDING_SPACE_INVALID".to_string())?;
+        let canonical_semantics = serde_json::to_string(&semantics)
+            .map_err(|_| "VISION_EMBEDDING_SPACE_INVALID".to_string())?;
+        if profile_id.trim().is_empty()
+            || profile_version.trim().is_empty()
+            || !matches!(modality, "face" | "body")
+        {
+            return Err("VISION_EMBEDDING_SPACE_INVALID".to_string());
+        }
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let existing = conn
+            .query_row(
+                "SELECT profile_id,profile_version,modality,semantics_json FROM vision_embedding_spaces WHERE embedding_space_id=?1",
+                params![embedding_space_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| format!("读取特征空间失败：{error}"))?;
+        if let Some((stored_profile, stored_version, stored_modality, stored_semantics)) = existing
+        {
+            if stored_profile != profile_id
+                || stored_version != profile_version
+                || stored_modality != modality
+                || stored_semantics != canonical_semantics
+            {
+                return Err("VISION_EMBEDDING_SPACE_COLLISION".to_string());
+            }
+            return Ok(());
+        }
+        conn.execute(
+            "INSERT INTO vision_embedding_spaces(embedding_space_id,profile_id,profile_version,modality,semantics_json,created_at) VALUES (?1,?2,?3,?4,?5,?6)",
+            params![embedding_space_id, profile_id, profile_version, modality, canonical_semantics, chrono::Utc::now().timestamp_millis()],
+        )
+        .map_err(|error| format!("保存特征空间失败：{error}"))?;
+        Ok(())
+    }
+
+    /// 用当前模型空间下的结果替换某个人的同模态特征；其他 Profile 的特征不受影响。
+    pub fn replace_person_vision_embeddings(
+        &self,
+        person_id: &str,
+        embedding_space_id: &str,
+        modality: &str,
+        embeddings: &[VisionEmbeddingWrite],
+    ) -> Result<(), String> {
+        if person_id.trim().is_empty()
+            || !matches!(modality, "face" | "body")
+            || embeddings.iter().any(|embedding| {
+                embedding.vector.is_empty()
+                    || embedding.vector.iter().any(|value| !value.is_finite())
+            })
+        {
+            return Err("VISION_EMBEDDING_INVALID".to_string());
+        }
+        let mut conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let transaction = conn
+            .transaction()
+            .map_err(|error| format!("开始特征重建事务失败：{error}"))?;
+        let space_exists: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM vision_embedding_spaces WHERE embedding_space_id=?1)",
+                params![embedding_space_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|value| value != 0)
+            .map_err(|error| format!("读取特征空间失败：{error}"))?;
+        if !space_exists {
+            return Err("VISION_EMBEDDING_SPACE_UNKNOWN".to_string());
+        }
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO vision_people_v2(person_id,display_name,enabled,expires_at,version,issued_by_device_id,issued_by_nickname,issued_at,deleted_at,created_at,updated_at)
+                 SELECT person_id,display_name,enabled,expires_at,version,issued_by_device_id,issued_by_nickname,issued_at,deleted_at,issued_at,issued_at
+                 FROM face_people WHERE person_id=?1",
+                params![person_id],
+            )
+            .map_err(|error| format!("同步视觉人员失败：{error}"))?;
+        let person_exists: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM vision_people_v2 WHERE person_id=?1)",
+                params![person_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|value| value != 0)
+            .map_err(|error| format!("读取视觉人员失败：{error}"))?;
+        if !person_exists {
+            return Err("VISION_PERSON_UNKNOWN".to_string());
+        }
+        transaction
+            .execute(
+                "DELETE FROM person_embeddings_v2 WHERE person_id=?1 AND embedding_space_id=?2 AND modality=?3",
+                params![person_id, embedding_space_id, modality],
+            )
+            .map_err(|error| format!("清理旧模型特征失败：{error}"))?;
+        let now = chrono::Utc::now().timestamp_millis();
+        for embedding in embeddings {
+            let vector = embedding
+                .vector
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect::<Vec<_>>();
+            transaction
+                .execute(
+                    "INSERT INTO person_embeddings_v2(embedding_id,person_id,reference_image_id,embedding_space_id,modality,feature_role,vector_blob,quality_score,source_kind,state,created_at,updated_at)
+                     VALUES (?1,?2,NULL,?3,?4,'reference',?5,?6,'runtime','ready',?7,?7)",
+                    params![Uuid::new_v4().to_string(), person_id, embedding_space_id, modality, vector, embedding.quality_score, now],
+                )
+                .map_err(|error| format!("保存模型特征失败：{error}"))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("提交模型特征失败：{error}"))
+    }
+
+    pub fn list_person_vision_embeddings(
+        &self,
+        person_id: &str,
+        embedding_space_id: &str,
+        modality: &str,
+    ) -> Result<Vec<VisionEmbeddingWrite>, String> {
+        if !matches!(modality, "face" | "body") {
+            return Err("VISION_EMBEDDING_INVALID".to_string());
+        }
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let mut statement = conn
+            .prepare(
+                "SELECT vector_blob,COALESCE(quality_score, 1.0) FROM person_embeddings_v2
+                 WHERE person_id=?1 AND embedding_space_id=?2 AND modality=?3 AND state='ready'
+                 AND (valid_until IS NULL OR valid_until>?4) ORDER BY created_at ASC",
+            )
+            .map_err(|error| format!("读取模型特征失败：{error}"))?;
+        let now = chrono::Utc::now().timestamp_millis();
+        let rows = statement
+            .query_map(
+                params![person_id, embedding_space_id, modality, now],
+                |row| {
+                    let bytes = row.get::<_, Vec<u8>>(0)?;
+                    if bytes.len() % 4 != 0 || bytes.is_empty() {
+                        return Err(rusqlite::Error::InvalidQuery);
+                    }
+                    let vector = bytes
+                        .chunks_exact(4)
+                        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                        .collect::<Vec<_>>();
+                    Ok(VisionEmbeddingWrite::new(vector, row.get(1)?))
+                },
+            )
+            .map_err(|error| format!("读取模型特征失败：{error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("读取模型特征失败：{error}"))
+    }
+
+    pub fn vision_alert_event_count(&self) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        conn.query_row("SELECT COUNT(*) FROM vision_alert_events", [], |row| {
+            row.get(0)
+        })
+        .map_err(|error| format!("读取视觉告警事件数量失败：{error}"))
+    }
+
+    pub fn verify_vision_database_integrity(&self) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        crate::vision::storage::verify_integrity(&conn)
+    }
+
+    pub fn load_vision_runtime_state(&self) -> Result<PersistedVisionRuntimeState, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let stored = conn
+            .query_row(
+                "SELECT revision,active_profile_id,active_profile_version,lifecycle,sampling_state,performance_state,user_paused,last_error_code FROM vision_runtime_state WHERE singleton_id=1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, i32>(6)? != 0,
+                        row.get::<_, Option<String>>(7)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| format!("读取视觉运行时状态失败：{error}"))?;
+        let Some((
+            revision,
+            profile_id,
+            profile_version,
+            lifecycle,
+            sampling,
+            performance,
+            user_paused,
+            reason_code,
+        )) = stored
+        else {
+            return Ok(default_persisted_vision_runtime_state());
+        };
+        Ok(PersistedVisionRuntimeState {
+            user_paused,
+            snapshot: VisionRuntimeSnapshot {
+                lifecycle: parse_vision_lifecycle(&lifecycle),
+                sampling: parse_vision_sampling(&sampling),
+                performance: parse_vision_performance(&performance),
+                active_profile_id: profile_id,
+                active_profile_version: profile_version,
+                revision: revision.max(0) as u64,
+                reason_code,
+            },
+        })
+    }
+
+    pub fn save_vision_runtime_state(
+        &self,
+        persisted: &PersistedVisionRuntimeState,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let snapshot = &persisted.snapshot;
+        conn.execute(
+            "INSERT INTO vision_runtime_state(singleton_id,revision,active_profile_id,active_profile_version,lifecycle,sampling_state,performance_state,user_paused,consecutive_failure_count,last_error_code,updated_at)
+             VALUES (1,?1,?2,?3,?4,?5,?6,?7,0,?8,?9)
+             ON CONFLICT(singleton_id) DO UPDATE SET revision=excluded.revision,active_profile_id=excluded.active_profile_id,active_profile_version=excluded.active_profile_version,lifecycle=excluded.lifecycle,sampling_state=excluded.sampling_state,performance_state=excluded.performance_state,user_paused=excluded.user_paused,last_error_code=excluded.last_error_code,updated_at=excluded.updated_at",
+            params![
+                snapshot.revision as i64,
+                snapshot.active_profile_id.as_deref(),
+                snapshot.active_profile_version.as_deref(),
+                vision_lifecycle_name(snapshot.lifecycle),
+                vision_sampling_name(snapshot.sampling),
+                vision_performance_name(snapshot.performance),
+                persisted.user_paused as i32,
+                snapshot.reason_code.as_deref(),
+                chrono::Utc::now().timestamp_millis(),
+            ],
+        )
+        .map_err(|error| format!("保存视觉运行时状态失败：{error}"))?;
+        Ok(())
+    }
+
+    pub fn list_vision_model_profiles(&self) -> Result<Vec<VisionModelProfileSummary>, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let mut statement = conn.prepare(
+            "SELECT profile_id,profile_version,display_name,tier,install_state,is_active,manifest_json FROM vision_model_profiles ORDER BY is_active DESC,updated_at DESC",
+        ).map_err(|error| format!("读取视觉模型列表失败：{error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                let manifest_json = row.get::<_, String>(6)?;
+                let manifest = serde_json::from_str::<VisionManifestV4>(&manifest_json).ok();
+                Ok(VisionModelProfileSummary {
+                    profile_id: row.get(0)?,
+                    profile_version: row.get(1)?,
+                    display_name: row.get(2)?,
+                    tier: row.get(3)?,
+                    inference_engine: manifest.as_ref().map(|value| value.profile.engine.clone()),
+                    face_engine: manifest
+                        .as_ref()
+                        .and_then(|value| {
+                            value
+                                .components
+                                .iter()
+                                .find(|component| component.id == value.pipeline.face_engine)
+                        })
+                        .map(|component| component.family.clone()),
+                    person_re_id_engine: manifest
+                        .as_ref()
+                        .and_then(|value| {
+                            value.components.iter().find(|component| {
+                                component.id == value.pipeline.person_re_id_engine
+                            })
+                        })
+                        .map(|component| component.family.clone()),
+                    installed: row.get::<_, String>(4)? == "installed",
+                    active: row.get::<_, i32>(5)? != 0,
+                    compatible: true,
+                    compatibility_reason: None,
+                    downloadable: false,
+                    package_size_bytes: 0,
+                    restart_required: true,
+                    recommended_settings: None,
+                })
+            })
+            .map_err(|error| format!("读取视觉模型列表失败：{error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("读取视觉模型列表失败：{error}"))
+    }
+
+    pub fn upsert_vision_model_profile(
+        &self,
+        summary: &VisionModelProfileSummary,
+        manifest_json: &str,
+        install_path: &Path,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let now = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT INTO vision_model_profiles(profile_id,profile_version,display_name,tier,manifest_json,source_kind,install_state,is_active,is_last_known_good,install_path,installed_at,updated_at)
+             VALUES (?1,?2,?3,?4,?5,'official_catalog','installed',0,0,?6,?7,?7)
+             ON CONFLICT(profile_id,profile_version) DO UPDATE SET display_name=excluded.display_name,tier=excluded.tier,manifest_json=excluded.manifest_json,source_kind=excluded.source_kind,install_state='installed',install_path=excluded.install_path,installed_at=excluded.installed_at,updated_at=excluded.updated_at",
+            params![summary.profile_id, summary.profile_version, summary.display_name, summary.tier, manifest_json, install_path.to_string_lossy(), now],
+        ).map_err(|error| format!("保存视觉模型状态失败：{error}"))?;
+        Ok(())
+    }
+
+    pub fn activate_vision_model_profile(
+        &self,
+        profile_id: &str,
+        profile_version: &str,
+    ) -> Result<(), String> {
+        let mut conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let transaction = conn
+            .transaction()
+            .map_err(|error| format!("切换视觉模型失败：{error}"))?;
+        let exists = transaction
+            .query_row(
+                "SELECT 1 FROM vision_model_profiles WHERE profile_id=?1 AND profile_version=?2 AND install_state='installed'",
+                params![profile_id, profile_version],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|error| format!("读取视觉模型状态失败：{error}"))?
+            .is_some();
+        if !exists {
+            return Err("VISION_MODEL_PROFILE_NOT_INSTALLED".to_string());
+        }
+        transaction
+            .execute(
+                "UPDATE vision_model_profiles SET is_active=CASE WHEN profile_id=?1 AND profile_version=?2 THEN 1 ELSE 0 END, updated_at=?3 WHERE install_state='installed'",
+                params![profile_id, profile_version, chrono::Utc::now().timestamp_millis()],
+            )
+            .map_err(|error| format!("切换视觉模型失败：{error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交视觉模型切换失败：{error}"))
+    }
+
+    /// 仅允许删除未启用的下载模型；内置模型不进入此表，因此天然不可删。
+    pub fn remove_vision_model_profile(
+        &self,
+        profile_id: &str,
+        profile_version: &str,
+    ) -> Result<PathBuf, String> {
+        let mut conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let transaction = conn
+            .transaction()
+            .map_err(|error| format!("开始卸载视觉模型失败：{error}"))?;
+        let record = transaction
+            .query_row(
+                "SELECT install_path,is_active FROM vision_model_profiles WHERE profile_id=?1 AND profile_version=?2 AND install_state='installed'",
+                params![profile_id, profile_version],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)? != 0)),
+            )
+            .optional()
+            .map_err(|error| format!("读取视觉模型状态失败：{error}"))?
+            .ok_or_else(|| "VISION_MODEL_PROFILE_NOT_INSTALLED".to_string())?;
+        if record.1 {
+            return Err("VISION_MODEL_PROFILE_ACTIVE".to_string());
+        }
+        transaction
+            .execute(
+                "DELETE FROM vision_model_profiles WHERE profile_id=?1 AND profile_version=?2",
+                params![profile_id, profile_version],
+            )
+            .map_err(|error| format!("删除视觉模型记录失败：{error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交视觉模型卸载失败：{error}"))?;
+        Ok(PathBuf::from(record.0))
+    }
+
+    /// 只有模型在下次启动时成功加载后才提升为 Last Known Good。这样候选包
+    /// 即使被外部清理或损坏，也能回退到上一个真实可用模型。
+    pub fn mark_vision_model_profile_healthy(
+        &self,
+        profile_id: &str,
+        profile_version: &str,
+    ) -> Result<(), String> {
+        let mut conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let transaction = conn
+            .transaction()
+            .map_err(|error| format!("更新视觉模型健康状态失败：{error}"))?;
+        let exists = transaction
+            .query_row(
+                "SELECT 1 FROM vision_model_profiles WHERE profile_id=?1 AND profile_version=?2 AND is_active=1 AND install_state='installed'",
+                params![profile_id, profile_version],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|error| format!("读取视觉模型健康状态失败：{error}"))?
+            .is_some();
+        if !exists {
+            return Err("VISION_MODEL_PROFILE_NOT_ACTIVE".to_string());
+        }
+        transaction
+            .execute(
+                "UPDATE vision_model_profiles SET is_last_known_good=0 WHERE is_last_known_good=1",
+                [],
+            )
+            .map_err(|error| format!("更新视觉模型健康状态失败：{error}"))?;
+        transaction
+            .execute(
+                "UPDATE vision_model_profiles SET is_last_known_good=1,updated_at=?3 WHERE profile_id=?1 AND profile_version=?2",
+                params![profile_id, profile_version, chrono::Utc::now().timestamp_millis()],
+            )
+            .map_err(|error| format!("更新视觉模型健康状态失败：{error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("提交视觉模型健康状态失败：{error}"))
+    }
+
+    /// 选中的模型无法在启动期构建会话时，恢复到上一份 Last Known Good。
+    /// 没有可回退的下载模型时会清除选中状态，调用方自然回退内置基线。
+    pub fn rollback_failed_vision_model_profile(
+        &self,
+        failed_profile_id: &str,
+        failed_profile_version: &str,
+    ) -> Result<Option<(String, String, PathBuf)>, String> {
+        let mut conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let transaction = conn
+            .transaction()
+            .map_err(|error| format!("回滚视觉模型失败：{error}"))?;
+        let fallback = transaction
+            .query_row(
+                "SELECT profile_id,profile_version,install_path FROM vision_model_profiles
+                 WHERE is_last_known_good=1 AND install_state='installed'
+                 AND NOT (profile_id=?1 AND profile_version=?2)
+                 ORDER BY updated_at DESC LIMIT 1",
+                params![failed_profile_id, failed_profile_version],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        PathBuf::from(row.get::<_, String>(2)?),
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| format!("读取视觉模型回滚点失败：{error}"))?;
+        transaction
+            .execute(
+                "UPDATE vision_model_profiles SET is_active=0,updated_at=?3 WHERE profile_id=?1 AND profile_version=?2",
+                params![
+                    failed_profile_id,
+                    failed_profile_version,
+                    chrono::Utc::now().timestamp_millis()
+                ],
+            )
+            .map_err(|error| format!("回滚视觉模型失败：{error}"))?;
+        if let Some((profile_id, profile_version, _)) = fallback.as_ref() {
+            transaction
+                .execute(
+                    "UPDATE vision_model_profiles SET is_active=1,updated_at=?3 WHERE profile_id=?1 AND profile_version=?2",
+                    params![profile_id, profile_version, chrono::Utc::now().timestamp_millis()],
+                )
+                .map_err(|error| format!("恢复视觉模型回滚点失败：{error}"))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("提交视觉模型回滚失败：{error}"))?;
+        Ok(fallback)
+    }
+
+    pub fn vision_model_install_path(
+        &self,
+        profile_id: &str,
+        profile_version: &str,
+    ) -> Result<PathBuf, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        conn.query_row(
+            "SELECT install_path FROM vision_model_profiles WHERE profile_id=?1 AND profile_version=?2 AND install_state='installed'",
+            params![profile_id, profile_version],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| format!("读取视觉模型安装目录失败：{error}"))?
+        .map(PathBuf::from)
+        .ok_or_else(|| "VISION_MODEL_PROFILE_NOT_INSTALLED".to_string())
+    }
+
+    pub fn active_vision_model_install_path(
+        &self,
+    ) -> Result<Option<(String, String, PathBuf)>, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        conn.query_row(
+            "SELECT profile_id,profile_version,install_path FROM vision_model_profiles WHERE is_active=1 AND install_state='installed' ORDER BY updated_at DESC LIMIT 1",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, PathBuf::from(row.get::<_, String>(2)?))),
+        ).optional().map_err(|error| format!("读取活动视觉模型失败：{error}"))
     }
 
     pub fn upsert_face_person(
@@ -702,6 +1442,49 @@ impl Storage {
             .map_err(|err| format!("读取人员样本失败：{err}"))
     }
 
+    /// 删除一张本机样本，并把主展示照片切换到仍保留的第一张。
+    /// 识别特征由调用方根据返回的样本重新生成，避免残留已删除照片的向量。
+    pub fn remove_face_person_sample(
+        &self,
+        person_id: &str,
+        photo_url: &str,
+    ) -> Result<Vec<FacePersonSampleRecord>, String> {
+        let samples = self.list_face_person_samples(person_id)?;
+        let retained = samples
+            .into_iter()
+            .filter(|sample| sample.photo_url != photo_url)
+            .collect::<Vec<_>>();
+        if retained.is_empty() {
+            return Err("VISION_REFERENCE_IMAGE_LAST_SAMPLE".to_string());
+        }
+        if retained.len() < crate::vision::storage::MIN_REFERENCE_IMAGES {
+            return Err("VISION_REFERENCE_IMAGE_MINIMUM_REQUIRED".to_string());
+        }
+        self.replace_face_person_samples(person_id, &retained)?;
+        let primary = &retained[0];
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let changed = conn
+            .execute(
+                "UPDATE face_people SET photo_url=?1,photo_sha256=?2 WHERE person_id=?3 AND deleted_at IS NULL",
+                params![primary.photo_url, primary.photo_sha256, person_id],
+            )
+            .map_err(|error| format!("更新人员主参考图失败：{error}"))?;
+        if changed == 0 {
+            return Err("VISION_PERSON_NOT_FOUND".to_string());
+        }
+        conn.execute(
+            "DELETE FROM person_embeddings_v2 WHERE person_id=?1",
+            params![person_id],
+        )
+        .map_err(|error| format!("清理已删除照片的视觉特征失败：{error}"))?;
+        conn.execute(
+            "DELETE FROM person_reference_images_v2 WHERE person_id=?1",
+            params![person_id],
+        )
+        .map_err(|error| format!("清理已删除照片的参考图失败：{error}"))?;
+        Ok(retained)
+    }
+
     /// 仅在本机更新人脸特征，特征不参与局域网同步。
     pub fn update_face_person_embedding(
         &self,
@@ -723,17 +1506,48 @@ impl Storage {
     /// A target device can always stop monitoring a person locally. This is not
     /// broadcast, so it cannot alter another device's authorised rule set.
     pub fn delete_face_person_local(&self, person_id: &str) -> Result<(), String> {
-        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
-        let changed = conn
+        let mut conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let transaction = conn
+            .transaction()
+            .map_err(|err| format!("删除本机识别人员失败：{err}"))?;
+        let changed = transaction
             .execute(
-                "UPDATE face_people SET enabled=0, deleted_at=?1 WHERE person_id=?2",
+                "UPDATE face_people SET enabled=0, deleted_at=?1, embedding=NULL, embedding_model_version=NULL WHERE person_id=?2",
                 params![chrono::Utc::now().timestamp_millis(), person_id],
             )
             .map_err(|err| format!("删除本机识别人员失败：{err}"))?;
         if changed == 0 {
             return Err("未找到识别人员".to_string());
         }
-        Ok(())
+        transaction
+            .execute(
+                "DELETE FROM face_person_samples WHERE person_id=?1",
+                params![person_id],
+            )
+            .map_err(|err| format!("清理本机人员样本失败：{err}"))?;
+        // V5 视觉库与旧表并存时同步删除特征与参考图；告警表只保留姓名快照，
+        // 因此历史告警不会随人员配置一起消失。
+        transaction
+            .execute(
+                "DELETE FROM person_embeddings_v2 WHERE person_id=?1",
+                params![person_id],
+            )
+            .map_err(|err| format!("清理视觉特征失败：{err}"))?;
+        transaction
+            .execute(
+                "DELETE FROM person_reference_images_v2 WHERE person_id=?1",
+                params![person_id],
+            )
+            .map_err(|err| format!("清理视觉参考图失败：{err}"))?;
+        transaction
+            .execute(
+                "UPDATE vision_people_v2 SET enabled=0, deleted_at=?1, updated_at=?1 WHERE person_id=?2",
+                params![chrono::Utc::now().timestamp_millis(), person_id],
+            )
+            .map_err(|err| format!("更新视觉人员状态失败：{err}"))?;
+        transaction
+            .commit()
+            .map_err(|err| format!("提交删除本机识别人员失败：{err}"))
     }
 
     pub fn upsert_face_monitor_policy(
@@ -835,6 +1649,8 @@ impl Storage {
             embedding_model_version: row.get(12)?,
             sample_count: row.get::<_, i64>(13)? as u32,
             has_body_embedding: row.get::<_, i64>(14)? > 0,
+            active_face_embedding_count: 0,
+            active_body_embedding_count: 0,
         })
     }
 
@@ -2207,6 +3023,77 @@ pub fn system_login_nickname() -> String {
 fn default_nickname() -> String {
     system_login_nickname()
 }
+fn default_persisted_vision_runtime_state() -> PersistedVisionRuntimeState {
+    PersistedVisionRuntimeState {
+        user_paused: false,
+        snapshot: VisionRuntimeSnapshot {
+            lifecycle: VisionLifecycleState::Disabled,
+            sampling: VisionSamplingState::Running,
+            performance: VisionPerformanceState::Normal,
+            active_profile_id: None,
+            active_profile_version: None,
+            revision: 0,
+            reason_code: None,
+        },
+    }
+}
+
+fn vision_lifecycle_name(value: VisionLifecycleState) -> &'static str {
+    match value {
+        VisionLifecycleState::Disabled => "disabled",
+        VisionLifecycleState::Initializing => "initializing",
+        VisionLifecycleState::Ready => "ready",
+        VisionLifecycleState::RebuildingSession => "rebuilding_session",
+        VisionLifecycleState::RollingBack => "rolling_back",
+        VisionLifecycleState::Failed => "failed",
+    }
+}
+
+fn parse_vision_lifecycle(value: &str) -> VisionLifecycleState {
+    match value {
+        "initializing" => VisionLifecycleState::Initializing,
+        "ready" => VisionLifecycleState::Ready,
+        "rebuilding_session" => VisionLifecycleState::RebuildingSession,
+        "rolling_back" => VisionLifecycleState::RollingBack,
+        "failed" => VisionLifecycleState::Failed,
+        _ => VisionLifecycleState::Disabled,
+    }
+}
+
+fn vision_sampling_name(value: VisionSamplingState) -> &'static str {
+    match value {
+        VisionSamplingState::Running => "running",
+        VisionSamplingState::PausedByUser => "paused_by_user",
+        VisionSamplingState::PausedByResourceConflict => "paused_by_resource_conflict",
+        VisionSamplingState::Starved => "starved",
+    }
+}
+
+fn parse_vision_sampling(value: &str) -> VisionSamplingState {
+    match value {
+        "paused_by_user" => VisionSamplingState::PausedByUser,
+        "paused_by_resource_conflict" => VisionSamplingState::PausedByResourceConflict,
+        "starved" => VisionSamplingState::Starved,
+        _ => VisionSamplingState::Running,
+    }
+}
+
+fn vision_performance_name(value: VisionPerformanceState) -> &'static str {
+    match value {
+        VisionPerformanceState::Normal => "normal",
+        VisionPerformanceState::Degraded => "degraded",
+        VisionPerformanceState::Recovering => "recovering",
+    }
+}
+
+fn parse_vision_performance(value: &str) -> VisionPerformanceState {
+    match value {
+        "degraded" => VisionPerformanceState::Degraded,
+        "recovering" => VisionPerformanceState::Recovering,
+        _ => VisionPerformanceState::Normal,
+    }
+}
+
 fn ensure_column(
     conn: &Connection,
     table: &str,

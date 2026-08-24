@@ -1,9 +1,15 @@
 [package]
 name = "lanchat"
-version = "0.5.1"
+version = "0.6.1"
 description = "A serverless LAN chat desktop app"
 authors = ["LanChat"]
 edition = "2021"
+autobins = false
+
+[features]
+default = []
+# OpenVINO 通过运行时动态链接加载，只有随模型包分发 OpenVINO Runtime 时才启用。
+openvino-runtime = ["dep:openvino"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -13,6 +19,18 @@ edition = "2021"
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "tauri_app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "lanchat"
+path = "src/main.rs"
+
+[[bin]]
+name = "sign_vision_catalog"
+path = "src/bin/sign_vision_catalog.rs"
+
+[[bin]]
+name = "verify_vision_catalog"
+path = "src/bin/verify_vision_catalog.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -25,10 +43,12 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+semver = "1"
+ed25519-dalek = "2"
 tokio = { version = "1.52.3", features = ["full"] }
 uuid = { version = "1.23.4", features = ["v4", "serde"] }
 chrono = { version = "0.4.45", features = ["serde"] }
-rusqlite = { version = "0.40.1", features = ["bundled"] }
+rusqlite = { version = "0.40.1", features = ["bundled", "backup"] }
 mdns-sd = "0.20.1"
 mac_address = "1.1.8"
 sha2 = "0.11.0"
@@ -43,9 +63,11 @@ fs2 = "0.4.3"
 md5 = "0.8.0"
 tauri-plugin-updater = "2.10.1"
 keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "download-binaries", "copy-dylibs", "tls-rustls"] }
 ndarray = "0.17.2"
 tauri-plugin-autostart = "2"
+openvino = { version = "0.11.0", default-features = false, features = ["runtime-linking"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

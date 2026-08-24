@@ -27,6 +27,8 @@ pub enum WireFrame {
     AdminNotificationDecision(AdminNotificationDecisionFrame),
     FacePersonPolicy(FacePersonPolicyFrame),
     FaceMonitorPolicy(FaceMonitorPolicyFrame),
+    /// 新视觉策略帧。旧客户端会把未知枚举值当作单帧解析失败并继续读取后续 TCP 行。
+    VisionPolicy(crate::vision::protocol::VisionPolicyFrame),
     CameraFaceAlert(CameraFaceAlertFrame),
     CameraFaceAlertFeedback(CameraFaceAlertFeedbackFrame),
     AdminRemoteUpdate(AdminRemoteUpdateFrame),

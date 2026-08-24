@@ -2,11 +2,22 @@ use image::imageops::FilterType;
 use ndarray::Array4;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
+
+use crate::vision::profile::manifest_v4::{
+    validate_manifest_v4, ComponentDescriptor as V4ComponentDescriptor, VisionManifestV4,
+};
+use crate::vision::profile::pipeline::resolve_pipeline;
+use crate::vision::{
+    alert::fuse_track_evidence,
+    fusion::{FusionEvidence, FusionPolicy, TemporalIdentityFusion},
+    tracking::{BoundingBox, Detection, TrackStore},
+    types::{IdentityDecision, VisionModality},
+};
 
 const DETECTOR_SIZE: u32 = 640;
 const RECOGNIZER_SIZE: u32 = 112;
@@ -93,6 +104,11 @@ pub struct FaceMonitorStatus {
     pub accepted_frames: u64,
     pub dropped_frames: u64,
     pub model_version: Option<String>,
+    pub model_profile_id: Option<String>,
+    pub face_embedding_space_id: Option<String>,
+    pub body_embedding_space_id: Option<String>,
+    pub face_embedding_dimension: usize,
+    pub body_embedding_dimension: usize,
     pub last_detection_score: Option<u8>,
     pub detected_faces: u8,
     pub last_error: Option<String>,
@@ -122,7 +138,7 @@ pub struct DetectedFace {
 pub struct PersonTemplate {
     pub person_id: String,
     pub display_name: String,
-    pub face_embeddings: Vec<[f32; 128]>,
+    pub face_embeddings: Vec<Vec<f32>>,
     pub body_embeddings: Vec<Vec<f32>>,
 }
 
@@ -139,6 +155,20 @@ pub struct FaceMatch {
 #[derive(Debug, Clone)]
 pub struct FaceRecognitionFrame {
     pub matches: Vec<FaceMatch>,
+}
+
+#[derive(Debug, Default)]
+struct TrackEvidence {
+    face: Option<(FaceMatch, f32)>,
+    body: Option<(FaceMatch, f32)>,
+}
+
+/// 录入人员参考图时的本地质量结论。它只包含计数和质量分，不包含图像或特征。
+#[derive(Debug, Clone, Copy)]
+pub struct ReferencePhotoAnalysis {
+    pub detected_subject_count: u8,
+    pub face_quality_score: Option<f32>,
+    pub body_quality_score: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -175,11 +205,58 @@ struct FaceModelAsset {
 struct FaceModelState {
     ready: bool,
     version: Option<String>,
+    profile_id: Option<String>,
+    face_embedding_space_id: Option<String>,
+    body_embedding_space_id: Option<String>,
     error: Option<String>,
     detector_path: Option<PathBuf>,
     recognizer_path: Option<PathBuf>,
     person_detector_path: Option<PathBuf>,
     person_recognizer_path: Option<PathBuf>,
+    face_recognizer_spec: FaceRecognizerSpec,
+    person_reid_spec: PersonReIdSpec,
+}
+
+#[derive(Debug, Clone)]
+struct FaceRecognizerSpec {
+    width: u32,
+    height: u32,
+    output_dimension: usize,
+    color_order: String,
+    normalization: String,
+}
+
+impl Default for FaceRecognizerSpec {
+    fn default() -> Self {
+        Self {
+            width: RECOGNIZER_SIZE,
+            height: RECOGNIZER_SIZE,
+            output_dimension: 128,
+            color_order: "BGR".to_string(),
+            normalization: "sface_127_5".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PersonReIdSpec {
+    width: u32,
+    height: u32,
+    output_dimension: usize,
+    color_order: String,
+    normalization: String,
+}
+
+impl Default for PersonReIdSpec {
+    fn default() -> Self {
+        Self {
+            width: PERSON_REID_WIDTH,
+            height: PERSON_REID_HEIGHT,
+            output_dimension: PERSON_REID_DIM,
+            color_order: "RGB".to_string(),
+            normalization: "imagenet".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -196,7 +273,10 @@ pub struct FaceMonitorRuntime {
     busy: AtomicBool,
     accepted_frames: AtomicU64,
     dropped_frames: AtomicU64,
+    recognition_frame_id: AtomicU64,
     hit_state: Mutex<HashMap<String, HitGateState>>,
+    track_store: Mutex<TrackStore>,
+    temporal_fusion: Mutex<TemporalIdentityFusion>,
     model_state: FaceModelState,
     detector: Option<Mutex<ort::session::Session>>,
     recognizer: Option<Mutex<ort::session::Session>>,
@@ -213,7 +293,10 @@ impl Default for FaceMonitorRuntime {
             busy: AtomicBool::new(false),
             accepted_frames: AtomicU64::new(0),
             dropped_frames: AtomicU64::new(0),
+            recognition_frame_id: AtomicU64::new(0),
             hit_state: Mutex::new(HashMap::new()),
+            track_store: Mutex::new(TrackStore::new(2_500)),
+            temporal_fusion: Mutex::new(TemporalIdentityFusion::new(FusionPolicy::default())),
             detector: None,
             recognizer: None,
             person_detector: None,
@@ -230,7 +313,12 @@ impl Default for FaceMonitorRuntime {
 
 impl FaceMonitorRuntime {
     pub fn from_resource_dirs(resource_dir: Option<PathBuf>) -> Self {
-        let mut candidates = resource_dir
+        Self::from_candidate_dirs(resource_dir.into_iter().collect())
+    }
+
+    /// 候选目录按顺序尝试；受控下载模型失败时自然回退内置资源。
+    pub fn from_candidate_dirs(resource_dirs: Vec<PathBuf>) -> Self {
+        let mut candidates = resource_dirs
             .into_iter()
             .flat_map(|path| {
                 vec![
@@ -314,11 +402,75 @@ impl FaceMonitorRuntime {
         runtime
     }
 
+    /// Profile 激活前构建一次短生命周期候选会话。这里不替换正在服务的
+    /// Runtime，只验证清单、摘要、适配器组合和 ONNX Session 是否都可打开。
+    pub fn validate_candidate_model_dir(model_dir: &Path) -> Result<(), String> {
+        let state = model_state_from_dir(model_dir)?;
+        if !state.ready {
+            return Err("VISION_CANDIDATE_MODEL_NOT_READY".to_string());
+        }
+        let validate_session = |label: &str, path: Option<&PathBuf>, required: bool| {
+            let Some(path) = path else {
+                return if required {
+                    Err(format!("VISION_CANDIDATE_COMPONENT_MISSING:{label}"))
+                } else {
+                    Ok(())
+                };
+            };
+            ort::session::Session::builder()
+                .and_then(|mut builder| builder.commit_from_file(path))
+                .map(|_| ())
+                .map_err(|error| format!("VISION_CANDIDATE_SESSION_INVALID:{label}:{error}"))
+        };
+        let v4_profile = state.profile_id.as_deref().is_some_and(|id| id != "legacy");
+        validate_session("face-detector", state.detector_path.as_ref(), true)?;
+        validate_session(
+            "face-recognizer",
+            state.recognizer_path.as_ref(),
+            v4_profile,
+        )?;
+        validate_session(
+            "person-detector",
+            state.person_detector_path.as_ref(),
+            v4_profile,
+        )?;
+        validate_session(
+            "person-reid",
+            state.person_recognizer_path.as_ref(),
+            v4_profile,
+        )?;
+        Ok(())
+    }
+
     pub fn settings(&self) -> FaceMonitorLocalSettings {
         self.settings
             .lock()
             .map(|value| value.clone())
             .unwrap_or_default()
+    }
+
+    pub fn person_reid_embedding_dimension(&self) -> usize {
+        self.model_state.person_reid_spec.output_dimension
+    }
+
+    pub fn face_embedding_dimension(&self) -> usize {
+        self.model_state.face_recognizer_spec.output_dimension
+    }
+
+    /// 特征缓存必须按模型空间而非展示版号复用。不同模型恰好都叫 1.0.0 时，
+    /// 也不能把 SFace/Youtu 或 OSNet 的向量混在一起。
+    pub fn face_embedding_space_id(&self) -> String {
+        self.model_state
+            .face_embedding_space_id
+            .clone()
+            .unwrap_or_else(|| "legacy.face.unknown".to_string())
+    }
+
+    pub fn body_embedding_space_id(&self) -> String {
+        self.model_state
+            .body_embedding_space_id
+            .clone()
+            .unwrap_or_else(|| "legacy.body.unknown".to_string())
     }
 
     pub fn update_settings(&self, settings: FaceMonitorLocalSettings) -> FaceMonitorLocalSettings {
@@ -355,6 +507,11 @@ impl FaceMonitorRuntime {
             accepted_frames: self.accepted_frames.load(Ordering::Relaxed),
             dropped_frames: self.dropped_frames.load(Ordering::Relaxed),
             model_version: self.model_state.version.clone(),
+            model_profile_id: self.model_state.profile_id.clone(),
+            face_embedding_space_id: self.model_state.face_embedding_space_id.clone(),
+            body_embedding_space_id: self.model_state.body_embedding_space_id.clone(),
+            face_embedding_dimension: self.model_state.face_recognizer_spec.output_dimension,
+            body_embedding_dimension: self.model_state.person_reid_spec.output_dimension,
             last_detection_score: last_detection.as_ref().map(|value| value.confidence),
             detected_faces: last_detection
                 .map(|value| value.detected_faces)
@@ -534,7 +691,9 @@ impl FaceMonitorRuntime {
                 *last = Some(value.clone());
             }
         }
-        let mut matches = Vec::new();
+        let frame_id = self.recognition_frame_id.fetch_add(1, Ordering::Relaxed) + 1;
+        let observed_at = chrono::Utc::now().timestamp_millis();
+        let mut tracked = BTreeMap::<String, TrackEvidence>::new();
         if let Some(detection) = detection.filter(|value| !value.faces.is_empty()) {
             let scale_x = image.width() as f32 / DETECTOR_SIZE as f32;
             let scale_y = image.height() as f32 / DETECTOR_SIZE as f32;
@@ -547,7 +706,24 @@ impl FaceMonitorRuntime {
                 let Some(matched) = best_face_match(&embedding, people) else {
                     continue;
                 };
-                matches.push(matched);
+                let track_id = self.observe_track(
+                    VisionModality::Face,
+                    BoundingBox::new(
+                        (face.x1 * scale_x / image.width() as f32).clamp(0.0, 1.0),
+                        (face.y1 * scale_y / image.height() as f32).clamp(0.0, 1.0),
+                        (face.w * scale_x / image.width() as f32).clamp(0.0, 1.0),
+                        (face.h * scale_y / image.height() as f32).clamp(0.0, 1.0),
+                    ),
+                    observed_at,
+                );
+                let entry = tracked.entry(track_id).or_default();
+                if entry
+                    .face
+                    .as_ref()
+                    .is_none_or(|(current, _)| current.confidence < matched.confidence)
+                {
+                    entry.face = Some((matched, face.score));
+                }
             }
         }
         if settings.body_recognition_enabled
@@ -562,14 +738,115 @@ impl FaceMonitorRuntime {
                 let Some(matched) = best_body_match(&embedding, people) else {
                     continue;
                 };
-                matches.push(matched);
+                let track_id = self.observe_track(
+                    VisionModality::Body,
+                    BoundingBox::new(
+                        (person.x / image.width() as f32).clamp(0.0, 1.0),
+                        (person.y / image.height() as f32).clamp(0.0, 1.0),
+                        (person.w / image.width() as f32).clamp(0.0, 1.0),
+                        (person.h / image.height() as f32).clamp(0.0, 1.0),
+                    ),
+                    observed_at,
+                );
+                let entry = tracked.entry(track_id).or_default();
+                if entry
+                    .body
+                    .as_ref()
+                    .is_none_or(|(current, _)| current.confidence < matched.confidence)
+                {
+                    entry.body = Some((matched, person.score));
+                }
             }
         }
+        let mut matches = tracked
+            .into_iter()
+            .filter_map(|(track_id, evidence)| {
+                self.fuse_track_matches(&track_id, frame_id, evidence)
+            })
+            .collect::<Vec<_>>();
+        matches.sort_by(|left, right| right.confidence.cmp(&left.confidence));
+        matches.dedup_by(|left, right| {
+            left.person_id == right.person_id && left.recognition_level == right.recognition_level
+        });
         if matches.is_empty() {
             Ok(None)
         } else {
             Ok(Some(FaceRecognitionFrame { matches }))
         }
+    }
+
+    fn observe_track(
+        &self,
+        modality: VisionModality,
+        bounds: BoundingBox,
+        observed_at: i64,
+    ) -> String {
+        self.track_store
+            .lock()
+            .map(|mut tracks| tracks.observe(Detection::new(modality, bounds), observed_at))
+            .unwrap_or_else(|_| "track-unavailable".to_string())
+    }
+
+    /// 将同一短时轨迹中的人脸/人体结果收敛为一个候选。时间融合只负责提高
+    /// 决策可信度；既有的连续命中、冷却和告警策略仍由 `accept_match` 统一管理。
+    fn fuse_track_matches(
+        &self,
+        track_id: &str,
+        frame_id: u64,
+        evidence: TrackEvidence,
+    ) -> Option<FaceMatch> {
+        let face = evidence.face;
+        let body = evidence.body;
+        let face_evidence = face.as_ref().map(|(matched, quality)| {
+            FusionEvidence::face(&matched.person_id, f32::from(matched.confidence), *quality)
+        });
+        let body_evidence = body.as_ref().map(|(matched, quality)| {
+            FusionEvidence::body(&matched.person_id, f32::from(matched.confidence), *quality)
+        });
+        let temporal = self.temporal_fusion.lock().ok().and_then(|mut fusion| {
+            fusion.observe(track_id, frame_id, face_evidence, body_evidence)
+        });
+        let immediate = fuse_track_evidence(
+            face.as_ref()
+                .map(|(matched, _)| (matched.person_id.as_str(), matched.confidence)),
+            body.as_ref()
+                .map(|(matched, _)| (matched.person_id.as_str(), matched.confidence)),
+        );
+        let decision = temporal
+            .as_ref()
+            .map(|value| value.decision)
+            .unwrap_or(immediate.decision);
+        let person_id = temporal
+            .and_then(|value| value.person_id)
+            .or(immediate.person_id)?;
+        let selected = match decision {
+            IdentityDecision::ConfirmedFusion | IdentityDecision::ConfirmedFace => face
+                .as_ref()
+                .filter(|(matched, _)| matched.person_id == person_id)
+                .map(|(matched, _)| matched.clone())
+                .or_else(|| body.as_ref().map(|(matched, _)| matched.clone())),
+            IdentityDecision::ProbableBody => body
+                .as_ref()
+                .filter(|(matched, _)| matched.person_id == person_id)
+                .map(|(matched, _)| matched.clone()),
+            IdentityDecision::Unknown => None,
+        }?;
+        Some(FaceMatch {
+            recognition_level: if matches!(decision, IdentityDecision::ProbableBody) {
+                "suspected".to_string()
+            } else {
+                "confirmed".to_string()
+            },
+            face_confidence: face
+                .as_ref()
+                .filter(|(matched, _)| matched.person_id == person_id)
+                .map(|(matched, _)| matched.confidence),
+            body_confidence: body
+                .as_ref()
+                .filter(|(matched, _)| matched.person_id == person_id)
+                .map(|(matched, _)| matched.confidence),
+            ..selected
+        })
     }
 
     pub fn accept_match(
@@ -619,28 +896,55 @@ impl FaceMonitorRuntime {
                 state.last_hit_at = 0;
             }
         }
+        if candidate_keys.is_empty() {
+            if let Ok(mut tracks) = self.track_store.lock() {
+                tracks.reset();
+            }
+            if let Ok(mut fusion) = self.temporal_fusion.lock() {
+                fusion.reset();
+            }
+        }
     }
 
-    /// 对已对齐到原图坐标空间的关键点提取 SFace 128 维特征（L2 归一化）。
+    /// 对已对齐到原图坐标空间的关键点提取当前人脸引擎的特征（L2 归一化）。
     pub fn extract_embedding(
         &self,
         image: &image::RgbImage,
         landmarks: [(f32, f32); 5],
-    ) -> Result<[f32; 128], String> {
+    ) -> Result<Vec<f32>, String> {
         let recognizer = self
             .recognizer
             .as_ref()
             .ok_or_else(|| "识别模型未就绪".to_string())?;
+        let spec = &self.model_state.face_recognizer_spec;
         let aligned = align_face_112(image, landmarks);
-        let mut input =
-            Array4::<f32>::zeros((1, 3, RECOGNIZER_SIZE as usize, RECOGNIZER_SIZE as usize));
-        for y in 0..RECOGNIZER_SIZE as usize {
-            for x in 0..RECOGNIZER_SIZE as usize {
+        let aligned = if aligned.width() == spec.width && aligned.height() == spec.height {
+            aligned
+        } else {
+            image::imageops::resize(&aligned, spec.width, spec.height, FilterType::Triangle)
+        };
+        let mut input = Array4::<f32>::zeros((1, 3, spec.height as usize, spec.width as usize));
+        for y in 0..spec.height as usize {
+            for x in 0..spec.width as usize {
                 let pixel = aligned.get_pixel(x as u32, y as u32);
-                // SFace follows OpenCV DNN BGR input order and uses 0..255 values.
-                input[[0, 0, y, x]] = f32::from(pixel[2]);
-                input[[0, 1, y, x]] = f32::from(pixel[1]);
-                input[[0, 2, y, x]] = f32::from(pixel[0]);
+                let rgb = [
+                    f32::from(pixel[0]),
+                    f32::from(pixel[1]),
+                    f32::from(pixel[2]),
+                ];
+                let channels = match spec.color_order.as_str() {
+                    "RGB" => rgb,
+                    "BGR" => [rgb[2], rgb[1], rgb[0]],
+                    _ => return Err("人脸识别模型颜色顺序不受支持".to_string()),
+                };
+                for channel in 0..3 {
+                    input[[0, channel, y, x]] = match spec.normalization.as_str() {
+                        // 保留现有 SFace 路径，避免内置模型的预处理行为变化。
+                        "sface_127_5" => channels[channel],
+                        "arcface_127_5" => channels[channel] / 127.5 - 1.0,
+                        _ => return Err("人脸识别模型预处理方式不受支持".to_string()),
+                    };
+                }
             }
         }
         let mut session = recognizer
@@ -653,17 +957,16 @@ impl FaceMonitorRuntime {
         let (_, tensor) = outputs[0]
             .try_extract_tensor::<f32>()
             .map_err(|error| format!("读取识别结果失败：{error}"))?;
-        if tensor.len() != 128 {
+        if tensor.len() != spec.output_dimension {
             return Err(format!("识别模型输出维数异常：{}", tensor.len()));
         }
-        let mut embedding = [0.0_f32; 128];
-        embedding.copy_from_slice(tensor);
+        let mut embedding = tensor.to_vec();
         normalize_embedding(&mut embedding);
         Ok(embedding)
     }
 
     /// 人员参考照片入口：解码图片→检测人脸→取最高分脸→提取特征。
-    pub fn embedding_from_photo_bytes(&self, bytes: &[u8]) -> Result<[f32; 128], String> {
+    pub fn embedding_from_photo_bytes(&self, bytes: &[u8]) -> Result<Vec<f32>, String> {
         if self.detector.is_none() {
             return Err("人脸检测模型未就绪".to_string());
         }
@@ -689,6 +992,45 @@ impl FaceMonitorRuntime {
         let scale_y = origin_height / DETECTOR_SIZE as f32;
         let landmarks: [(f32, f32); 5] = face.landmarks.map(|(x, y)| (x * scale_x, y * scale_y));
         self.extract_embedding(&photo, landmarks)
+    }
+
+    /// 在保存原图前做一次本地参考图检查。人脸和人体检测器都可用时，取两者
+    /// 中更大的主体数，避免把多人合照意外编码为某一个人的模板。
+    pub fn analyze_reference_photo(&self, bytes: &[u8]) -> Result<ReferencePhotoAnalysis, String> {
+        let photo = image::load_from_memory(bytes)
+            .map_err(|error| format!("参考照片无法解码：{error}"))?
+            .to_rgb8();
+        let mut detected_subject_count = 0_u8;
+        let mut face_quality_score = None;
+        let mut body_quality_score = None;
+
+        if self.detector.is_some() {
+            if let Some(detection) = self.detect_in_rgb(&photo)? {
+                detected_subject_count = detected_subject_count.max(detection.detected_faces);
+                face_quality_score = Some(
+                    detection
+                        .faces
+                        .iter()
+                        .map(|face| face.score)
+                        .fold(f32::from(detection.confidence) / 100.0, f32::max),
+                );
+            }
+        }
+        if self.person_detector.is_some() {
+            let people = self.detect_people(&photo)?;
+            detected_subject_count =
+                detected_subject_count.max(people.len().min(u8::MAX as usize) as u8);
+            body_quality_score = people
+                .iter()
+                .map(|person| person.score)
+                .max_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+        }
+
+        Ok(ReferencePhotoAnalysis {
+            detected_subject_count,
+            face_quality_score,
+            body_quality_score,
+        })
     }
 
     /// 参考照片的人体外观特征。只接受检测到的有效人体，避免把背景编码进人员模板。
@@ -746,26 +1088,25 @@ impl FaceMonitorRuntime {
     }
 
     fn extract_body_embedding(&self, image: &image::RgbImage) -> Result<Vec<f32>, String> {
-        let resized = image::imageops::resize(
-            image,
-            PERSON_REID_WIDTH,
-            PERSON_REID_HEIGHT,
-            FilterType::Triangle,
-        );
+        let spec = &self.model_state.person_reid_spec;
+        let resized = image::imageops::resize(image, spec.width, spec.height, FilterType::Triangle);
+        if spec.normalization != "imagenet" {
+            return Err("人体识别模型预处理方式不受支持".to_string());
+        }
         let mean = [0.485_f32, 0.456, 0.406];
         let std = [0.229_f32, 0.224, 0.225];
-        let mut input = Array4::<f32>::zeros((
-            1,
-            3,
-            PERSON_REID_HEIGHT as usize,
-            PERSON_REID_WIDTH as usize,
-        ));
-        for y in 0..PERSON_REID_HEIGHT as usize {
-            for x in 0..PERSON_REID_WIDTH as usize {
+        let mut input = Array4::<f32>::zeros((1, 3, spec.height as usize, spec.width as usize));
+        for y in 0..spec.height as usize {
+            for x in 0..spec.width as usize {
                 let pixel = resized.get_pixel(x as u32, y as u32);
                 for channel in 0..3 {
+                    let source_channel = if spec.color_order == "BGR" {
+                        2 - channel
+                    } else {
+                        channel
+                    };
                     input[[0, channel, y, x]] =
-                        (f32::from(pixel[channel]) / 255.0 - mean[channel]) / std[channel];
+                        (f32::from(pixel[source_channel]) / 255.0 - mean[channel]) / std[channel];
                 }
             }
         }
@@ -783,7 +1124,7 @@ impl FaceMonitorRuntime {
         let (_, tensor) = outputs[0]
             .try_extract_tensor::<f32>()
             .map_err(|error| format!("读取人体识别结果失败：{error}"))?;
-        if tensor.len() != PERSON_REID_DIM {
+        if tensor.len() != spec.output_dimension {
             return Err(format!("人体识别模型输出维数异常：{}", tensor.len()));
         }
         let mut embedding = tensor.to_vec();
@@ -1027,7 +1368,7 @@ fn weighted_similarity<T: AsRef<[f32]>>(embedding: &[f32], samples: &[T]) -> Opt
     )
 }
 
-fn weighted_person_similarity(embedding: &[f32; 128], samples: &[[f32; 128]]) -> Option<f32> {
+fn weighted_person_similarity(embedding: &[f32], samples: &[Vec<f32>]) -> Option<f32> {
     weighted_similarity(embedding, samples)
 }
 
@@ -1146,7 +1487,7 @@ fn select_reference_person<'a>(
 
 /// 在人员模板中取多样本加权相似度最高者；匹配置信度 = 相似度×100（负值 clamp 到 0），
 /// 是否达到告警门限由 accept_match 的 min_confidence 把关。
-fn best_face_match(embedding: &[f32; 128], people: &[PersonTemplate]) -> Option<FaceMatch> {
+fn best_face_match(embedding: &[f32], people: &[PersonTemplate]) -> Option<FaceMatch> {
     let mut best: Option<(f32, &PersonTemplate)> = None;
     for person in people {
         let Some(similarity) = weighted_person_similarity(embedding, &person.face_embeddings)
@@ -1204,8 +1545,8 @@ fn body_similarity_to_confidence(similarity: f32) -> u8 {
         .clamp(0.0, 100.0) as u8
 }
 
-/// 特征落库序列化：小端 f32 × 128。
-pub fn embedding_bytes(embedding: &[f32; 128]) -> Vec<u8> {
+/// 特征落库序列化：小端 f32。向量维度由对应 Embedding Space 的模型语义决定。
+pub fn embedding_bytes(embedding: &[f32]) -> Vec<u8> {
     embedding
         .iter()
         .flat_map(|value| value.to_le_bytes())
@@ -1241,6 +1582,10 @@ pub fn dynamic_embedding_from_bytes(bytes: &[u8], dimensions: usize) -> Result<V
 }
 
 fn model_state_from_dir(dir: &Path) -> Result<FaceModelState, String> {
+    let v4_path = dir.join("manifest.v4.json");
+    if v4_path.is_file() {
+        return model_state_from_v4(dir, &v4_path);
+    }
     let manifest_path = dir.join("manifest.json");
     let manifest_text = fs::read_to_string(&manifest_path)
         .map_err(|_| format!("未找到模型清单：{}", manifest_path.display()))?;
@@ -1281,14 +1626,180 @@ fn model_state_from_dir(dir: &Path) -> Result<FaceModelState, String> {
             }
         }
     });
+    let face_embedding_space_id = legacy_embedding_space("face", &manifest.model_version);
+    let body_embedding_space_id = legacy_embedding_space("body", &manifest.model_version);
     Ok(FaceModelState {
         ready: true,
         version: Some(manifest.model_version),
+        profile_id: Some("legacy".to_string()),
+        face_embedding_space_id: Some(face_embedding_space_id),
+        body_embedding_space_id: Some(body_embedding_space_id),
         error: optional_error,
         detector_path: Some(detector_path),
         recognizer_path,
         person_detector_path,
         person_recognizer_path,
+        face_recognizer_spec: FaceRecognizerSpec::default(),
+        person_reid_spec: PersonReIdSpec::default(),
+    })
+}
+
+fn model_state_from_v4(dir: &Path, manifest_path: &Path) -> Result<FaceModelState, String> {
+    let manifest_text = fs::read_to_string(manifest_path)
+        .map_err(|_| format!("未找到模型清单：{}", manifest_path.display()))?;
+    let manifest: VisionManifestV4 = serde_json::from_str(&manifest_text)
+        .map_err(|error| format!("模型清单格式无效：{error}"))?;
+    validate_manifest_v4(&manifest).map_err(|error| format!("模型清单校验失败：{error}"))?;
+    if manifest.profile.engine != "onnxruntime" {
+        return Err("当前兼容运行时尚未加载 OpenVINO Profile".to_string());
+    }
+
+    let component = |id: &str| {
+        manifest
+            .components
+            .iter()
+            .find(|component| component.id == id)
+            .ok_or_else(|| "V4 模型管线缺少组件".to_string())
+    };
+    let face_detector = manifest
+        .components
+        .iter()
+        .find(|component| component.category == "face_detector")
+        .ok_or_else(|| "V4 模型管线缺少人脸检测器".to_string())?;
+    let face_recognizer = component(&manifest.pipeline.face_engine)?;
+    let person_detector = component(&manifest.pipeline.person_detector)?;
+    let person_reid = component(&manifest.pipeline.person_re_id_engine)?;
+    if face_detector.adapter_id != "builtin.face-detector.yunet.v1"
+        || !matches!(
+            face_recognizer.adapter_id.as_str(),
+            "builtin.face-recognizer.sface.v1" | "builtin.face-recognizer.arcface.v1"
+        )
+        || person_detector.adapter_id != "builtin.person-detector.yolox.v1"
+        || !matches!(
+            person_reid.adapter_id.as_str(),
+            "builtin.person-reid.youtu.v1" | "builtin.person-reid.osnet.v1"
+        )
+    {
+        return Err("当前兼容运行时不支持该 V4 模型适配器组合".to_string());
+    }
+    let face_recognizer_spec = face_recognizer_spec_from_v4(face_recognizer)?;
+    let person_reid_spec = person_reid_spec_from_v4(person_reid)?;
+    let pipeline =
+        resolve_pipeline(&manifest).map_err(|error| format!("模型管线解析失败：{error}"))?;
+    Ok(FaceModelState {
+        ready: true,
+        version: Some(manifest.profile.version),
+        profile_id: Some(manifest.profile.id),
+        face_embedding_space_id: Some(
+            pipeline
+                .face_recognizer
+                .embedding_space_id
+                .as_str()
+                .to_string(),
+        ),
+        body_embedding_space_id: Some(pipeline.person_reid.embedding_space_id.as_str().to_string()),
+        error: None,
+        detector_path: Some(validate_v4_model_asset(dir, "人脸检测", face_detector)?),
+        recognizer_path: Some(validate_v4_model_asset(dir, "人脸识别", face_recognizer)?),
+        person_detector_path: Some(validate_v4_model_asset(dir, "人体检测", person_detector)?),
+        person_recognizer_path: Some(validate_v4_model_asset(dir, "人体识别", person_reid)?),
+        face_recognizer_spec,
+        person_reid_spec,
+    })
+}
+
+fn legacy_embedding_space(modality: &str, model_version: &str) -> String {
+    let digest = hex::encode(Sha256::digest(model_version.as_bytes()));
+    format!("legacy.{modality}.{}", &digest[..16])
+}
+
+fn validate_v4_model_asset(
+    dir: &Path,
+    label: &str,
+    asset: &V4ComponentDescriptor,
+) -> Result<PathBuf, String> {
+    validate_model_asset(
+        dir,
+        label,
+        &FaceModelAsset {
+            file: asset.file.clone(),
+            sha256: asset.sha256.clone(),
+        },
+    )
+}
+
+fn face_recognizer_spec_from_v4(
+    component: &V4ComponentDescriptor,
+) -> Result<FaceRecognizerSpec, String> {
+    let input = component
+        .input
+        .as_ref()
+        .ok_or_else(|| "人脸识别模型缺少输入语义".to_string())?;
+    let output = component
+        .output
+        .as_ref()
+        .ok_or_else(|| "人脸识别模型缺少输出语义".to_string())?;
+    let (width, height) = match input.resize_mode.as_str() {
+        "aligned_112" => (112, 112),
+        value => value
+            .split_once('x')
+            .and_then(|(width, height)| {
+                Some((width.parse::<u32>().ok()?, height.parse::<u32>().ok()?))
+            })
+            .filter(|(width, height)| (64..=512).contains(width) && (64..=512).contains(height))
+            .ok_or_else(|| "人脸识别模型输入尺寸无效".to_string())?,
+    };
+    if output.embedding_dimension == 0 || output.distance_metric != "cosine" {
+        return Err("人脸识别模型输出语义不受支持".to_string());
+    }
+    match component.adapter_id.as_str() {
+        "builtin.face-recognizer.sface.v1"
+            if input.color_order == "BGR"
+                && input.normalization == "sface_127_5"
+                && output.embedding_dimension == 128 => {}
+        "builtin.face-recognizer.arcface.v1"
+            if matches!(input.color_order.as_str(), "RGB" | "BGR")
+                && input.normalization == "arcface_127_5"
+                && output.embedding_dimension == 512 => {}
+        _ => return Err("当前兼容运行时不支持该人脸识别模型语义".to_string()),
+    }
+    Ok(FaceRecognizerSpec {
+        width,
+        height,
+        output_dimension: output.embedding_dimension as usize,
+        color_order: input.color_order.clone(),
+        normalization: input.normalization.clone(),
+    })
+}
+
+fn person_reid_spec_from_v4(component: &V4ComponentDescriptor) -> Result<PersonReIdSpec, String> {
+    let input = component
+        .input
+        .as_ref()
+        .ok_or_else(|| "人体识别模型缺少输入语义".to_string())?;
+    let output = component
+        .output
+        .as_ref()
+        .ok_or_else(|| "人体识别模型缺少输出语义".to_string())?;
+    let (height, width) = input
+        .resize_mode
+        .split_once('x')
+        .and_then(|(height, width)| Some((height.parse::<u32>().ok()?, width.parse::<u32>().ok()?)))
+        .filter(|(height, width)| (32..=1024).contains(height) && (16..=1024).contains(width))
+        .ok_or_else(|| "人体识别模型输入尺寸无效".to_string())?;
+    if !matches!(input.color_order.as_str(), "RGB" | "BGR")
+        || input.normalization != "imagenet"
+        || output.embedding_dimension == 0
+        || output.distance_metric != "cosine"
+    {
+        return Err("人体识别模型语义不受支持".to_string());
+    }
+    Ok(PersonReIdSpec {
+        width,
+        height,
+        output_dimension: output.embedding_dimension as usize,
+        color_order: input.color_order.clone(),
+        normalization: input.normalization.clone(),
     })
 }
 
@@ -1337,6 +1848,29 @@ mod tests {
         assert_eq!(settings.body_cooldown_seconds, 86_400);
         assert_eq!(settings.applied_policy_version, 0);
         assert_eq!(settings.device_id.as_deref(), Some("camera-1"));
+    }
+
+    #[test]
+    fn arcface_v4_semantics_use_a_dynamic_512_dimension_embedding() {
+        let component: V4ComponentDescriptor = serde_json::from_str(
+            r#"{
+                "id":"face-recognizer",
+                "category":"face_recognizer",
+                "family":"arcface",
+                "file":"arcface.onnx",
+                "sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "adapterId":"builtin.face-recognizer.arcface.v1",
+                "engine":"onnxruntime",
+                "input":{"colorOrder":"RGB","resizeMode":"aligned_112","normalization":"arcface_127_5"},
+                "output":{"embeddingDimension":512,"distanceMetric":"cosine"}
+            }"#,
+        )
+        .expect("arcface component");
+
+        let spec = face_recognizer_spec_from_v4(&component).expect("arcface spec");
+        assert_eq!(spec.output_dimension, 512);
+        assert_eq!(spec.color_order, "RGB");
+        assert_eq!(spec.normalization, "arcface_127_5");
     }
 
     #[test]
@@ -1431,6 +1965,46 @@ mod tests {
     }
 
     #[test]
+    fn v4_osnet_manifest_uses_its_own_embedding_dimension() {
+        let temp = tempfile::tempdir().unwrap();
+        for (name, contents) in [
+            ("face-detector.onnx", b"face-detector".as_slice()),
+            ("face.onnx", b"face".as_slice()),
+            ("person-detector.onnx", b"person-detector".as_slice()),
+            ("osnet.onnx", b"osnet".as_slice()),
+        ] {
+            fs::write(temp.path().join(name), contents).unwrap();
+        }
+        let sha =
+            |name: &str| hex::encode(Sha256::digest(fs::read(temp.path().join(name)).unwrap()));
+        fs::write(temp.path().join("manifest.v4.json"), format!(r#"{{
+          "schemaVersion":4,
+          "package":{{"id":"test.osnet","version":"1.0.0"}},
+          "profile":{{"id":"office-osnet-x025","version":"1.0.0","tier":"balanced","displayName":"OSNet","provider":"test","engine":"onnxruntime","supportedBackends":["cpu"]}},
+          "pipeline":{{"personDetector":"person-detector","faceEngine":"face-recognizer","personReIdEngine":"person-reid","fusionPolicy":"quality-temporal-v1"}},
+          "components":[
+            {{"id":"face-detector","category":"face_detector","family":"yunet","file":"face-detector.onnx","sha256":"{}","adapterId":"builtin.face-detector.yunet.v1","engine":"onnxruntime"}},
+            {{"id":"face-recognizer","category":"face_recognizer","family":"sface","file":"face.onnx","sha256":"{}","adapterId":"builtin.face-recognizer.sface.v1","engine":"onnxruntime","input":{{"colorOrder":"RGB","resizeMode":"aligned_112","normalization":"sface_127_5"}},"output":{{"embeddingDimension":128,"distanceMetric":"cosine"}}}},
+            {{"id":"person-detector","category":"person_detector","family":"yolox","file":"person-detector.onnx","sha256":"{}","adapterId":"builtin.person-detector.yolox.v1","engine":"onnxruntime"}},
+            {{"id":"person-reid","category":"person_reid","family":"osnet-x025","file":"osnet.onnx","sha256":"{}","adapterId":"builtin.person-reid.osnet.v1","engine":"onnxruntime","input":{{"colorOrder":"RGB","resizeMode":"256x128","normalization":"imagenet"}},"output":{{"embeddingDimension":512,"distanceMetric":"cosine"}}}}
+          ]
+        }}"#, sha("face-detector.onnx"), sha("face.onnx"), sha("person-detector.onnx"), sha("osnet.onnx"))).unwrap();
+
+        let state = model_state_from_dir(temp.path()).expect("v4 OSNet state");
+        assert_eq!(state.person_reid_spec.output_dimension, 512);
+        assert_eq!(state.person_reid_spec.width, 128);
+        assert_eq!(state.person_reid_spec.height, 256);
+        assert_ne!(
+            state.face_embedding_space_id.as_deref(),
+            state.body_embedding_space_id.as_deref()
+        );
+        assert!(state
+            .body_embedding_space_id
+            .as_deref()
+            .is_some_and(|space| space.contains("body.osnet-x025")));
+    }
+
+    #[test]
     fn bundled_onnx_detector_can_be_opened_by_onnx_runtime() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/object-models");
         let mut detector = ort::session::Session::builder()
@@ -1447,6 +2021,13 @@ mod tests {
             .unwrap();
         let (_, cls8) = outputs[0].try_extract_tensor::<f32>().unwrap();
         assert_eq!(cls8.len(), 6400);
+    }
+
+    #[test]
+    fn bundled_v4_profile_passes_candidate_runtime_validation() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/object-models");
+        FaceMonitorRuntime::validate_candidate_model_dir(&root)
+            .expect("bundled V4 profile candidate runtime");
     }
 
     fn stride_layer<'a>(
@@ -1587,9 +2168,59 @@ mod tests {
         PersonTemplate {
             person_id: person_id.to_string(),
             display_name: format!("人员{person_id}"),
-            face_embeddings: vec![embedding],
+            face_embeddings: vec![embedding.to_vec()],
             body_embeddings: vec![],
         }
+    }
+
+    fn matched(person_id: &str, confidence: u8, level: &str) -> FaceMatch {
+        FaceMatch {
+            person_id: person_id.to_string(),
+            display_name: person_id.to_string(),
+            confidence,
+            recognition_level: level.to_string(),
+            face_confidence: (level == "confirmed").then_some(confidence),
+            body_confidence: (level == "suspected").then_some(confidence),
+        }
+    }
+
+    #[test]
+    fn same_track_face_and_body_are_emitted_as_one_confirmed_match() {
+        let runtime = FaceMonitorRuntime::default();
+        let fused = runtime
+            .fuse_track_matches(
+                "track-1",
+                1,
+                TrackEvidence {
+                    face: Some((matched("alice", 91, "confirmed"), 0.95)),
+                    body: Some((matched("alice", 84, "suspected"), 0.90)),
+                },
+            )
+            .expect("fused match");
+
+        assert_eq!(fused.person_id, "alice");
+        assert_eq!(fused.recognition_level, "confirmed");
+        assert_eq!(fused.face_confidence, Some(91));
+        assert_eq!(fused.body_confidence, Some(84));
+    }
+
+    #[test]
+    fn body_only_track_stays_suspected() {
+        let runtime = FaceMonitorRuntime::default();
+        let fused = runtime
+            .fuse_track_matches(
+                "track-1",
+                1,
+                TrackEvidence {
+                    face: None,
+                    body: Some((matched("alice", 84, "suspected"), 0.90)),
+                },
+            )
+            .expect("body candidate");
+
+        assert_eq!(fused.recognition_level, "suspected");
+        assert_eq!(fused.face_confidence, None);
+        assert_eq!(fused.body_confidence, Some(84));
     }
 
     #[test]
@@ -1624,7 +2255,8 @@ mod tests {
         weak[0] = 0.20;
         weak[1] = (0.96_f32).sqrt();
         let score =
-            weighted_person_similarity(&query, &[close, medium, weak]).expect("weighted score");
+            weighted_person_similarity(&query, &[close.to_vec(), medium.to_vec(), weak.to_vec()])
+                .expect("weighted score");
         assert!(
             score < 0.80 && score > 0.60,
             "score should blend top samples: {score}"

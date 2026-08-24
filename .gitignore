@@ -25,6 +25,8 @@ src-tauri/.keys/
 .package/
 artifacts/
 release-assets/
+.model-cache/
+src-tauri/resources/model-profiles/
 LanChat-green/
 LanChat_*_green/
 LanChat_*_green.zip

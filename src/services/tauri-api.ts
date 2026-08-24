@@ -1,15 +1,34 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AdminRemoteUpdate, AppVersionInfo, CallSignal, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Nudge, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem, UpdateCheckResult, UpdateGithubTokenInfo } from "../types/lanchat";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, PetStatePlaybackConfig } from "../types/desktop-pet";
-import type { CameraFaceAlert, CameraFrameSample, CameraMonitorSettings, FaceMonitorPolicy, FaceMonitorRuntimeStatus, FacePersonPolicy } from "../types/face-monitor";
+import type { CameraFaceAlert, CameraMonitorSettings, FaceMonitorPolicy, FaceMonitorRuntimeStatus, FacePersonPolicy } from "../types/face-monitor";
+import type { VisionFrameSample, VisionProfileSummary, VisionRuntimeDiagnostics, VisionRuntimeSnapshot } from "../types/vision";
+import { encodeVisionFrameEnvelope } from "./visionFrameTransport";
 
 export const api = {
   getPlatformInfo: () => invoke<PlatformInfo>("get_platform_info"),
   getFaceMonitorStatus: () => invoke<FaceMonitorRuntimeStatus>("get_face_monitor_status"),
   updateFaceMonitorLocalSettings: (settings: CameraMonitorSettings) => invoke<CameraMonitorSettings>("update_face_monitor_local_settings", { settings }),
-  submitFaceMonitorFrame: (sample: CameraFrameSample) => invoke<CameraFaceAlert | null>("submit_face_monitor_frame", { bytes: Array.from(sample.bytes), width: sample.width, height: sample.height }),
+  submitVisionFrameRaw: (sample: VisionFrameSample) =>
+    invoke<void>("submit_vision_frame_raw", { frame: encodeVisionFrameEnvelope(sample) }),
+  getVisionRuntimeDiagnostics: () => invoke<VisionRuntimeDiagnostics>("get_vision_runtime_diagnostics"),
+  getVisionRuntimeSnapshot: () => invoke<VisionRuntimeSnapshot>("get_vision_runtime_snapshot"),
+  listVisionModelProfiles: () => invoke<VisionProfileSummary[]>("list_vision_model_profiles"),
+  refreshVisionModelCatalog: () => invoke<VisionProfileSummary[]>("refresh_vision_model_catalog"),
+  installVisionModelProfile: (profileId: string, profileVersion: string) =>
+    invoke<VisionProfileSummary[]>("install_vision_model_profile", { profileId, profileVersion }),
+  uninstallVisionModelProfile: (profileId: string, profileVersion: string) =>
+    invoke<VisionProfileSummary[]>("uninstall_vision_model_profile", { profileId, profileVersion }),
+  activateVisionModelProfile: (profileId: string, profileVersion: string) =>
+    invoke<VisionProfileSummary[]>("activate_vision_model_profile", { profileId, profileVersion }),
+  setVisionRuntimePaused: (paused: boolean) => invoke<VisionRuntimeSnapshot>("set_vision_runtime_paused", { paused }),
+  // 过渡兼容：旧调用方继续使用原方法名，但实际只会进入新的 Raw RGBA 通道。
+  submitFaceMonitorFrame: (sample: VisionFrameSample) =>
+    invoke<void>("submit_vision_frame_raw", { frame: encodeVisionFrameEnvelope(sample) }),
   listFacePeople: () => invoke<FacePersonPolicy[]>("list_face_people"),
   deleteFacePersonLocal: (personId: string) => invoke<void>("delete_face_person_local", { personId }),
+  deleteLocalFacePersonReferencePhoto: (personId: string, photoPath: string) =>
+    invoke<FacePersonPolicy>("delete_local_face_person_reference_photo", { personId, photoPath }),
   saveFaceReferencePhoto: (bytes: Uint8Array) => invoke<string>("save_face_reference_photo", { bytes: Array.from(bytes) }),
   createLocalFacePerson: (personId: string, displayName: string, photoPaths: string[]) =>
     invoke<FacePersonPolicy>("create_local_face_person", { personId, displayName, photoPaths }),

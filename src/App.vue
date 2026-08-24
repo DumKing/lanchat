@@ -46,6 +46,9 @@ import { storeToRefs } from "pinia";
 import { api } from "./services/tauri-api";
 import { cameraMediaCoordinator } from "./services/cameraMediaCoordinator";
 import ChatComposerInput from "./components/ChatComposerInput.vue";
+import VisionModelCenter from "./components/VisionModelCenter.vue";
+import VisionPeoplePanel from "./components/VisionPeoplePanel.vue";
+import VisionRuntimeStatus from "./components/VisionRuntimeStatus.vue";
 import { DEFAULT_GROUP_ID, useLanChatStore } from "./stores/lanchat";
 import { useDesktopPetStore } from "./stores/desktopPet";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, ExternalPushConfig, ExternalPushKind, PetPackageSource, PetStateKind, PetStatePlaybackConfig } from "./types/desktop-pet";
@@ -60,10 +63,11 @@ import { createGameRoomShell, gameDefinitionOf, gameRegistry, type GameRoomShell
 import { alertTemperature, alertTruthScore, senderCredibility } from "./utils/alertCredibility";
 import { detectMentionKind, trayConversationTitle, type MentionKind } from "./utils/messageMentions";
 import { peerDisplayName, peerOriginalName, sameDeviceId, sortPeersForDisplay } from "./utils/peerPresentation";
-import { DEFAULT_CAMERA_MONITOR_SETTINGS, type CameraFaceAlert, type CameraFrameSample, type CameraMonitorSettings, type CameraMonitorStatus, type FaceMonitorPolicy, type FaceMonitorRuntimeStatus, type FacePersonPolicy } from "./types/face-monitor";
+import { DEFAULT_CAMERA_MONITOR_SETTINGS, type CameraFaceAlert, type CameraMonitorSettings, type CameraMonitorStatus, type FaceMonitorPolicy, type FaceMonitorRuntimeStatus, type FacePersonPolicy } from "./types/face-monitor";
+import type { VisionFrameSample, VisionProfileSummary, VisionRuntimeDiagnostics, VisionRuntimeSnapshot } from "./types/vision";
 import { dateLocale, effectiveLocale, installUiTranslation, languagePreference, naiveLocale, setLanguagePreference, t } from "./i18n";
 type UiThemeKey = "theme-dingtalk" | "theme-work" | "theme-lan" | "theme-light";
-type MainSection = "chat" | "devices" | "games" | "alerts" | "settings";
+type MainSection = "chat" | "devices" | "games" | "alerts" | "vision" | "settings";
 type RecipientPickerMode = "gameInvite" | "privateChannelCreate" | "privateChannelInvite";
 type SimulationKind = "direct" | "channel" | "alert" | "disco";
 type UndoRequest = {
@@ -354,6 +358,11 @@ const avatarDraft = ref("");
 const faceMonitorSettings = ref<CameraMonitorSettings>({ ...DEFAULT_CAMERA_MONITOR_SETTINGS });
 const faceMonitorMediaStatus = ref<CameraMonitorStatus>(cameraMediaCoordinator.getStatus());
 const faceMonitorRuntimeStatus = ref<FaceMonitorRuntimeStatus | null>(null);
+const visionModelProfiles = ref<VisionProfileSummary[]>([]);
+const visionModelCatalogRefreshing = ref(false);
+const visionModelInstallingKey = ref("");
+const visionRuntimeDiagnostics = ref<VisionRuntimeDiagnostics | null>(null);
+const visionRuntimeSnapshot = ref<VisionRuntimeSnapshot | null>(null);
 const faceMonitorPolicy = ref<FaceMonitorPolicy | null>(null);
 const facePeople = ref<FacePersonPolicy[]>([]);
 const cameraFaceAlerts = ref<CameraFaceAlert[]>([]);
@@ -411,6 +420,7 @@ const cameraDeviceOptions = ref<{ label: string; value: string }[]>([]);
 const faceMonitorSaving = ref(false);
 let unlistenFaceMonitorMediaStatus: (() => void) | null = null;
 let unlistenFaceMonitorFrames: (() => void) | null = null;
+let latestCameraFrameSample: VisionFrameSample | null = null;
 let faceMonitorStatusTimer: number | null = null;
 const profileAvatarInput = ref<HTMLInputElement | null>(null);
 const adminNotificationImageInput = ref<HTMLInputElement | null>(null);
@@ -679,7 +689,7 @@ const adminNotificationTargetOptions = computed(() => onlinePeers.value.map((pee
 })));
 const UPDATE_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
 const activeSection = ref<MainSection>("chat");
-const settingsCategory = ref<"basic" | "camera" | "pet" | "admin">("basic");
+const settingsCategory = ref<"basic" | "pet" | "admin">("basic");
 const listPaneCollapsed = ref(false);
 type ResizePaneKind = "list" | "group";
 type PaneResizeState = { kind: ResizePaneKind; startX: number; startWidth: number };
@@ -1753,7 +1763,12 @@ onMounted(async () => {
     await listen<FaceMonitorPolicy>("face_monitor_policy_received", (event) => {
       void applyReceivedFaceMonitorPolicy(event.payload);
     });
-    await listen<CameraFaceAlert>("camera_face_alert_received", (event) => { upsertCameraFaceAlert(event.payload); });
+    await listen<CameraFaceAlert>("camera_face_alert_received", (event) => {
+      upsertCameraFaceAlert(event.payload);
+      if (event.payload.sourceDeviceId === profile.value?.device_id && latestCameraFrameSample) {
+        void attachLocalCameraFacePreview(event.payload, latestCameraFrameSample);
+      }
+    });
     await listen<CameraFaceAlert>("camera_face_alert_feedback_received", (event) => { upsertCameraFaceAlert(event.payload, false); });
   } catch {
     // 浏览器预览时没有 Tauri 事件通道。
@@ -1980,8 +1995,8 @@ watch(latestAdminRemoteUpdate, (command: AdminRemoteUpdate | null) => {
     store.error = `执行远程强制更新失败：${stringifyError(err)}`;
   });
 });
-watch(settingsCategory, (next, previous) => {
-  if (previous === "camera" && next !== "camera") {
+watch(activeSection, (next, previous) => {
+  if (previous === "vision" && next !== "vision") {
     cameraLivePreviewEnabled.value = false;
     cameraFaceAlertPreviewOpen.value = false;
     if (cameraLivePreviewVideo.value) cameraLivePreviewVideo.value.srcObject = null;
@@ -4733,6 +4748,15 @@ function openSection(section: MainSection) {
     listPaneCollapsed.value = false;
   }
 }
+function openVisionPersonRegistration() {
+  openSection("vision");
+  void nextTick(() => {
+    document.getElementById("vision-person-registration")?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  });
+}
 function toggleListPane() {
   listPaneCollapsed.value = !listPaneCollapsed.value;
 }
@@ -5657,8 +5681,65 @@ async function refreshCameraDeviceOptions() {
 }
 
 async function refreshFaceMonitorRuntimeStatus() {
-  faceMonitorRuntimeStatus.value = await api.getFaceMonitorStatus().catch(() => faceMonitorRuntimeStatus.value);
+  const [status, diagnostics, snapshot] = await Promise.all([
+    api.getFaceMonitorStatus().catch(() => faceMonitorRuntimeStatus.value),
+    api.getVisionRuntimeDiagnostics().catch(() => visionRuntimeDiagnostics.value),
+    api.getVisionRuntimeSnapshot().catch(() => visionRuntimeSnapshot.value),
+  ]);
+  faceMonitorRuntimeStatus.value = status;
+  visionRuntimeDiagnostics.value = diagnostics;
+  visionRuntimeSnapshot.value = snapshot;
   cameraMediaCoordinator.setSamplingAllowed(Boolean(faceMonitorRuntimeStatus.value?.modelReady));
+}
+
+async function refreshVisionModelProfiles(refreshCatalog = false) {
+  visionModelCatalogRefreshing.value = refreshCatalog;
+  try {
+    visionModelProfiles.value = await (refreshCatalog ? api.refreshVisionModelCatalog() : api.listVisionModelProfiles());
+  } catch (error) {
+    if (refreshCatalog) operationNotice.value = `模型目录刷新失败：${stringifyError(error)}`;
+  } finally {
+    visionModelCatalogRefreshing.value = false;
+  }
+}
+
+async function installVisionModel(profile: VisionProfileSummary) {
+  const key = `${profile.profileId}@${profile.profileVersion}`;
+  visionModelInstallingKey.value = key;
+  try {
+    visionModelProfiles.value = await api.installVisionModelProfile(profile.profileId, profile.profileVersion);
+    operationNotice.value = "模型已安全安装，重启 LanChat 后可激活新模型。";
+  } catch (error) {
+    operationNotice.value = `模型安装失败：${stringifyError(error)}`;
+  } finally {
+    visionModelInstallingKey.value = "";
+  }
+}
+
+async function activateVisionModel(profile: VisionProfileSummary) {
+  try {
+    visionModelProfiles.value = await api.activateVisionModelProfile(profile.profileId, profile.profileVersion);
+    if (profile.recommendedSettings) {
+      await updateFaceMonitorSettings({
+        sampleFps: profile.recommendedSettings.sampleFps,
+        faceMinConfidence: profile.recommendedSettings.faceMinConfidence,
+        bodyMinConfidence: profile.recommendedSettings.bodyMinConfidence,
+        consecutiveHits: profile.recommendedSettings.consecutiveHits,
+      });
+    }
+    operationNotice.value = "已设为下次启动使用的模型；当前检测不中断，重启后自动切换。";
+  } catch (error) {
+    operationNotice.value = `启用模型失败：${stringifyError(error)}`;
+  }
+}
+
+async function uninstallVisionModel(profile: VisionProfileSummary) {
+  try {
+    visionModelProfiles.value = await api.uninstallVisionModelProfile(profile.profileId, profile.profileVersion);
+    operationNotice.value = "模型已卸载。";
+  } catch (error) {
+    operationNotice.value = `模型卸载失败：${stringifyError(error)}`;
+  }
 }
 
 async function refreshFaceMonitorRules() {
@@ -5734,10 +5815,22 @@ async function applyReceivedFaceMonitorPolicy(policy: FaceMonitorPolicy) {
 
 // Camera evidence is an ephemeral local Blob URL. It is never saved to SQLite
 // and is deliberately absent from the LAN alert frame.
-function attachLocalCameraFacePreview(record: CameraFaceAlert, sample: CameraFrameSample) {
+async function attachLocalCameraFacePreview(record: CameraFaceAlert, sample: VisionFrameSample) {
   const previous = cameraFacePreviewUrls.value[record.alertId];
   if (previous) URL.revokeObjectURL(previous);
-  const previewUrl = URL.createObjectURL(new Blob([sample.bytes], { type: sample.mimeType }));
+  const canvas = document.createElement("canvas");
+  canvas.width = sample.width;
+  canvas.height = sample.height;
+  const context = canvas.getContext("2d");
+  if (!context) return;
+  context.putImageData(
+    new ImageData(new Uint8ClampedArray(sample.rgba), sample.width, sample.height),
+    0,
+    0,
+  );
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.72));
+  if (!blob) return;
+  const previewUrl = URL.createObjectURL(blob);
   const next = { ...cameraFacePreviewUrls.value, [record.alertId]: previewUrl };
   const entries = Object.entries(next);
   while (entries.length > 8) {
@@ -5829,13 +5922,10 @@ async function initializeFaceMonitor() {
   unlistenFaceMonitorMediaStatus = cameraMediaCoordinator.subscribeStatus((status) => {
     faceMonitorMediaStatus.value = status;
   });
-    unlistenFaceMonitorFrames = cameraMediaCoordinator.subscribeFrames(async (sample) => {
+  unlistenFaceMonitorFrames = cameraMediaCoordinator.subscribeFrames(async (sample) => {
+      latestCameraFrameSample = sample;
       if (!faceMonitorRuntimeStatus.value?.modelReady) return;
-      const alert = await api.submitFaceMonitorFrame(sample).catch(() => null);
-      if (alert) {
-        upsertCameraFaceAlert(alert);
-        attachLocalCameraFacePreview(alert, sample);
-      }
+      await api.submitVisionFrameRaw(sample).catch(() => undefined);
       scheduleFaceMonitorRuntimeStatusRefresh();
     });
   try {
@@ -5850,6 +5940,7 @@ async function initializeFaceMonitor() {
   await refreshFaceMonitorRuntimeStatus();
   await refreshFaceMonitorRules();
   await refreshCameraFaceAlerts();
+  await refreshVisionModelProfiles();
 }
 
 const facePolicyTargetOptions = computed(() => [
@@ -5895,6 +5986,21 @@ function closeFacePersonDetail() {
   facePersonDetailSelectedPhoto.value = "";
 }
 
+async function deleteLocalFacePersonReferencePhoto(photoSource: string) {
+  const person = facePersonDetail.value;
+  if (!person) return;
+  const rawPhoto = (person.photoUrls?.length ? person.photoUrls : [person.photoUrl ?? ""])
+    .find((source) => (source.startsWith("http") || source.startsWith("data:") ? source : convertFileSrc(source)) === photoSource) ?? photoSource;
+  try {
+    const updated = await api.deleteLocalFacePersonReferencePhoto(person.personId, rawPhoto);
+    facePersonDetail.value = updated;
+    facePersonDetailSelectedPhoto.value = facePersonImageSources(updated)[0] ?? "";
+    await refreshFaceMonitorRules();
+  } catch (error) {
+    store.error = stringifyError(error);
+  }
+}
+
 async function handleLocalFacePhotoSelected(event: Event) {
   const files = [...((event.target as HTMLInputElement).files ?? [])];
   if (files.length === 0) return;
@@ -5906,8 +6012,8 @@ async function saveLocalFacePhoto(file: Blob) {
   try {
     const bytes = new Uint8Array(await file.arrayBuffer());
     const path = await api.saveFaceReferencePhoto(bytes);
-    localFacePhotoPaths.value = [...localFacePhotoPaths.value, path].slice(0, 12);
-    localFacePhotoPreviews.value = [...localFacePhotoPreviews.value, URL.createObjectURL(file)].slice(0, 12);
+    localFacePhotoPaths.value = [...localFacePhotoPaths.value, path].slice(0, 30);
+    localFacePhotoPreviews.value = [...localFacePhotoPreviews.value, URL.createObjectURL(file)].slice(0, 30);
   } catch (error) {
     store.error = stringifyError(error);
   }
@@ -5951,8 +6057,8 @@ async function captureLocalFacePhoto() {
 }
 
 async function createLocalFacePerson() {
-  if (!localFacePersonName.value.trim() || localFacePhotoPaths.value.length === 0) {
-    store.error = "请填写人员名称并上传或拍摄参考照片";
+  if (!localFacePersonName.value.trim() || localFacePhotoPaths.value.length < 3) {
+    store.error = "请填写人员名称，并提供 3 至 30 张参考照片";
     return;
   }
   try {
@@ -6388,6 +6494,16 @@ async function closeWindow() {
               >
                 <span class="nav-icon">🐸</span>
                 <span v-if="navExpanded" class="nav-label">狼来了</span>
+              </button>
+              <button
+                class="rail-action"
+                :class="{ active: activeSection === 'vision' }"
+                :title="t('nav.vision')"
+                @click="openSection('vision')"
+              >
+                <span class="nav-icon">◉</span>
+                <span v-if="navExpanded" class="nav-label">{{ t('nav.vision') }}</span>
+                <span v-if="faceMonitorSettings.enabled && !faceMonitorRuntimeStatus?.modelReady" class="nav-notification-dot"></span>
               </button>
               <button class="rail-action add" title="添加设备" @click="openSection('devices')">
                 <span class="nav-icon">＋</span>
@@ -7455,7 +7571,44 @@ async function closeWindow() {
                 </NCard>
               </div>
             </section>
-            <section v-else class="workspace-view settings-view">
+            <section v-if="activeSection === 'vision'" class="workspace-view vision-workspace">
+              <header class="workspace-header vision-workspace-header" data-tauri-drag-region>
+                <div>
+                  <h2>{{ t('vision.workspace.title') }}</h2>
+                  <p>{{ t('vision.workspace.description') }}</p>
+                </div>
+              </header>
+              <div class="vision-workspace-grid">
+                <VisionModelCenter
+                  :status="faceMonitorRuntimeStatus"
+                  :policy="faceMonitorPolicy"
+                  :snapshot="visionRuntimeSnapshot"
+                  :profiles="visionModelProfiles"
+                  :catalog-loading="visionModelCatalogRefreshing"
+                  :installing-key="visionModelInstallingKey"
+                  @refresh-catalog="refreshVisionModelProfiles(true)"
+                  @install="installVisionModel"
+                  @activate="activateVisionModel"
+                  @uninstall="uninstallVisionModel"
+                />
+                <VisionRuntimeStatus
+                  :status="faceMonitorRuntimeStatus"
+                  :diagnostics="visionRuntimeDiagnostics"
+                  :snapshot="visionRuntimeSnapshot"
+                  @refresh="refreshFaceMonitorRuntimeStatus"
+                />
+                <VisionPeoplePanel
+                  class="vision-people-workspace-card"
+                  :people="facePeople"
+                  @add="openVisionPersonRegistration"
+                  @detail="openFacePersonDetail"
+                  @remove="deleteLocalFacePerson"
+                />
+                <!-- 设置页中的既有摄像头表单通过 Teleport 挂载在这里，避免双份状态。 -->
+                <div id="vision-camera-settings" class="vision-camera-settings-anchor"></div>
+              </div>
+            </section>
+            <section v-show="activeSection === 'settings'" class="workspace-view settings-view">
               <div class="settings-layout">
                 <nav class="settings-subnav" aria-label="设置分类">
                   <button
@@ -7465,14 +7618,6 @@ async function closeWindow() {
                     @click="settingsCategory = 'basic'"
                   >
                     {{ t("settings.basic") }}
-                  </button>
-                  <button
-                    type="button"
-                    :class="{ active: settingsCategory === 'camera' }"
-                    :aria-current="settingsCategory === 'camera' ? 'page' : undefined"
-                    @click="settingsCategory = 'camera'"
-                  >
-                    {{ t("settings.camera") }}
                   </button>
                   <button
                     type="button"
@@ -7497,7 +7642,7 @@ async function closeWindow() {
                     <div class="settings-heading-row">
                       <h2 class="settings-title">设置<button class="settings-secret-trigger" type="button" aria-label="设置" @click="handleSuperAdminTap">✦</button></h2>
                     </div>
-                    <p>{{ settingsCategory === 'basic' ? '管理本机资料、网络、主题和语言。' : settingsCategory === 'camera' ? '管理本机人脸出现检测、临时画面提示和检测策略。' : settingsCategory === 'pet' ? '管理桌宠资源、行为与告警能力。' : '集中管理通知、桌宠告警、识别策略和设备更新。' }}</p>
+                    <p>{{ settingsCategory === 'basic' ? '管理本机资料、网络、主题和语言。' : settingsCategory === 'pet' ? '管理桌宠资源、行为与告警能力。' : '集中管理通知、桌宠告警、识别策略和设备更新。' }}</p>
                   </div>
                   <div class="settings-grid" :class="{ 'basic-settings-grid': settingsCategory === 'basic', 'admin-settings-grid': settingsCategory === 'admin' }">
                 <NCard v-if="settingsCategory === 'basic' && profile" title="本机资料" size="small">
@@ -7557,7 +7702,8 @@ async function closeWindow() {
                     </NSpace>
                   </NSpace>
                 </NCard>
-                <NCard v-if="settingsCategory === 'camera'" class="camera-face-settings-card" title="摄像头自动告警" size="small">
+                <Teleport v-if="activeSection === 'vision'" defer to="#vision-camera-settings">
+                <NCard class="camera-face-settings-card" title="摄像头与识别策略" size="small">
                   <NSpace vertical>
                     <div class="setting-switch-row">
                       <div>
@@ -7666,13 +7812,7 @@ async function closeWindow() {
                     <NAlert v-else-if="faceMonitorSettings.enabled && ((faceMonitorSettings.faceRecognitionEnabled && !facePeople.some((person) => person.enabled && !person.deletedAt && person.hasEmbedding)) || (faceMonitorSettings.bodyRecognitionEnabled && !facePeople.some((person) => person.enabled && !person.deletedAt && person.hasBodyEmbedding)))" type="warning" :show-icon="false">
                       尚未录入可用的识别人员，摄像头监控不会产生告警。请先在下方上传参考照片或拍照录入。
                     </NAlert>
-                    <div v-if="facePeople.length" class="face-monitor-people">
-                      <strong>已保存的指定人员</strong>
-                      <NText v-for="person in facePeople" :key="person.personId" depth="3">
-                        {{ person.displayName }} · {{ person.enabled && !person.deletedAt ? '已启用' : '已停用' }} · v{{ person.version }}
-                      </NText>
-                    </div>
-                    <div class="face-monitor-people">
+                    <div id="vision-person-registration" class="face-monitor-people">
                       <strong>本机识别人员</strong>
                       <NText depth="3">可一次上传多张正脸、侧脸和不同光照照片；特征仅保存在本机，识别会对同一人员的 Top-3 样本加权比对。</NText>
                       <NFormItem label="人员名称" :show-feedback="false"><NInput v-model:value="localFacePersonName" maxlength="32" placeholder="例如：访客张三" /></NFormItem>
@@ -7680,18 +7820,10 @@ async function closeWindow() {
                       <NSpace>
                         <NButton size="small" secondary @click="triggerLocalFacePhotoSelect">上传本地照片</NButton>
                         <NButton size="small" secondary @click="openLocalFaceCapture">摄像头拍照</NButton>
-                        <NButton size="small" type="primary" :disabled="!localFacePersonName.trim() || localFacePhotoPaths.length === 0" @click="createLocalFacePerson">保存人员</NButton>
+                        <NButton size="small" type="primary" :disabled="!localFacePersonName.trim() || localFacePhotoPaths.length < 3" @click="createLocalFacePerson">保存人员</NButton>
                       </NSpace>
-                      <NText v-if="localFacePhotoPaths.length" depth="3">已选择 {{ localFacePhotoPaths.length }} 张参考照片</NText>
+                      <NText v-if="localFacePhotoPaths.length" depth="3">已选择 {{ localFacePhotoPaths.length }} / 30 张参考照片（至少 3 张）</NText>
                       <div v-if="localFacePhotoPreviews.length" class="face-person-preview-list"><img v-for="preview in localFacePhotoPreviews" :key="preview" class="face-person-preview-thumb" :src="preview" alt="待添加人员照片" /></div>
-                      <NText v-if="facePeople.length === 0" depth="3">尚未保存人员配置。</NText>
-                      <div v-for="person in facePeople" :key="person.personId" class="face-monitor-alert-row">
-                        <NText>{{ person.displayName }} · {{ person.enabled && !person.deletedAt ? '已启用' : '已删除/停用' }}</NText>
-                        <NSpace :size="6">
-                          <NTag size="small" :bordered="false" :type="person.hasEmbedding || person.hasBodyEmbedding ? 'success' : 'warning'">{{ person.hasEmbedding || person.hasBodyEmbedding ? `${person.hasEmbedding ? '人脸' : ''}${person.hasEmbedding && person.hasBodyEmbedding ? ' + ' : ''}${person.hasBodyEmbedding ? '人体' : ''}特征 · ${Math.max(1, person.sampleCount ?? 0)} 样本` : '特征不可用' }}</NTag>
-                          <NButton size="tiny" quaternary @click="openFacePersonDetail(person)">查看</NButton><NButton size="tiny" quaternary type="error" @click="deleteLocalFacePerson(person)">删除本机配置</NButton>
-                        </NSpace>
-                      </div>
                     </div>
                     <div class="face-monitor-people">
                       <strong>摄像头人物识别告警（独立于狼来了）</strong>
@@ -7710,6 +7842,7 @@ async function closeWindow() {
                     <NText depth="3">检测与识别模型仅从本机安装包资源目录读取并进行摘要校验；人员特征不出本机，摄像头帧不会保存或通过局域网传输。</NText>
                   </NSpace>
                 </NCard>
+                </Teleport>
                 <NCard v-if="settingsCategory === 'basic'" title="图片缓存" size="small" class="basic-image-cache-card">
                   <NSpace vertical>
                     <NText depth="3">带预览能力的图片会自动下载到本机缓存，聊天历史仍可在发送方离线后查看。</NText>
@@ -8365,6 +8498,7 @@ async function closeWindow() {
               @click="facePersonDetailSelectedPhoto = photo"
             >
               <img :src="photo" alt="" />
+              <span v-if="facePersonDetailPhotos.length > 3" class="face-person-detail-thumbnail-remove" title="删除这张照片（至少保留三张）" @click.stop="deleteLocalFacePersonReferencePhoto(photo)">×</span>
             </button>
           </div>
           <strong>{{ facePersonDetail.displayName }}</strong>
@@ -8524,9 +8658,12 @@ async function closeWindow() {
 .face-person-detail-image { display: block; }
 .face-person-detail-thumbnails { display: flex; gap: 8px; width: 100%; padding: 2px 1px 5px; overflow-x: auto; scrollbar-width: thin; }
 .face-person-detail-thumbnail { flex: 0 0 64px; width: 64px; height: 64px; padding: 2px; overflow: hidden; border: 1px solid var(--panel-line); border-radius: 7px; background: var(--panel-bg); cursor: pointer; }
+.face-person-detail-thumbnail { position: relative; }
 .face-person-detail-thumbnail:hover { border-color: color-mix(in srgb, var(--accent) 55%, var(--panel-line)); }
 .face-person-detail-thumbnail.active { border: 2px solid var(--accent); background: var(--soft-accent); }
 .face-person-detail-thumbnail img { display: block; width: 100%; height: 100%; border-radius: 4px; object-fit: cover; }
+.face-person-detail-thumbnail-remove { position: absolute; top: 3px; right: 3px; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; color: #fff; background: rgba(17, 24, 39, .72); font-size: 15px; line-height: 1; }
+.face-person-detail-thumbnail-remove:hover { background: #d03050; }
 .face-capture-video { display: block; width: min(480px, 80vw); max-height: 58vh; border-radius: 8px; background: #101820; object-fit: contain; }
 .camera-face-alert-detail { display: grid; gap: 12px; }
 .camera-face-alert-detail h2, .camera-face-alert-detail p { margin: 0; }
