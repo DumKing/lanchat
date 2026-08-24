@@ -106,7 +106,9 @@ jobs:
           if (Test-Path -LiteralPath $runtimeTarget) { Remove-Item -LiteralPath $runtimeTarget -Recurse -Force }
           New-Item -ItemType Directory -Force $runtimeTarget | Out-Null
           Copy-Item -Path (Join-Path $openvinoLibDir "*") -Destination $runtimeTarget -Recurse -Force
-          foreach ($requiredRuntimeFile in @("openvino_c.dll", "openvino.dll", "openvino_intel_cpu_plugin.dll", "plugins.xml")) {
+          # Python wheel 的 2025.1 Runtime 不再携带 plugins.xml；CPU 插件会由
+          # Runtime 自身发现，因此只校验实际参与装载的核心 DLL 与 CPU 插件。
+          foreach ($requiredRuntimeFile in @("openvino_c.dll", "openvino.dll", "openvino_intel_cpu_plugin.dll")) {
             if (-not (Test-Path -LiteralPath (Join-Path $runtimeTarget $requiredRuntimeFile))) {
               throw "OpenVINO Runtime 中缺少 $requiredRuntimeFile"
             }
