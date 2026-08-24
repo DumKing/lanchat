@@ -18,6 +18,7 @@ use crate::vision::{
     tracking::{BoundingBox, Detection, TrackStore},
     types::{IdentityDecision, VisionModality},
 };
+use crate::vision::{backend::RuntimeBackend, openvino_runtime};
 
 const DETECTOR_SIZE: u32 = 640;
 const RECOGNIZER_SIZE: u32 = 112;
@@ -221,7 +222,7 @@ struct FaceModelAsset {
     sha256: String,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct FaceModelState {
     ready: bool,
     version: Option<String>,
@@ -233,8 +234,58 @@ struct FaceModelState {
     recognizer_path: Option<PathBuf>,
     person_detector_path: Option<PathBuf>,
     person_recognizer_path: Option<PathBuf>,
+    runtime_backend: RuntimeBackend,
     face_recognizer_spec: FaceRecognizerSpec,
     person_reid_spec: PersonReIdSpec,
+}
+
+impl Default for FaceModelState {
+    fn default() -> Self {
+        Self {
+            ready: false,
+            version: None,
+            profile_id: None,
+            face_embedding_space_id: None,
+            body_embedding_space_id: None,
+            error: None,
+            detector_path: None,
+            recognizer_path: None,
+            person_detector_path: None,
+            person_recognizer_path: None,
+            runtime_backend: RuntimeBackend::OnnxRuntime,
+            face_recognizer_spec: FaceRecognizerSpec::default(),
+            person_reid_spec: PersonReIdSpec::default(),
+        }
+    }
+}
+
+enum InferenceSession {
+    Onnx(ort::session::Session),
+    #[cfg(feature = "openvino-runtime")]
+    OpenVino(openvino_runtime::OpenVinoSession),
+}
+
+fn load_inference_session(
+    path: &Path,
+    backend: RuntimeBackend,
+) -> Result<InferenceSession, String> {
+    match backend {
+        RuntimeBackend::OnnxRuntime => ort::session::Session::builder()
+            .and_then(|mut builder| builder.commit_from_file(path))
+            .map(InferenceSession::Onnx)
+            .map_err(|error| format!("ONNX 会话加载失败：{error}")),
+        RuntimeBackend::OpenVino => {
+            #[cfg(feature = "openvino-runtime")]
+            {
+                openvino_runtime::OpenVinoSession::load_cpu(path).map(InferenceSession::OpenVino)
+            }
+            #[cfg(not(feature = "openvino-runtime"))]
+            {
+                let _ = path;
+                Err("VISION_OPENVINO_RUNTIME_REQUIRED".to_string())
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -298,10 +349,10 @@ pub struct FaceMonitorRuntime {
     track_store: Mutex<TrackStore>,
     temporal_fusion: Mutex<TemporalIdentityFusion>,
     model_state: FaceModelState,
-    detector: Option<Mutex<ort::session::Session>>,
-    recognizer: Option<Mutex<ort::session::Session>>,
-    person_detector: Option<Mutex<ort::session::Session>>,
-    person_recognizer: Option<Mutex<ort::session::Session>>,
+    detector: Option<Mutex<InferenceSession>>,
+    recognizer: Option<Mutex<InferenceSession>>,
+    person_detector: Option<Mutex<InferenceSession>>,
+    person_recognizer: Option<Mutex<InferenceSession>>,
     last_detection: Mutex<Option<PresenceDetection>>,
     runtime_error: Mutex<Option<String>>,
 }
@@ -324,6 +375,7 @@ impl Default for FaceMonitorRuntime {
             last_detection: Mutex::new(None),
             runtime_error: Mutex::new(None),
             model_state: FaceModelState {
+                runtime_backend: RuntimeBackend::OnnxRuntime,
                 error: Some("人脸检测模型尚未安装".to_string()),
                 ..Default::default()
             },
@@ -375,9 +427,7 @@ impl FaceMonitorRuntime {
             ..Self::default()
         };
         if let Some(path) = runtime.model_state.detector_path.clone() {
-            match ort::session::Session::builder()
-                .and_then(|mut builder| builder.commit_from_file(path))
-            {
+            match load_inference_session(&path, runtime.model_state.runtime_backend) {
                 Ok(session) => runtime.detector = Some(Mutex::new(session)),
                 Err(error) => {
                     runtime.model_state.ready = false;
@@ -387,9 +437,7 @@ impl FaceMonitorRuntime {
         }
         // 识别模型加载失败不影响存在检测，仅使识别能力不可用。
         if let Some(path) = runtime.model_state.recognizer_path.clone() {
-            match ort::session::Session::builder()
-                .and_then(|mut builder| builder.commit_from_file(path))
-            {
+            match load_inference_session(&path, runtime.model_state.runtime_backend) {
                 Ok(session) => runtime.recognizer = Some(Mutex::new(session)),
                 Err(error) => {
                     runtime.recognizer = None;
@@ -400,9 +448,7 @@ impl FaceMonitorRuntime {
             }
         }
         if let Some(path) = runtime.model_state.person_detector_path.clone() {
-            match ort::session::Session::builder()
-                .and_then(|mut builder| builder.commit_from_file(path))
-            {
+            match load_inference_session(&path, runtime.model_state.runtime_backend) {
                 Ok(session) => runtime.person_detector = Some(Mutex::new(session)),
                 Err(error) => {
                     runtime.model_state.error = Some(format!("人体检测模型加载失败：{error}"))
@@ -410,9 +456,7 @@ impl FaceMonitorRuntime {
             }
         }
         if let Some(path) = runtime.model_state.person_recognizer_path.clone() {
-            match ort::session::Session::builder()
-                .and_then(|mut builder| builder.commit_from_file(path))
-            {
+            match load_inference_session(&path, runtime.model_state.runtime_backend) {
                 Ok(session) => runtime.person_recognizer = Some(Mutex::new(session)),
                 Err(error) => {
                     runtime.model_state.error = Some(format!("人体识别模型加载失败：{error}"))
@@ -437,8 +481,7 @@ impl FaceMonitorRuntime {
                     Ok(())
                 };
             };
-            ort::session::Session::builder()
-                .and_then(|mut builder| builder.commit_from_file(path))
+            load_inference_session(path, state.runtime_backend)
                 .map(|_| ())
                 .map_err(|error| format!("VISION_CANDIDATE_SESSION_INVALID:{label}:{error}"))
         };
@@ -545,6 +588,9 @@ impl FaceMonitorRuntime {
     }
 
     fn detect_in_rgb(&self, image: &image::RgbImage) -> Result<Option<PresenceDetection>, String> {
+        if self.model_state.runtime_backend == RuntimeBackend::OpenVino {
+            return self.detect_openvino_faces(image);
+        }
         let resized =
             image::imageops::resize(image, DETECTOR_SIZE, DETECTOR_SIZE, FilterType::Triangle);
         let mut input =
@@ -565,6 +611,13 @@ impl FaceMonitorRuntime {
         let mut session = detector
             .lock()
             .map_err(|_| "人脸检测器被占用".to_string())?;
+        #[cfg(feature = "openvino-runtime")]
+        let InferenceSession::Onnx(session) = &mut *session
+        else {
+            return Err("人脸检测模型后端不匹配".to_string());
+        };
+        #[cfg(not(feature = "openvino-runtime"))]
+        let InferenceSession::Onnx(session) = &mut *session;
         let output_index: HashMap<String, usize> = session
             .outputs()
             .iter()
@@ -647,6 +700,59 @@ impl FaceMonitorRuntime {
             detected_faces: 1,
             faces: Vec::new(),
         }))
+    }
+
+    #[cfg(feature = "openvino-runtime")]
+    fn detect_openvino_faces(
+        &self,
+        image: &image::RgbImage,
+    ) -> Result<Option<PresenceDetection>, String> {
+        const OMZ_FACE_DETECTOR_SIZE: u32 = 300;
+        let resized = image::imageops::resize(
+            image,
+            OMZ_FACE_DETECTOR_SIZE,
+            OMZ_FACE_DETECTOR_SIZE,
+            FilterType::Triangle,
+        );
+        let input = openvino_bgr_input(&resized, OMZ_FACE_DETECTOR_SIZE, OMZ_FACE_DETECTOR_SIZE);
+        let detector = self
+            .detector
+            .as_ref()
+            .ok_or_else(|| "人脸检测模型未就绪".to_string())?;
+        let mut session = detector
+            .lock()
+            .map_err(|_| "人脸检测器被占用".to_string())?;
+        let InferenceSession::OpenVino(session) = &mut *session else {
+            return Err("人脸检测模型后端不匹配".to_string());
+        };
+        let output = session.infer_f32(
+            &[
+                1,
+                3,
+                i64::from(OMZ_FACE_DETECTOR_SIZE),
+                i64::from(OMZ_FACE_DETECTOR_SIZE),
+            ],
+            &input,
+        )?;
+        let faces =
+            decode_openvino_faces(&output, DETECTOR_SIZE as f32, DETECTOR_SIZE as f32, 0.60);
+        let best = faces.iter().map(|face| face.score).fold(0.0_f32, f32::max);
+        if best < 0.60 {
+            return Ok(None);
+        }
+        Ok(Some(PresenceDetection {
+            confidence: (best * 100.0).round().clamp(0.0, 100.0) as u8,
+            detected_faces: faces.len().min(255) as u8,
+            faces: nms_faces(faces, 0.35, 5),
+        }))
+    }
+
+    #[cfg(not(feature = "openvino-runtime"))]
+    fn detect_openvino_faces(
+        &self,
+        _image: &image::RgbImage,
+    ) -> Result<Option<PresenceDetection>, String> {
+        Err("VISION_OPENVINO_RUNTIME_REQUIRED".to_string())
     }
 
     /// 识别模式入口：检测→逐脸提取特征→与人员模板比对。
@@ -932,6 +1038,9 @@ impl FaceMonitorRuntime {
         image: &image::RgbImage,
         landmarks: [(f32, f32); 5],
     ) -> Result<Vec<f32>, String> {
+        if self.model_state.runtime_backend == RuntimeBackend::OpenVino {
+            return self.extract_openvino_face_embedding(image, landmarks);
+        }
         let recognizer = self
             .recognizer
             .as_ref()
@@ -970,6 +1079,13 @@ impl FaceMonitorRuntime {
         let mut session = recognizer
             .lock()
             .map_err(|_| "人脸识别器被占用".to_string())?;
+        #[cfg(feature = "openvino-runtime")]
+        let InferenceSession::Onnx(session) = &mut *session
+        else {
+            return Err("人脸识别模型后端不匹配".to_string());
+        };
+        #[cfg(not(feature = "openvino-runtime"))]
+        let InferenceSession::Onnx(session) = &mut *session;
         let outputs = session
             .run(ort::inputs![ort::value::TensorRef::from_array_view(&input)
                 .map_err(|error| format!("构造识别输入失败：{error}"))?])
@@ -983,6 +1099,47 @@ impl FaceMonitorRuntime {
         let mut embedding = tensor.to_vec();
         normalize_embedding(&mut embedding);
         Ok(embedding)
+    }
+
+    #[cfg(feature = "openvino-runtime")]
+    fn extract_openvino_face_embedding(
+        &self,
+        image: &image::RgbImage,
+        landmarks: [(f32, f32); 5],
+    ) -> Result<Vec<f32>, String> {
+        let spec = &self.model_state.face_recognizer_spec;
+        let aligned = align_face_112(image, landmarks);
+        let aligned =
+            image::imageops::resize(&aligned, spec.width, spec.height, FilterType::Triangle);
+        let input = openvino_bgr_input(&aligned, spec.width, spec.height);
+        let recognizer = self
+            .recognizer
+            .as_ref()
+            .ok_or_else(|| "人脸识别模型未就绪".to_string())?;
+        let mut session = recognizer
+            .lock()
+            .map_err(|_| "人脸识别器被占用".to_string())?;
+        let InferenceSession::OpenVino(session) = &mut *session else {
+            return Err("人脸识别模型后端不匹配".to_string());
+        };
+        let mut embedding = session.infer_f32(
+            &[1, 3, i64::from(spec.height), i64::from(spec.width)],
+            &input,
+        )?;
+        if embedding.len() != spec.output_dimension {
+            return Err(format!("识别模型输出维数异常：{}", embedding.len()));
+        }
+        normalize_embedding(&mut embedding);
+        Ok(embedding)
+    }
+
+    #[cfg(not(feature = "openvino-runtime"))]
+    fn extract_openvino_face_embedding(
+        &self,
+        _image: &image::RgbImage,
+        _landmarks: [(f32, f32); 5],
+    ) -> Result<Vec<f32>, String> {
+        Err("VISION_OPENVINO_RUNTIME_REQUIRED".to_string())
     }
 
     /// 人员参考照片入口：解码图片→检测人脸→取最高分脸→提取特征。
@@ -1106,6 +1263,9 @@ impl FaceMonitorRuntime {
     }
 
     fn detect_people(&self, image: &image::RgbImage) -> Result<Vec<DetectedPerson>, String> {
+        if self.model_state.runtime_backend == RuntimeBackend::OpenVino {
+            return self.detect_openvino_people(image);
+        }
         let ratio = (PERSON_DETECTOR_SIZE as f32 / image.width() as f32)
             .min(PERSON_DETECTOR_SIZE as f32 / image.height() as f32);
         let target_w = (image.width() as f32 * ratio).round().max(1.0) as u32;
@@ -1135,6 +1295,13 @@ impl FaceMonitorRuntime {
         let mut session = detector
             .lock()
             .map_err(|_| "人体检测器被占用".to_string())?;
+        #[cfg(feature = "openvino-runtime")]
+        let InferenceSession::Onnx(session) = &mut *session
+        else {
+            return Err("人体检测模型后端不匹配".to_string());
+        };
+        #[cfg(not(feature = "openvino-runtime"))]
+        let InferenceSession::Onnx(session) = &mut *session;
         let outputs = session
             .run(ort::inputs![ort::value::TensorRef::from_array_view(&input)
                 .map_err(|error| format!("构造人体检测输入失败：{error}"))?])
@@ -1145,6 +1312,42 @@ impl FaceMonitorRuntime {
         // 运行帧适当降低人体检测门限以保留远处小目标，后续由 ReID 差距和多帧门控过滤。
         let people = decode_yolox_people(tensor, ratio, image.width(), image.height(), 0.35);
         Ok(nms_people(people, 0.5, 5))
+    }
+
+    #[cfg(feature = "openvino-runtime")]
+    fn detect_openvino_people(
+        &self,
+        image: &image::RgbImage,
+    ) -> Result<Vec<DetectedPerson>, String> {
+        let detector = self
+            .person_detector
+            .as_ref()
+            .ok_or_else(|| "人体检测模型未就绪".to_string())?;
+        let mut session = detector
+            .lock()
+            .map_err(|_| "人体检测器被占用".to_string())?;
+        let InferenceSession::OpenVino(session) = &mut *session else {
+            return Err("人体检测模型后端不匹配".to_string());
+        };
+        let input_shape = session.input_shape().to_vec();
+        let (height, width) = (
+            u32::try_from(input_shape[2]).map_err(|_| "人体检测模型输入高度无效".to_string())?,
+            u32::try_from(input_shape[3]).map_err(|_| "人体检测模型输入宽度无效".to_string())?,
+        );
+        let resized = image::imageops::resize(image, width, height, FilterType::Triangle);
+        let input = openvino_bgr_input(&resized, width, height);
+        let output = session.infer_f32(&input_shape, &input)?;
+        let people =
+            decode_openvino_people(&output, image.width() as f32, image.height() as f32, 0.35);
+        Ok(nms_people(people, 0.5, 5))
+    }
+
+    #[cfg(not(feature = "openvino-runtime"))]
+    fn detect_openvino_people(
+        &self,
+        _image: &image::RgbImage,
+    ) -> Result<Vec<DetectedPerson>, String> {
+        Err("VISION_OPENVINO_RUNTIME_REQUIRED".to_string())
     }
 
     fn reference_photo_candidates_from_rgb(
@@ -1201,6 +1404,9 @@ impl FaceMonitorRuntime {
     }
 
     fn extract_body_embedding(&self, image: &image::RgbImage) -> Result<Vec<f32>, String> {
+        if self.model_state.runtime_backend == RuntimeBackend::OpenVino {
+            return self.extract_openvino_body_embedding(image);
+        }
         let spec = &self.model_state.person_reid_spec;
         let resized = image::imageops::resize(image, spec.width, spec.height, FilterType::Triangle);
         if spec.normalization != "imagenet" {
@@ -1230,6 +1436,13 @@ impl FaceMonitorRuntime {
         let mut session = recognizer
             .lock()
             .map_err(|_| "人体识别器被占用".to_string())?;
+        #[cfg(feature = "openvino-runtime")]
+        let InferenceSession::Onnx(session) = &mut *session
+        else {
+            return Err("人体识别模型后端不匹配".to_string());
+        };
+        #[cfg(not(feature = "openvino-runtime"))]
+        let InferenceSession::Onnx(session) = &mut *session;
         let outputs = session
             .run(ort::inputs![ort::value::TensorRef::from_array_view(&input)
                 .map_err(|error| format!("构造人体识别输入失败：{error}"))?])
@@ -1244,6 +1457,129 @@ impl FaceMonitorRuntime {
         normalize_embedding(&mut embedding);
         Ok(embedding)
     }
+
+    #[cfg(feature = "openvino-runtime")]
+    fn extract_openvino_body_embedding(&self, image: &image::RgbImage) -> Result<Vec<f32>, String> {
+        let spec = &self.model_state.person_reid_spec;
+        let resized = image::imageops::resize(image, spec.width, spec.height, FilterType::Triangle);
+        let input = openvino_bgr_input(&resized, spec.width, spec.height);
+        let recognizer = self
+            .person_recognizer
+            .as_ref()
+            .ok_or_else(|| "人体识别模型未就绪".to_string())?;
+        let mut session = recognizer
+            .lock()
+            .map_err(|_| "人体识别器被占用".to_string())?;
+        let InferenceSession::OpenVino(session) = &mut *session else {
+            return Err("人体识别模型后端不匹配".to_string());
+        };
+        let mut embedding = session.infer_f32(
+            &[1, 3, i64::from(spec.height), i64::from(spec.width)],
+            &input,
+        )?;
+        if embedding.len() != spec.output_dimension {
+            return Err(format!("人体识别模型输出维数异常：{}", embedding.len()));
+        }
+        normalize_embedding(&mut embedding);
+        Ok(embedding)
+    }
+
+    #[cfg(not(feature = "openvino-runtime"))]
+    fn extract_openvino_body_embedding(
+        &self,
+        _image: &image::RgbImage,
+    ) -> Result<Vec<f32>, String> {
+        Err("VISION_OPENVINO_RUNTIME_REQUIRED".to_string())
+    }
+}
+
+/// OMZ Retail 模型按 NCHW 提供 BGR 的 0..255 浮点数据；模型 IR 自身承载
+/// 对应的预处理图，不能套用 OSNet 的 ImageNet 标准化。
+#[cfg(feature = "openvino-runtime")]
+fn openvino_bgr_input(image: &image::RgbImage, width: u32, height: u32) -> Vec<f32> {
+    debug_assert_eq!(image.width(), width);
+    debug_assert_eq!(image.height(), height);
+    let plane = width as usize * height as usize;
+    let mut input = vec![0.0_f32; plane * 3];
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let pixel = image.get_pixel(x as u32, y as u32);
+            let index = y * width as usize + x;
+            input[index] = f32::from(pixel[2]);
+            input[plane + index] = f32::from(pixel[1]);
+            input[plane * 2 + index] = f32::from(pixel[0]);
+        }
+    }
+    input
+}
+
+/// OpenVINO DetectionOutput 的每项均为
+/// `[batch_id, class_id, confidence, x1, y1, x2, y2]`，坐标是归一化值。
+fn decode_openvino_detection_output(
+    output: &[f32],
+    width: f32,
+    height: f32,
+    min_score: f32,
+) -> Vec<(f32, f32, f32, f32, f32)> {
+    output
+        .chunks_exact(7)
+        .take_while(|detection| detection[0] >= 0.0)
+        .filter_map(|detection| {
+            let score = detection[2];
+            if score < min_score {
+                return None;
+            }
+            let x1 = (detection[3] * width).clamp(0.0, width);
+            let y1 = (detection[4] * height).clamp(0.0, height);
+            let x2 = (detection[5] * width).clamp(0.0, width);
+            let y2 = (detection[6] * height).clamp(0.0, height);
+            let box_width = (x2 - x1).max(0.0);
+            let box_height = (y2 - y1).max(0.0);
+            (box_width >= 2.0 && box_height >= 2.0)
+                .then_some((x1, y1, box_width, box_height, score))
+        })
+        .collect()
+}
+
+#[cfg(feature = "openvino-runtime")]
+fn decode_openvino_faces(
+    output: &[f32],
+    width: f32,
+    height: f32,
+    min_score: f32,
+) -> Vec<DetectedFace> {
+    decode_openvino_detection_output(output, width, height, min_score)
+        .into_iter()
+        .map(|(x1, y1, w, h, score)| DetectedFace {
+            x1,
+            y1,
+            w,
+            h,
+            // Retail detector不输出关键点。使用稳定的相对点位，让现有对齐流程
+            // 能把检测框裁切成近似正脸区域供 0095 提特征。
+            landmarks: [
+                (x1 + w * 0.32, y1 + h * 0.38),
+                (x1 + w * 0.68, y1 + h * 0.38),
+                (x1 + w * 0.50, y1 + h * 0.56),
+                (x1 + w * 0.37, y1 + h * 0.74),
+                (x1 + w * 0.63, y1 + h * 0.74),
+            ],
+            score,
+        })
+        .collect()
+}
+
+#[cfg(feature = "openvino-runtime")]
+fn decode_openvino_people(
+    output: &[f32],
+    width: f32,
+    height: f32,
+    min_score: f32,
+) -> Vec<DetectedPerson> {
+    decode_openvino_detection_output(output, width, height, min_score)
+        .into_iter()
+        .map(|(x, y, w, h, score)| DetectedPerson { x, y, w, h, score })
+        .collect()
 }
 
 fn normalize_score(value: f32) -> f32 {
@@ -1828,6 +2164,7 @@ fn model_state_from_dir(dir: &Path) -> Result<FaceModelState, String> {
         recognizer_path,
         person_detector_path,
         person_recognizer_path,
+        runtime_backend: RuntimeBackend::OnnxRuntime,
         face_recognizer_spec: FaceRecognizerSpec::default(),
         person_reid_spec: PersonReIdSpec::default(),
     })
@@ -1839,8 +2176,10 @@ fn model_state_from_v4(dir: &Path, manifest_path: &Path) -> Result<FaceModelStat
     let manifest: VisionManifestV4 = serde_json::from_str(&manifest_text)
         .map_err(|error| format!("模型清单格式无效：{error}"))?;
     validate_manifest_v4(&manifest).map_err(|error| format!("模型清单校验失败：{error}"))?;
-    if manifest.profile.engine != "onnxruntime" {
-        return Err("当前兼容运行时尚未加载 OpenVINO Profile".to_string());
+    let runtime_backend = RuntimeBackend::from_manifest_name(&manifest.profile.engine)
+        .ok_or_else(|| "当前兼容运行时不支持该模型引擎".to_string())?;
+    if runtime_backend == RuntimeBackend::OpenVino {
+        openvino_runtime::verify_runtime()?;
     }
 
     let component = |id: &str| {
@@ -1858,17 +2197,30 @@ fn model_state_from_v4(dir: &Path, manifest_path: &Path) -> Result<FaceModelStat
     let face_recognizer = component(&manifest.pipeline.face_engine)?;
     let person_detector = component(&manifest.pipeline.person_detector)?;
     let person_reid = component(&manifest.pipeline.person_re_id_engine)?;
-    if face_detector.adapter_id != "builtin.face-detector.yunet.v1"
-        || !matches!(
-            face_recognizer.adapter_id.as_str(),
-            "builtin.face-recognizer.sface.v1" | "builtin.face-recognizer.arcface.v1"
-        )
-        || person_detector.adapter_id != "builtin.person-detector.yolox.v1"
-        || !matches!(
-            person_reid.adapter_id.as_str(),
-            "builtin.person-reid.youtu.v1" | "builtin.person-reid.osnet.v1"
-        )
-    {
+    let supported_adapter_stack = match runtime_backend {
+        RuntimeBackend::OnnxRuntime => {
+            face_detector.adapter_id == "builtin.face-detector.yunet.v1"
+                && matches!(
+                    face_recognizer.adapter_id.as_str(),
+                    "builtin.face-recognizer.sface.v1" | "builtin.face-recognizer.arcface.v1"
+                )
+                && person_detector.adapter_id == "builtin.person-detector.yolox.v1"
+                && matches!(
+                    person_reid.adapter_id.as_str(),
+                    "builtin.person-reid.youtu.v1" | "builtin.person-reid.osnet.v1"
+                )
+        }
+        RuntimeBackend::OpenVino => {
+            face_detector.adapter_id == "builtin.face-detector.omz.v1"
+                && face_recognizer.adapter_id == "builtin.face-recognizer.omz.v1"
+                && person_detector.adapter_id == "builtin.person-detector.omz.v1"
+                && matches!(
+                    person_reid.adapter_id.as_str(),
+                    "builtin.person-reid.omz.v1" | "builtin.person-reid.omz.0286.v1"
+                )
+        }
+    };
+    if !supported_adapter_stack {
         return Err("当前兼容运行时不支持该 V4 模型适配器组合".to_string());
     }
     let face_recognizer_spec = face_recognizer_spec_from_v4(face_recognizer)?;
@@ -1892,6 +2244,7 @@ fn model_state_from_v4(dir: &Path, manifest_path: &Path) -> Result<FaceModelStat
         recognizer_path: Some(validate_v4_model_asset(dir, "人脸识别", face_recognizer)?),
         person_detector_path: Some(validate_v4_model_asset(dir, "人体检测", person_detector)?),
         person_recognizer_path: Some(validate_v4_model_asset(dir, "人体识别", person_reid)?),
+        runtime_backend,
         face_recognizer_spec,
         person_reid_spec,
     })
@@ -1907,14 +2260,18 @@ fn validate_v4_model_asset(
     label: &str,
     asset: &V4ComponentDescriptor,
 ) -> Result<PathBuf, String> {
-    validate_model_asset(
+    let path = validate_model_asset(
         dir,
         label,
         &FaceModelAsset {
             file: asset.file.clone(),
             sha256: asset.sha256.clone(),
         },
-    )
+    )?;
+    if asset.engine == "openvino" {
+        openvino_runtime::validate_ir_pair(&path)?;
+    }
+    Ok(path)
 }
 
 fn face_recognizer_spec_from_v4(
@@ -1950,6 +2307,10 @@ fn face_recognizer_spec_from_v4(
             if matches!(input.color_order.as_str(), "RGB" | "BGR")
                 && input.normalization == "arcface_127_5"
                 && output.embedding_dimension == 512 => {}
+        "builtin.face-recognizer.omz.v1"
+            if input.color_order == "BGR"
+                && input.normalization == "openvino_retail"
+                && output.embedding_dimension == 256 => {}
         _ => return Err("当前兼容运行时不支持该人脸识别模型语义".to_string()),
     }
     Ok(FaceRecognizerSpec {
@@ -1976,11 +2337,16 @@ fn person_reid_spec_from_v4(component: &V4ComponentDescriptor) -> Result<PersonR
         .and_then(|(height, width)| Some((height.parse::<u32>().ok()?, width.parse::<u32>().ok()?)))
         .filter(|(height, width)| (32..=1024).contains(height) && (16..=1024).contains(width))
         .ok_or_else(|| "人体识别模型输入尺寸无效".to_string())?;
-    if !matches!(input.color_order.as_str(), "RGB" | "BGR")
-        || input.normalization != "imagenet"
-        || output.embedding_dimension == 0
-        || output.distance_metric != "cosine"
-    {
+    let supported = match component.adapter_id.as_str() {
+        "builtin.person-reid.youtu.v1" | "builtin.person-reid.osnet.v1" => {
+            matches!(input.color_order.as_str(), "RGB" | "BGR") && input.normalization == "imagenet"
+        }
+        "builtin.person-reid.omz.v1" | "builtin.person-reid.omz.0286.v1" => {
+            input.color_order == "BGR" && input.normalization == "openvino_retail"
+        }
+        _ => false,
+    };
+    if !supported || output.embedding_dimension == 0 || output.distance_metric != "cosine" {
         return Err("人体识别模型语义不受支持".to_string());
     }
     Ok(PersonReIdSpec {
@@ -2101,6 +2467,56 @@ mod tests {
         assert_eq!(spec.output_dimension, 512);
         assert_eq!(spec.color_order, "RGB");
         assert_eq!(spec.normalization, "arcface_127_5");
+    }
+
+    #[test]
+    fn omz_retail_v4_semantics_accept_openvino_bgr_embeddings() {
+        let face: V4ComponentDescriptor = serde_json::from_str(
+            r#"{
+                "id":"face-recognizer","category":"face_recognizer","family":"omz-face-reid",
+                "file":"face.xml","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "adapterId":"builtin.face-recognizer.omz.v1","engine":"openvino",
+                "input":{"colorOrder":"BGR","resizeMode":"128x128","normalization":"openvino_retail"},
+                "output":{"embeddingDimension":256,"distanceMetric":"cosine"}
+            }"#,
+        )
+        .expect("omz face component");
+        let body: V4ComponentDescriptor = serde_json::from_str(
+            r#"{
+                "id":"person-reid","category":"person_reid","family":"omz-person-reid-0288",
+                "file":"person.xml","sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "adapterId":"builtin.person-reid.omz.v1","engine":"openvino",
+                "input":{"colorOrder":"BGR","resizeMode":"256x128","normalization":"openvino_retail"},
+                "output":{"embeddingDimension":256,"distanceMetric":"cosine"}
+            }"#,
+        )
+        .expect("omz person component");
+        assert_eq!(
+            face_recognizer_spec_from_v4(&face)
+                .unwrap()
+                .output_dimension,
+            256
+        );
+        assert_eq!(
+            person_reid_spec_from_v4(&body).unwrap().output_dimension,
+            256
+        );
+    }
+
+    #[test]
+    fn openvino_detection_output_decodes_normalized_boxes() {
+        let output = [
+            0.0, 1.0, 0.92, 0.10, 0.20, 0.60, 0.80, // valid
+            -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // sentinel
+        ];
+        let decoded = decode_openvino_detection_output(&output, 200.0, 100.0, 0.50);
+        assert_eq!(decoded.len(), 1);
+        let (x, y, width, height, score) = decoded[0];
+        assert!((x - 20.0).abs() < 0.001);
+        assert!((y - 20.0).abs() < 0.001);
+        assert!((width - 100.0).abs() < 0.001);
+        assert!((height - 60.0).abs() < 0.001);
+        assert!((score - 0.92).abs() < 0.001);
     }
 
     #[test]
@@ -2258,6 +2674,24 @@ mod tests {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/object-models");
         FaceMonitorRuntime::validate_candidate_model_dir(&root)
             .expect("bundled V4 profile candidate runtime");
+    }
+
+    #[cfg(feature = "openvino-runtime")]
+    #[test]
+    fn packaged_omz_profile_compiles_all_components_on_cpu() {
+        let resource_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources");
+        let profile = std::env::var("LANCHAT_OMZ_SMOKE_PROFILE")
+            .unwrap_or_else(|_| "office-omz-retail-0288".to_string());
+        let model_dir = resource_root.join("model-profiles").join(profile);
+        if !model_dir.is_dir() {
+            // 官方 Profile 只在发布流水线下载，开发环境没有模型包时不把无关
+            // 的本地单测变成网络依赖；CI 会在运行本测试前显式校验该目录。
+            return;
+        }
+        crate::vision::openvino_runtime::configure_packaged_runtime(Some(&resource_root))
+            .expect("packaged OpenVINO Runtime");
+        FaceMonitorRuntime::validate_candidate_model_dir(&model_dir)
+            .expect("OMZ Profile should compile on the packaged CPU runtime");
     }
 
     fn stride_layer<'a>(

@@ -9,7 +9,7 @@ autobins = false
 [features]
 default = []
 # OpenVINO 通过运行时动态链接加载，只有随模型包分发 OpenVINO Runtime 时才启用。
-openvino-runtime = ["dep:openvino"]
+openvino-runtime = ["dep:openvino", "dep:openvino-sys"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -68,6 +68,7 @@ ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "
 ndarray = "0.17.2"
 tauri-plugin-autostart = "2"
 openvino = { version = "0.11.0", default-features = false, features = ["runtime-linking"], optional = true }
+openvino-sys = { version = "0.11.0", default-features = false, features = ["runtime-linking"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

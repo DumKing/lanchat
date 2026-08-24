@@ -95,6 +95,33 @@ jobs:
             }
           }
 
+          # openvino-rs 0.11 需要 OpenVINO 2025.1+ 的 C API；模型下载仍可复用
+          # 2024.6 的 OMZ 工具。仅升级 Runtime，随后把官方 CPU 插件完整带入安装包。
+          python -m pip install --disable-pip-version-check --upgrade --no-deps "openvino==2025.1.0"
+          $openvinoLibDir = python -c "import openvino, pathlib; print(pathlib.Path(openvino.__file__).resolve().parent / 'libs')"
+          if (-not (Test-Path -LiteralPath $openvinoLibDir)) {
+            throw "未找到 OpenVINO Runtime 目录：$openvinoLibDir"
+          }
+          $runtimeTarget = "src-tauri/resources/openvino-runtime/windows-x86_64"
+          if (Test-Path -LiteralPath $runtimeTarget) { Remove-Item -LiteralPath $runtimeTarget -Recurse -Force }
+          New-Item -ItemType Directory -Force $runtimeTarget | Out-Null
+          Copy-Item -Path (Join-Path $openvinoLibDir "*") -Destination $runtimeTarget -Recurse -Force
+          if (-not (Test-Path -LiteralPath (Join-Path $runtimeTarget "openvino_c.dll"))) {
+            throw "OpenVINO Runtime 中缺少 openvino_c.dll"
+          }
+
+      - name: Smoke test packaged OpenVINO CPU profiles
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        env:
+          LANCHAT_OMZ_SMOKE_PROFILE: office-omz-retail-0288
+        run: |
+          $modelDir = "src-tauri/resources/model-profiles/$env:LANCHAT_OMZ_SMOKE_PROFILE"
+          if (-not (Test-Path -LiteralPath $modelDir)) {
+            throw "OpenVINO smoke Profile 不存在：$modelDir"
+          }
+          cargo test --manifest-path src-tauri/Cargo.toml --features openvino-runtime packaged_omz_profile_compiles_all_components_on_cpu
+
       - name: Build external desktop pet packages
         if: matrix.os == 'windows-latest'
         shell: pwsh
@@ -132,11 +159,17 @@ jobs:
           Remove-Item -LiteralPath $staging -Recurse -Force
 
       - name: Build Tauri bundle
+        shell: pwsh
         env:
           APPLE_SIGNING_IDENTITY: "-"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npm run tauri build -- --bundles ${{ matrix.bundle }}
+        run: |
+          $arguments = @("run", "tauri", "build", "--", "--bundles", "${{ matrix.bundle }}")
+          if ($env:RUNNER_OS -eq "Windows") {
+            $arguments += @("--features", "openvino-runtime")
+          }
+          & npm @arguments
 
       - name: Preserve Full bundle assets
         shell: pwsh

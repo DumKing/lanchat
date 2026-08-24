@@ -60,6 +60,6 @@ node scripts/test-vision-package-distinctness.mjs
 
 ## 客户端激活
 
-客户端安装模型时先在 staging 目录验签、验 Manifest 和文件摘要。激活前还会检查本机后端：ONNX Profile 需要 ONNX Runtime，OpenVINO Profile 需要 OpenVINO Runtime 与 XML/BIN 成对资源。当前版本允许下载 OpenVINO 包并校验完整性；在完整 OpenVINO 推理执行器随客户端发布前，模型中心会明确禁止激活，而不会静默回退到其他模型。通过后模型将标记为“下次启用”；当前兼容运行时会在应用重启后加载新 Profile。
+客户端安装模型时先在 staging 目录验签、验 Manifest 和文件摘要。激活前还会检查本机后端：ONNX Profile 需要 ONNX Runtime，OpenVINO Profile 需要 OpenVINO Runtime 与 XML/BIN 成对资源。Windows 正式包会内置 OpenVINO CPU Runtime；符合要求的 OpenVINO Profile 可在下次启动时加载并执行。未随包提供该运行时的平台或开发构建会明确拒绝激活，而不会静默回退到其他模型。
 
 每个 Profile 的人脸与人体向量都以独立 `EmbeddingSpaceId` 存入本机 FeatureStore。切换模型只重建目标空间，不会覆盖或比较旧空间向量。
