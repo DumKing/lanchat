@@ -817,7 +817,7 @@ impl Storage {
         .map_err(|error| format!("读取视觉特征数量失败：{error}"))
     }
 
-    /// 注册模型的特征空间。一个空间 ID 一旦落库，就不能被另一个模型重定义。
+    /// 注册模型的特征空间。空间 ID 与语义、模态共同定义兼容边界；Profile 仅记录首次登记来源。
     pub fn ensure_vision_embedding_space(
         &self,
         embedding_space_id: &str,
@@ -853,13 +853,9 @@ impl Storage {
             )
             .optional()
             .map_err(|error| format!("读取特征空间失败：{error}"))?;
-        if let Some((stored_profile, stored_version, stored_modality, stored_semantics)) = existing
+        if let Some((_stored_profile, _stored_version, stored_modality, stored_semantics)) = existing
         {
-            if stored_profile != profile_id
-                || stored_version != profile_version
-                || stored_modality != modality
-                || stored_semantics != canonical_semantics
-            {
+            if stored_modality != modality || stored_semantics != canonical_semantics {
                 return Err("VISION_EMBEDDING_SPACE_COLLISION".to_string());
             }
             return Ok(());
