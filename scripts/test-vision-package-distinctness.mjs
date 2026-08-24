@@ -65,5 +65,10 @@ assert.match(
   /PROFILE_HAS_NO_DISTINCT_MODEL_ASSETS/,
   "模型构建必须拒绝同一识别权重的改名 Profile",
 );
+assert.match(
+  packageBuilder,
+  /源资源缺少 manifest\.v4\.json/,
+  "模型构建必须在复制前校验 V4 清单，避免 Runner 中出现空包",
+);
 
 console.log("vision package distinctness guards passed");
