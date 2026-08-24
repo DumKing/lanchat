@@ -5057,6 +5057,9 @@ pub fn run() {
             file_server.start();
             let persisted_vision_runtime = storage.load_vision_runtime_state()?;
             let resource_dir = app.path().resource_dir().ok();
+            // OpenVINO Profile 的 DLL 随 Windows 应用资源分发；加载失败不影响
+            // 现有 ONNX Profile，激活 OMZ Profile 时会返回明确的运行时错误。
+            let _ = vision::openvino_runtime::configure_packaged_runtime(resource_dir.as_deref());
             let build_model_dirs = |selected: Option<&(String, String, PathBuf)>| {
                 let mut dirs = selected
                     .map(|(_, _, path)| vec![path.clone()])

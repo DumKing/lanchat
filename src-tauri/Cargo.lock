@@ -3469,6 +3469,7 @@ dependencies = [
  "mdns-sd",
  "ndarray",
  "openvino",
+ "openvino-sys",
  "ort",
  "reqwest",
  "rusqlite",

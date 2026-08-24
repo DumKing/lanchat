@@ -50,7 +50,8 @@
     ],
     "resources": [
       "resources/desktop-pets/**/*",
-      "resources/object-models/**/*"
+      "resources/object-models/**/*",
+      "resources/openvino-runtime/**/*"
     ],
     "macOS": {
       "signingIdentity": "-"

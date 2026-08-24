@@ -139,8 +139,9 @@ pub fn is_registered_adapter(adapter_id: &str) -> bool {
     adapter_descriptor(adapter_id).is_some()
 }
 
-/// ONNX Runtime 是随应用现有依赖可用的；OpenVINO Profile 只有在未来安装了
-/// OpenVINO Runtime 组件后才可激活，不能静默回退到 ONNX 权重。
+/// ONNX Runtime 随应用现有依赖可用；Windows 正式包会随资源目录携带
+/// OpenVINO Runtime。运行时不可用时禁止激活 OpenVINO Profile，不能静默回退
+/// 到 ONNX 权重。
 pub fn backend_activation_reason(backend: RuntimeBackend) -> Option<&'static str> {
     match backend {
         RuntimeBackend::OnnxRuntime => None,
