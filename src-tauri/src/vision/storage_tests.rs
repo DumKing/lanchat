@@ -309,6 +309,32 @@ fn failed_selected_profile_rolls_back_to_last_known_good() {
 }
 
 #[test]
+fn selecting_builtin_profile_clears_the_downloaded_profile_selection() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let storage = Storage::open(temp.path().join("lanchat.sqlite3")).expect("storage opens");
+    let profile_dir = temp.path().join("downloaded-profile");
+    storage
+        .upsert_vision_model_profile(
+            &installed_profile("downloaded", "2.0.0"),
+            "{}",
+            &profile_dir,
+        )
+        .expect("downloaded profile installed");
+    storage
+        .activate_vision_model_profile("downloaded", "2.0.0")
+        .expect("downloaded profile selected");
+
+    storage
+        .activate_builtin_vision_model_profile()
+        .expect("builtin profile selected");
+
+    assert!(storage
+        .active_vision_model_install_path()
+        .expect("active model query")
+        .is_none());
+}
+
+#[test]
 fn installed_inactive_profile_can_be_removed_but_active_profile_is_protected() {
     let temp = tempfile::tempdir().expect("tempdir");
     let storage = Storage::open(temp.path().join("lanchat.sqlite3")).expect("storage opens");

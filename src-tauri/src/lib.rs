@@ -701,6 +701,8 @@ fn ensure_full_client(state: &AppState, capability: &str) -> Result<(), String> 
 }
 
 const TRAY_NORMAL_ICON: &[u8] = include_bytes!("../icons/32x32.png");
+const BUILTIN_BASELINE_PROFILE_ID: &str = "baseline";
+const BUILTIN_BASELINE_PROFILE_VERSION: &str = "1.0.0";
 
 fn platform_info_value() -> PlatformInfo {
     PlatformInfo {
@@ -1071,24 +1073,22 @@ fn get_vision_runtime_diagnostics(state: State<'_, AppState>) -> VisionRuntimeDi
 }
 
 fn vision_model_profiles(state: &AppState) -> Result<Vec<VisionModelProfileSummary>, String> {
-    let snapshot = state.vision_runtime.snapshot();
+    // 模型中心展示的是下次启动会采用的已选模型，而不是仍在本次进程内运行的旧会话。
+    // 切回 baseline 会清空下载模型的 active 标记，因此这里以持久化选择为准。
+    let builtin_selected = state.storage.active_vision_model_install_path()?.is_none();
     let mut profiles = state.storage.list_vision_model_profiles()?;
     profiles.insert(
         0,
         VisionModelProfileSummary {
-            profile_id: "baseline".to_string(),
-            profile_version: state
-                .face_monitor
-                .status()
-                .model_version
-                .unwrap_or_else(|| "1.0.0".to_string()),
+            profile_id: BUILTIN_BASELINE_PROFILE_ID.to_string(),
+            profile_version: BUILTIN_BASELINE_PROFILE_VERSION.to_string(),
             display_name: "内置基础模型".to_string(),
             tier: "low_resource".to_string(),
             inference_engine: Some("onnxruntime".to_string()),
             face_engine: Some("sface".to_string()),
             person_re_id_engine: Some("youtureid".to_string()),
             installed: state.face_monitor.status().model_assets_ready,
-            active: snapshot.active_profile_id.as_deref() == Some("baseline"),
+            active: builtin_selected,
             compatible: state.face_monitor.status().model_assets_ready,
             compatibility_reason: state.face_monitor.status().last_error,
             downloadable: false,
@@ -1263,6 +1263,10 @@ fn activate_vision_model_profile(
     profile_id: String,
     profile_version: String,
 ) -> Result<Vec<VisionModelProfileSummary>, String> {
+    if profile_id.trim() == BUILTIN_BASELINE_PROFILE_ID {
+        state.storage.activate_builtin_vision_model_profile()?;
+        return vision_model_profiles(&state);
+    }
     let install_dir = state
         .storage
         .vision_model_install_path(&profile_id, &profile_version)?;
@@ -1515,20 +1519,24 @@ fn load_recognition_templates(state: &AppState) -> Result<Vec<PersonTemplate>, S
 
 #[tauri::command]
 fn list_face_people(state: State<'_, AppState>) -> Result<Vec<FacePersonRecord>, String> {
-    let (face_embedding_space_id, body_embedding_space_id) =
-        ensure_active_embedding_spaces(&state)?;
     let mut people = state.storage.list_face_people()?;
-    for person in &mut people {
-        person.active_face_embedding_count = state
-            .storage
-            .list_person_vision_embeddings(&person.person_id, &face_embedding_space_id, "face")?
-            .len()
-            .min(u32::MAX as usize) as u32;
-        person.active_body_embedding_count = state
-            .storage
-            .list_person_vision_embeddings(&person.person_id, &body_embedding_space_id, "body")?
-            .len()
-            .min(u32::MAX as usize) as u32;
+    // 人员库是本机持久资料，不能因为当前模型未安装、正在切换或运行时不可用而
+    // 整体不可见。当前激活模型空间的覆盖数只是增强信息，取不到时保留为 0。
+    if let Ok((face_embedding_space_id, body_embedding_space_id)) =
+        ensure_active_embedding_spaces(&state)
+    {
+        for person in &mut people {
+            person.active_face_embedding_count = state
+                .storage
+                .list_person_vision_embeddings(&person.person_id, &face_embedding_space_id, "face")
+                .map(|items| items.len().min(u32::MAX as usize) as u32)
+                .unwrap_or(0);
+            person.active_body_embedding_count = state
+                .storage
+                .list_person_vision_embeddings(&person.person_id, &body_embedding_space_id, "body")
+                .map(|items| items.len().min(u32::MAX as usize) as u32)
+                .unwrap_or(0);
+        }
     }
     Ok(people)
 }
