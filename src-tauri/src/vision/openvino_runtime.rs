@@ -9,9 +9,15 @@ const WINDOWS_RUNTIME_RELATIVE_DIR: &str = "openvino-runtime/windows-x86_64";
 
 /// 返回打包资源目录内 OpenVINO C Runtime 的固定位置。
 pub fn packaged_runtime_library(resource_dir: &Path) -> std::path::PathBuf {
-    resource_dir
-        .join(WINDOWS_RUNTIME_RELATIVE_DIR)
-        .join("openvino_c.dll")
+    packaged_runtime_directory(resource_dir).join("openvino_c.dll")
+}
+
+/// 返回打包 OpenVINO Runtime 的 DLL 目录。
+///
+/// `openvino_c.dll` 依赖同目录的 `openvino.dll` 及 CPU 插件。Windows 的默认
+/// DLL 搜索路径不会因为主 DLL 使用绝对路径而自动包含此目录。
+pub fn packaged_runtime_directory(resource_dir: &Path) -> std::path::PathBuf {
+    resource_dir.join(WINDOWS_RUNTIME_RELATIVE_DIR)
 }
 
 pub fn validate_ir_pair(xml_path: &Path) -> Result<(), String> {
@@ -29,12 +35,65 @@ pub fn validate_ir_pair(xml_path: &Path) -> Result<(), String> {
 pub fn configure_packaged_runtime(resource_dir: Option<&Path>) -> Result<(), String> {
     let resource_dir =
         resource_dir.ok_or_else(|| "VISION_OPENVINO_RUNTIME_REQUIRED".to_string())?;
+    let runtime_dir = packaged_runtime_directory(resource_dir);
     let library = packaged_runtime_library(resource_dir);
     if !library.is_file() {
         return Err("VISION_OPENVINO_RUNTIME_REQUIRED".to_string());
     }
+    configure_windows_runtime_directory(&runtime_dir)?;
     openvino_sys::library::load_from(library)
         .map_err(|error| format!("VISION_OPENVINO_RUNTIME_REQUIRED:{error}"))
+}
+
+#[cfg(all(feature = "openvino-runtime", target_os = "windows"))]
+fn configure_windows_runtime_directory(runtime_dir: &Path) -> Result<(), String> {
+    use std::iter;
+    use std::os::windows::ffi::OsStrExt;
+    use std::sync::OnceLock;
+
+    static REGISTERED_RUNTIME_DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
+
+    if let Some(registered_dir) = REGISTERED_RUNTIME_DIR.get() {
+        return if registered_dir == runtime_dir {
+            Ok(())
+        } else {
+            Err("VISION_OPENVINO_RUNTIME_DIRECTORY_CONFLICT".to_string())
+        };
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn SetDllDirectoryW(lp_path_name: *const u16) -> i32;
+    }
+
+    let path: Vec<u16> = runtime_dir
+        .as_os_str()
+        .encode_wide()
+        .chain(iter::once(0))
+        .collect();
+    if unsafe { SetDllDirectoryW(path.as_ptr()) } == 0 {
+        return Err(format!(
+            "VISION_OPENVINO_RUNTIME_DIRECTORY_REGISTER_FAILED:{}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    match REGISTERED_RUNTIME_DIR.set(runtime_dir.to_path_buf()) {
+        Ok(()) => Ok(()),
+        Err(_)
+            if REGISTERED_RUNTIME_DIR
+                .get()
+                .is_some_and(|registered_dir| registered_dir == runtime_dir) =>
+        {
+            Ok(())
+        }
+        Err(_) => Err("VISION_OPENVINO_RUNTIME_DIRECTORY_CONFLICT".to_string()),
+    }
+}
+
+#[cfg(not(all(feature = "openvino-runtime", target_os = "windows")))]
+fn configure_windows_runtime_directory(_runtime_dir: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(feature = "openvino-runtime")]
@@ -136,7 +195,7 @@ pub fn verify_runtime() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{packaged_runtime_library, validate_ir_pair};
+    use super::{packaged_runtime_directory, packaged_runtime_library, validate_ir_pair};
     use tempfile::tempdir;
 
     #[test]
@@ -161,6 +220,15 @@ mod tests {
                 .join("openvino-runtime")
                 .join("windows-x86_64")
                 .join("openvino_c.dll")
+        );
+    }
+
+    #[test]
+    fn packaged_runtime_directory_is_the_library_parent() {
+        let root = tempfile::tempdir().expect("resource root");
+        assert_eq!(
+            packaged_runtime_directory(root.path()),
+            root.path().join("openvino-runtime").join("windows-x86_64")
         );
     }
 }
