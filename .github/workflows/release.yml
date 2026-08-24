@@ -106,9 +106,12 @@ jobs:
           if (Test-Path -LiteralPath $runtimeTarget) { Remove-Item -LiteralPath $runtimeTarget -Recurse -Force }
           New-Item -ItemType Directory -Force $runtimeTarget | Out-Null
           Copy-Item -Path (Join-Path $openvinoLibDir "*") -Destination $runtimeTarget -Recurse -Force
-          if (-not (Test-Path -LiteralPath (Join-Path $runtimeTarget "openvino_c.dll"))) {
-            throw "OpenVINO Runtime 中缺少 openvino_c.dll"
+          foreach ($requiredRuntimeFile in @("openvino_c.dll", "openvino.dll", "openvino_intel_cpu_plugin.dll", "plugins.xml")) {
+            if (-not (Test-Path -LiteralPath (Join-Path $runtimeTarget $requiredRuntimeFile))) {
+              throw "OpenVINO Runtime 中缺少 $requiredRuntimeFile"
+            }
           }
+          Get-ChildItem -LiteralPath $runtimeTarget -Filter "*.dll" | Select-Object -ExpandProperty Name | Sort-Object
 
       - name: Smoke test packaged OpenVINO CPU profiles
         if: matrix.os == 'windows-latest'
