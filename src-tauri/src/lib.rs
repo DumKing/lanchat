@@ -1073,7 +1073,9 @@ fn get_vision_runtime_diagnostics(state: State<'_, AppState>) -> VisionRuntimeDi
 }
 
 fn vision_model_profiles(state: &AppState) -> Result<Vec<VisionModelProfileSummary>, String> {
-    let snapshot = state.vision_runtime.snapshot();
+    // 模型中心展示的是下次启动会采用的已选模型，而不是仍在本次进程内运行的旧会话。
+    // 切回 baseline 会清空下载模型的 active 标记，因此这里以持久化选择为准。
+    let builtin_selected = state.storage.active_vision_model_install_path()?.is_none();
     let mut profiles = state.storage.list_vision_model_profiles()?;
     profiles.insert(
         0,
@@ -1086,7 +1088,7 @@ fn vision_model_profiles(state: &AppState) -> Result<Vec<VisionModelProfileSumma
             face_engine: Some("sface".to_string()),
             person_re_id_engine: Some("youtureid".to_string()),
             installed: state.face_monitor.status().model_assets_ready,
-            active: snapshot.active_profile_id.as_deref() == Some("baseline"),
+            active: builtin_selected,
             compatible: state.face_monitor.status().model_assets_ready,
             compatibility_reason: state.face_monitor.status().last_error,
             downloadable: false,
