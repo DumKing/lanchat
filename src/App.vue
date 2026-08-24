@@ -6054,6 +6054,12 @@ async function persistLocalFacePhoto(bytes: Uint8Array, candidateId?: string) {
   localFacePhotoPreviews.value = [...localFacePhotoPreviews.value, convertFileSrc(path)].slice(0, 30);
 }
 
+function removePendingLocalFacePhoto(index: number) {
+  if (index < 0 || index >= localFacePhotoPaths.value.length) return;
+  localFacePhotoPaths.value = localFacePhotoPaths.value.filter((_, itemIndex) => itemIndex !== index);
+  localFacePhotoPreviews.value = localFacePhotoPreviews.value.filter((_, itemIndex) => itemIndex !== index);
+}
+
 async function confirmLocalFaceCandidate() {
   const draft = localFaceCandidateDraft.value;
   if (!draft || !localFaceCandidateSelectionId.value) return;
@@ -7885,7 +7891,12 @@ async function closeWindow() {
                         <NButton size="small" type="primary" :disabled="!localFacePersonName.trim() || localFacePhotoPaths.length < 3" @click="createLocalFacePerson">保存人员</NButton>
                       </NSpace>
                       <NText v-if="localFacePhotoPaths.length" depth="3">已选择 {{ localFacePhotoPaths.length }} / 30 张参考照片（至少 3 张）</NText>
-                      <div v-if="localFacePhotoPreviews.length" class="face-person-preview-list"><img v-for="preview in localFacePhotoPreviews" :key="preview" class="face-person-preview-thumb" :src="preview" alt="待添加人员照片" /></div>
+                      <div v-if="localFacePhotoPreviews.length" class="face-person-preview-list">
+                        <div v-for="(preview, index) in localFacePhotoPreviews" :key="preview" class="face-person-preview-item">
+                          <img class="face-person-preview-thumb" :src="preview" alt="待添加人员照片" />
+                          <button type="button" :aria-label="`移除第 ${index + 1} 张照片`" :title="`移除第 ${index + 1} 张照片`" @click="removePendingLocalFacePhoto(index)">×</button>
+                        </div>
+                      </div>
                     </div>
                     <div class="face-monitor-people">
                       <strong>摄像头人物识别告警（独立于狼来了）</strong>
@@ -8729,8 +8740,11 @@ async function closeWindow() {
 .face-monitor-people { display: grid; gap: 9px; padding-top: 4px; }
 .face-monitor-alert-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 34px; padding: 7px 9px; border: 1px solid var(--panel-border); border-radius: 7px; background: var(--input-bg); }
 .face-monitor-alert-row > :first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.face-person-preview-thumb { display: block; width: 80px; height: 80px; border: 1px solid var(--panel-border); border-radius: 8px; object-fit: cover; }
 .face-person-preview-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.face-person-preview-item { position: relative; flex: 0 0 80px; width: 80px; height: 80px; }
+.face-person-preview-thumb { display: block; width: 80px; height: 80px; border: 1px solid var(--panel-border); border-radius: 8px; object-fit: cover; }
+.face-person-preview-item button { position: absolute; top: 4px; right: 4px; display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; color: #fff; background: rgba(15, 23, 42, .72); cursor: pointer; line-height: 1; }
+.face-person-preview-item button:hover { background: #d03050; }
 .admin-settings-grid { grid-template-columns: minmax(0, 1fr) !important; }
 .face-admin-photo-preview-list { display: flex; flex-wrap: wrap; gap: 10px; padding: 2px 0 6px; }
 .face-admin-photo-preview { position: relative; display: grid; flex: 0 0 92px; gap: 4px; min-width: 0; }

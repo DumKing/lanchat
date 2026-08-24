@@ -222,6 +222,46 @@ fn feature_store_keeps_embeddings_in_separate_model_spaces() {
 }
 
 #[test]
+fn shared_embedding_space_can_be_registered_by_multiple_model_profiles() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let storage = Storage::open(temp.path().join("lanchat.sqlite3")).expect("storage opens");
+    let semantics = r#"{"embeddingSpaceId":"body.youtu.v1.4757c4cb759b7903","modality":"body"}"#;
+
+    storage
+        .ensure_vision_embedding_space(
+            "body.youtu.v1.4757c4cb759b7903",
+            "baseline",
+            "1.0.0",
+            "body",
+            semantics,
+        )
+        .expect("baseline registers shared body component");
+
+    storage
+        .ensure_vision_embedding_space(
+            "body.youtu.v1.4757c4cb759b7903",
+            "office-arcface-buffalo-sc",
+            "1.0.0",
+            "body",
+            semantics,
+        )
+        .expect("another profile may reuse the same component space");
+
+    assert_eq!(
+        storage
+            .ensure_vision_embedding_space(
+                "body.youtu.v1.4757c4cb759b7903",
+                "office-arcface-buffalo-sc",
+                "1.0.0",
+                "face",
+                r#"{"embeddingSpaceId":"body.youtu.v1.4757c4cb759b7903","modality":"face"}"#,
+            )
+            .expect_err("different modality remains incompatible"),
+        "VISION_EMBEDDING_SPACE_COLLISION"
+    );
+}
+
+#[test]
 fn failed_selected_profile_rolls_back_to_last_known_good() {
     let temp = tempfile::tempdir().expect("tempdir");
     let storage = Storage::open(temp.path().join("lanchat.sqlite3")).expect("storage opens");
