@@ -853,7 +853,8 @@ impl Storage {
             )
             .optional()
             .map_err(|error| format!("读取特征空间失败：{error}"))?;
-        if let Some((_stored_profile, _stored_version, stored_modality, stored_semantics)) = existing
+        if let Some((_stored_profile, _stored_version, stored_modality, stored_semantics)) =
+            existing
         {
             if stored_modality != modality || stored_semantics != canonical_semantics {
                 return Err("VISION_EMBEDDING_SPACE_COLLISION".to_string());
@@ -1164,6 +1165,18 @@ impl Storage {
         transaction
             .commit()
             .map_err(|error| format!("提交视觉模型切换失败：{error}"))
+    }
+
+    /// 内置模型不写入下载模型表。切回内置模型时，仅取消所有下载模型的活动标记，
+    /// 下一次启动会从应用资源目录加载 baseline。
+    pub fn activate_builtin_vision_model_profile(&self) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        conn.execute(
+            "UPDATE vision_model_profiles SET is_active=0,updated_at=?1 WHERE is_active=1",
+            params![chrono::Utc::now().timestamp_millis()],
+        )
+        .map_err(|error| format!("切换内置视觉模型失败：{error}"))?;
+        Ok(())
     }
 
     /// 仅允许删除未启用的下载模型；内置模型不进入此表，因此天然不可删。

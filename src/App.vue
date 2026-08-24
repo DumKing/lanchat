@@ -635,6 +635,7 @@ const operationErrorMessage = computed(() => (
   error.value
   || desktopPetError.value
   || autostartError.value
+  || updateError.value
 ));
 const updateGithubTokenInfo = ref<UpdateGithubTokenInfo | null>(null);
 const updateGithubTokenDraft = ref("");
@@ -5094,6 +5095,11 @@ function showOperationSuccess(message: string) {
     operationNotice.value = "";
   }, 3600);
 }
+
+function showOperationError(message: string) {
+  operationNotice.value = "";
+  store.error = message;
+}
 async function startDirectChat(peer = selectedPeerDetail.value) {
   if (!peer) return;
   activeSection.value = "chat";
@@ -5706,7 +5712,7 @@ async function refreshVisionModelProfiles(refreshCatalog = false) {
   try {
     visionModelProfiles.value = await (refreshCatalog ? api.refreshVisionModelCatalog() : api.listVisionModelProfiles());
   } catch (error) {
-    if (refreshCatalog) operationNotice.value = `模型目录刷新失败：${stringifyError(error)}`;
+    showOperationError(`${refreshCatalog ? "模型目录刷新" : "读取模型列表"}失败：${stringifyError(error)}`);
   } finally {
     visionModelCatalogRefreshing.value = false;
   }
@@ -5717,9 +5723,9 @@ async function installVisionModel(profile: VisionProfileSummary) {
   visionModelInstallingKey.value = key;
   try {
     visionModelProfiles.value = await api.installVisionModelProfile(profile.profileId, profile.profileVersion);
-    operationNotice.value = "模型已安全安装，重启 LanChat 后可激活新模型。";
+    showOperationSuccess("模型已安全安装，重启 LanChat 后可激活新模型。");
   } catch (error) {
-    operationNotice.value = `模型安装失败：${stringifyError(error)}`;
+    showOperationError(`模型安装失败：${stringifyError(error)}`);
   } finally {
     visionModelInstallingKey.value = "";
   }
@@ -5736,28 +5742,32 @@ async function activateVisionModel(profile: VisionProfileSummary) {
         consecutiveHits: profile.recommendedSettings.consecutiveHits,
       });
     }
-    operationNotice.value = "已设为下次启动使用的模型；当前检测不中断，重启后自动切换。";
+    showOperationSuccess("已设为下次启动使用的模型；当前检测不中断，重启后自动切换。");
   } catch (error) {
-    operationNotice.value = `启用模型失败：${stringifyError(error)}`;
+    showOperationError(`启用模型失败：${stringifyError(error)}`);
   }
 }
 
 async function uninstallVisionModel(profile: VisionProfileSummary) {
   try {
     visionModelProfiles.value = await api.uninstallVisionModelProfile(profile.profileId, profile.profileVersion);
-    operationNotice.value = "模型已卸载。";
+    showOperationSuccess("模型已卸载。");
   } catch (error) {
-    operationNotice.value = `模型卸载失败：${stringifyError(error)}`;
+    showOperationError(`模型卸载失败：${stringifyError(error)}`);
   }
 }
 
 async function refreshFaceMonitorRules() {
-  const [policy, people] = await Promise.all([
-    api.getEffectiveFaceMonitorPolicy().catch(() => null),
-    api.listFacePeople().catch(() => []),
+  const [policyResult, peopleResult] = await Promise.allSettled([
+    api.getEffectiveFaceMonitorPolicy(),
+    api.listFacePeople(),
   ]);
-  faceMonitorPolicy.value = policy;
-  facePeople.value = people;
+  if (policyResult.status === "fulfilled") faceMonitorPolicy.value = policyResult.value;
+  if (peopleResult.status === "fulfilled") {
+    facePeople.value = peopleResult.value;
+  } else {
+    showOperationError(`读取本机识别人员失败：${stringifyError(peopleResult.reason)}`);
+  }
 }
 
 async function refreshCameraFaceAlerts() {
@@ -6130,11 +6140,12 @@ async function createLocalFacePerson() {
     return;
   }
   try {
-    await api.createLocalFacePerson(crypto.randomUUID(), localFacePersonName.value.trim(), localFacePhotoPaths.value);
+    const saved = await api.createLocalFacePerson(crypto.randomUUID(), localFacePersonName.value.trim(), localFacePhotoPaths.value);
     localFacePersonName.value = "";
     for (const preview of localFacePhotoPreviews.value) URL.revokeObjectURL(preview);
     localFacePhotoPaths.value = [];
     localFacePhotoPreviews.value = [];
+    facePeople.value = [saved, ...facePeople.value.filter((person) => person.personId !== saved.personId)];
     await refreshFaceMonitorRules();
     showOperationSuccess("本机识别人员已添加");
   } catch (error) {
@@ -7669,6 +7680,7 @@ async function closeWindow() {
                   class="vision-people-workspace-card"
                   :people="facePeople"
                   @add="openVisionPersonRegistration"
+                  @refresh="refreshFaceMonitorRules"
                   @detail="openFacePersonDetail"
                   @remove="deleteLocalFacePerson"
                 />

@@ -701,6 +701,8 @@ fn ensure_full_client(state: &AppState, capability: &str) -> Result<(), String> 
 }
 
 const TRAY_NORMAL_ICON: &[u8] = include_bytes!("../icons/32x32.png");
+const BUILTIN_BASELINE_PROFILE_ID: &str = "baseline";
+const BUILTIN_BASELINE_PROFILE_VERSION: &str = "1.0.0";
 
 fn platform_info_value() -> PlatformInfo {
     PlatformInfo {
@@ -1076,12 +1078,8 @@ fn vision_model_profiles(state: &AppState) -> Result<Vec<VisionModelProfileSumma
     profiles.insert(
         0,
         VisionModelProfileSummary {
-            profile_id: "baseline".to_string(),
-            profile_version: state
-                .face_monitor
-                .status()
-                .model_version
-                .unwrap_or_else(|| "1.0.0".to_string()),
+            profile_id: BUILTIN_BASELINE_PROFILE_ID.to_string(),
+            profile_version: BUILTIN_BASELINE_PROFILE_VERSION.to_string(),
             display_name: "内置基础模型".to_string(),
             tier: "low_resource".to_string(),
             inference_engine: Some("onnxruntime".to_string()),
@@ -1263,6 +1261,10 @@ fn activate_vision_model_profile(
     profile_id: String,
     profile_version: String,
 ) -> Result<Vec<VisionModelProfileSummary>, String> {
+    if profile_id.trim() == BUILTIN_BASELINE_PROFILE_ID {
+        state.storage.activate_builtin_vision_model_profile()?;
+        return vision_model_profiles(&state);
+    }
     let install_dir = state
         .storage
         .vision_model_install_path(&profile_id, &profile_version)?;
@@ -1515,20 +1517,24 @@ fn load_recognition_templates(state: &AppState) -> Result<Vec<PersonTemplate>, S
 
 #[tauri::command]
 fn list_face_people(state: State<'_, AppState>) -> Result<Vec<FacePersonRecord>, String> {
-    let (face_embedding_space_id, body_embedding_space_id) =
-        ensure_active_embedding_spaces(&state)?;
     let mut people = state.storage.list_face_people()?;
-    for person in &mut people {
-        person.active_face_embedding_count = state
-            .storage
-            .list_person_vision_embeddings(&person.person_id, &face_embedding_space_id, "face")?
-            .len()
-            .min(u32::MAX as usize) as u32;
-        person.active_body_embedding_count = state
-            .storage
-            .list_person_vision_embeddings(&person.person_id, &body_embedding_space_id, "body")?
-            .len()
-            .min(u32::MAX as usize) as u32;
+    // 人员库是本机持久资料，不能因为当前模型未安装、正在切换或运行时不可用而
+    // 整体不可见。当前激活模型空间的覆盖数只是增强信息，取不到时保留为 0。
+    if let Ok((face_embedding_space_id, body_embedding_space_id)) =
+        ensure_active_embedding_spaces(&state)
+    {
+        for person in &mut people {
+            person.active_face_embedding_count = state
+                .storage
+                .list_person_vision_embeddings(&person.person_id, &face_embedding_space_id, "face")
+                .map(|items| items.len().min(u32::MAX as usize) as u32)
+                .unwrap_or(0);
+            person.active_body_embedding_count = state
+                .storage
+                .list_person_vision_embeddings(&person.person_id, &body_embedding_space_id, "body")
+                .map(|items| items.len().min(u32::MAX as usize) as u32)
+                .unwrap_or(0);
+        }
     }
     Ok(people)
 }
