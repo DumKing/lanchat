@@ -70,9 +70,22 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           python -m pip install --disable-pip-version-check "openvino-dev==2024.6.0"
           Get-Command omz_downloader -ErrorAction Stop | Out-Null
-          omz_downloader --name face-detection-retail-0004 --name face-reidentification-retail-0095 --name person-detection-0203 --name person-reidentification-retail-0288 --name person-reidentification-retail-0286 --precisions FP16 --output_dir .model-cache/openvino
+          function Invoke-WithRetry([string] $label, [scriptblock] $action) {
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+              try {
+                & $action
+                return
+              } catch {
+                if ($attempt -eq 3) { throw "${label} 连续 $attempt 次失败：$($_.Exception.Message)" }
+                Start-Sleep -Seconds (10 * $attempt)
+              }
+            }
+          }
+          foreach ($model in @("face-detection-retail-0004", "face-reidentification-retail-0095", "person-detection-0203", "person-reidentification-retail-0288", "person-reidentification-retail-0286")) {
+            Invoke-WithRetry "下载 $model" { omz_downloader --name $model --precisions FP16 --output_dir .model-cache/openvino }
+          }
           node scripts/prepare-omz-model-profiles.mjs .model-cache/openvino
-          Invoke-WebRequest -Uri "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip" -OutFile ".model-cache/buffalo_sc.zip"
+          Invoke-WithRetry "下载 InsightFace buffalo_sc" { Invoke-WebRequest -Uri "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip" -OutFile ".model-cache/buffalo_sc.zip" }
           Expand-Archive -Path ".model-cache/buffalo_sc.zip" -DestinationPath ".model-cache/buffalo_sc" -Force
           node scripts/prepare-insightface-arcface-profile.mjs .model-cache/buffalo_sc
           foreach ($profile in @("office-omz-retail-0288", "office-omz-retail-0286", "office-arcface-buffalo-sc")) {
