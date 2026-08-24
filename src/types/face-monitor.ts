@@ -51,6 +51,22 @@ export type FaceMonitorRuntimeStatus = {
 
 export type FacePersonAction = "upsert" | "disable" | "delete";
 
+/** 原图归一化坐标中的可录入人员裁剪框。 */
+export type ReferencePhotoCandidate = {
+  candidateId: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  score: number;
+  usesPersonCrop: boolean;
+};
+
+export type ReferencePhotoCandidateAnalysis = {
+  candidates: ReferencePhotoCandidate[];
+  requiresSelection: boolean;
+};
+
 export type FacePersonPolicy = {
   personId: string;
   displayName: string;

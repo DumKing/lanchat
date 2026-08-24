@@ -163,12 +163,32 @@ struct TrackEvidence {
     body: Option<(FaceMatch, f32)>,
 }
 
-/// 录入人员参考图时的本地质量结论。它只包含计数和质量分，不包含图像或特征。
+/// 录入人员参考图时的本地质量结论。它只包含质量分，不包含图像或特征。
 #[derive(Debug, Clone, Copy)]
 pub struct ReferencePhotoAnalysis {
-    pub detected_subject_count: u8,
     pub face_quality_score: Option<f32>,
     pub body_quality_score: Option<f32>,
+}
+
+/// 前端用于在多人参考照片中选择目标人员的归一化裁剪区域。
+/// 坐标始终基于原始图片的 0.0..=1.0 空间，避免前端缩放预览时产生偏差。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReferencePhotoCandidate {
+    pub candidate_id: String,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub score: f32,
+    pub uses_person_crop: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReferencePhotoCandidateAnalysis {
+    pub candidates: Vec<ReferencePhotoCandidate>,
+    pub requires_selection: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1000,13 +1020,11 @@ impl FaceMonitorRuntime {
         let photo = image::load_from_memory(bytes)
             .map_err(|error| format!("参考照片无法解码：{error}"))?
             .to_rgb8();
-        let mut detected_subject_count = 0_u8;
         let mut face_quality_score = None;
         let mut body_quality_score = None;
 
         if self.detector.is_some() {
             if let Some(detection) = self.detect_in_rgb(&photo)? {
-                detected_subject_count = detected_subject_count.max(detection.detected_faces);
                 face_quality_score = Some(
                     detection
                         .faces
@@ -1018,8 +1036,6 @@ impl FaceMonitorRuntime {
         }
         if self.person_detector.is_some() {
             let people = self.detect_people(&photo)?;
-            detected_subject_count =
-                detected_subject_count.max(people.len().min(u8::MAX as usize) as u8);
             body_quality_score = people
                 .iter()
                 .map(|person| person.score)
@@ -1027,10 +1043,54 @@ impl FaceMonitorRuntime {
         }
 
         Ok(ReferencePhotoAnalysis {
-            detected_subject_count,
             face_quality_score,
             body_quality_score,
         })
+    }
+
+    /// 参考图候选项以可用人脸为锚点，并优先扩展为包含该人脸的人体检测框。
+    /// 因此多人合照只会在用户选择后保存目标人物的局部图片，不会把整张合照入库。
+    pub fn analyze_reference_photo_candidates(
+        &self,
+        bytes: &[u8],
+    ) -> Result<ReferencePhotoCandidateAnalysis, String> {
+        let photo = image::load_from_memory(bytes)
+            .map_err(|error| format!("参考照片无法解码：{error}"))?
+            .to_rgb8();
+        let candidates = self.reference_photo_candidates_from_rgb(&photo)?;
+        if candidates.is_empty() {
+            return Err("参考照片中未检测到可用人脸，请选择人脸清晰的照片".to_string());
+        }
+        Ok(ReferencePhotoCandidateAnalysis {
+            requires_selection: candidates.len() > 1,
+            candidates,
+        })
+    }
+
+    /// 将选中的候选人裁剪并编码为 JPEG。调用方只需持久化返回字节，后续特征提取
+    /// 会自然只看到被选中的单人样本。
+    pub fn crop_reference_photo_candidate(
+        &self,
+        bytes: &[u8],
+        candidate_id: Option<&str>,
+    ) -> Result<Vec<u8>, String> {
+        let photo = image::load_from_memory(bytes)
+            .map_err(|error| format!("参考照片无法解码：{error}"))?
+            .to_rgb8();
+        let candidates = self.reference_photo_candidates_from_rgb(&photo)?;
+        let candidate = select_reference_photo_candidate(&candidates, candidate_id)?;
+        let crop = crop_normalized_rect(
+            &photo,
+            candidate.x,
+            candidate.y,
+            candidate.width,
+            candidate.height,
+        );
+        let mut encoded = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, 92)
+            .encode_image(&image::DynamicImage::ImageRgb8(crop))
+            .map_err(|error| format!("保存目标人员裁剪图失败：{error}"))?;
+        Ok(encoded)
     }
 
     /// 参考照片的人体外观特征。只接受检测到的有效人体，避免把背景编码进人员模板。
@@ -1085,6 +1145,59 @@ impl FaceMonitorRuntime {
         // 运行帧适当降低人体检测门限以保留远处小目标，后续由 ReID 差距和多帧门控过滤。
         let people = decode_yolox_people(tensor, ratio, image.width(), image.height(), 0.35);
         Ok(nms_people(people, 0.5, 5))
+    }
+
+    fn reference_photo_candidates_from_rgb(
+        &self,
+        photo: &image::RgbImage,
+    ) -> Result<Vec<ReferencePhotoCandidate>, String> {
+        let detection = self
+            .detect_in_rgb(photo)?
+            .filter(|value| !value.faces.is_empty())
+            .ok_or_else(|| "参考照片中未检测到可用人脸，请选择人脸清晰的照片".to_string())?;
+        let people = if self.person_detector.is_some() {
+            self.detect_people(photo)?
+        } else {
+            Vec::new()
+        };
+        let width = photo.width().max(1) as f32;
+        let height = photo.height().max(1) as f32;
+        let scale_x = width / DETECTOR_SIZE as f32;
+        let scale_y = height / DETECTOR_SIZE as f32;
+        let mut faces = detection.faces;
+        // 以阅读顺序生成稳定编号，重新分析同一张图时不会因模型分数微小抖动选错人。
+        faces.sort_by(|left, right| {
+            (left.y1 * scale_y)
+                .total_cmp(&(right.y1 * scale_y))
+                .then_with(|| (left.x1 * scale_x).total_cmp(&(right.x1 * scale_x)))
+        });
+        Ok(faces
+            .iter()
+            .enumerate()
+            .map(|(index, face)| {
+                let face_x = face.x1 * scale_x;
+                let face_y = face.y1 * scale_y;
+                let face_w = face.w * scale_x;
+                let face_h = face.h * scale_y;
+                let (x, y, w, h, uses_person_crop) = people
+                    .iter()
+                    .filter(|person| person_contains_face(person, face_x, face_y, face_w, face_h))
+                    .min_by(|left, right| (left.w * left.h).total_cmp(&(right.w * right.h)))
+                    .map(|person| (person.x, person.y, person.w, person.h, true))
+                    .unwrap_or_else(|| {
+                        expanded_face_reference_crop(face_x, face_y, face_w, face_h, width, height)
+                    });
+                ReferencePhotoCandidate {
+                    candidate_id: format!("face-{index}"),
+                    x: (x / width).clamp(0.0, 1.0),
+                    y: (y / height).clamp(0.0, 1.0),
+                    width: (w / width).clamp(0.0, 1.0),
+                    height: (h / height).clamp(0.0, 1.0),
+                    score: face.score,
+                    uses_person_crop,
+                }
+            })
+            .collect())
     }
 
     fn extract_body_embedding(&self, image: &image::RgbImage) -> Result<Vec<f32>, String> {
@@ -1464,6 +1577,82 @@ fn crop_person(image: &image::RgbImage, person: &DetectedPerson) -> image::RgbIm
     .to_image()
 }
 
+fn crop_normalized_rect(
+    image: &image::RgbImage,
+    normalized_x: f32,
+    normalized_y: f32,
+    normalized_width: f32,
+    normalized_height: f32,
+) -> image::RgbImage {
+    let image_width = image.width().max(1);
+    let image_height = image.height().max(1);
+    let x = (normalized_x.clamp(0.0, 1.0) * image_width as f32).floor() as u32;
+    let y = (normalized_y.clamp(0.0, 1.0) * image_height as f32).floor() as u32;
+    let width = (normalized_width.clamp(0.0, 1.0) * image_width as f32)
+        .ceil()
+        .max(1.0) as u32;
+    let height = (normalized_height.clamp(0.0, 1.0) * image_height as f32)
+        .ceil()
+        .max(1.0) as u32;
+    image::imageops::crop_imm(
+        image,
+        x.min(image_width - 1),
+        y.min(image_height - 1),
+        width.min(image_width - x.min(image_width - 1)),
+        height.min(image_height - y.min(image_height - 1)),
+    )
+    .to_image()
+}
+
+fn person_contains_face(
+    person: &DetectedPerson,
+    face_x: f32,
+    face_y: f32,
+    face_width: f32,
+    face_height: f32,
+) -> bool {
+    let center_x = face_x + face_width * 0.5;
+    let center_y = face_y + face_height * 0.5;
+    center_x >= person.x
+        && center_x <= person.x + person.w
+        && center_y >= person.y
+        && center_y <= person.y + person.h
+}
+
+fn expanded_face_reference_crop(
+    face_x: f32,
+    face_y: f32,
+    face_width: f32,
+    face_height: f32,
+    image_width: f32,
+    image_height: f32,
+) -> (f32, f32, f32, f32, bool) {
+    let target_width = (face_width * 3.0).min(image_width).max(1.0);
+    let target_height = (face_height * 4.0).min(image_height).max(1.0);
+    let x = (face_x + face_width * 0.5 - target_width * 0.5)
+        .clamp(0.0, (image_width - target_width).max(0.0));
+    let y = (face_y - face_height * 0.55).clamp(0.0, (image_height - target_height).max(0.0));
+    (x, y, target_width, target_height, false)
+}
+
+fn select_reference_photo_candidate<'a>(
+    candidates: &'a [ReferencePhotoCandidate],
+    candidate_id: Option<&str>,
+) -> Result<&'a ReferencePhotoCandidate, String> {
+    match (
+        candidates.len(),
+        candidate_id.map(str::trim).filter(|id| !id.is_empty()),
+    ) {
+        (0, _) => Err("参考照片中未检测到可用人脸，请选择人脸清晰的照片".to_string()),
+        (1, None) => Ok(&candidates[0]),
+        (_, Some(candidate_id)) => candidates
+            .iter()
+            .find(|candidate| candidate.candidate_id == candidate_id)
+            .ok_or_else(|| "所选目标人员已失效，请重新选择照片中的人员".to_string()),
+        _ => Err("参考照片中检测到多个人，请选择要录入的目标人员".to_string()),
+    }
+}
+
 fn select_reference_person<'a>(
     people: &'a [DetectedPerson],
     image: &image::RgbImage,
@@ -1824,6 +2013,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reference_photo_requires_selection_only_when_multiple_candidates_exist() {
+        let candidates = vec![
+            ReferencePhotoCandidate {
+                candidate_id: "face-0".to_string(),
+                x: 0.1,
+                y: 0.1,
+                width: 0.2,
+                height: 0.5,
+                score: 0.9,
+                uses_person_crop: true,
+            },
+            ReferencePhotoCandidate {
+                candidate_id: "face-1".to_string(),
+                x: 0.6,
+                y: 0.2,
+                width: 0.2,
+                height: 0.5,
+                score: 0.8,
+                uses_person_crop: false,
+            },
+        ];
+        assert!(select_reference_photo_candidate(&candidates, None).is_err());
+        assert_eq!(
+            select_reference_photo_candidate(&candidates, Some("face-1"))
+                .expect("selected candidate")
+                .candidate_id,
+            "face-1"
+        );
+    }
+
+    #[test]
+    fn expanded_face_crop_stays_inside_image_bounds() {
+        let (x, y, width, height, is_person_crop) =
+            expanded_face_reference_crop(95.0, 80.0, 20.0, 20.0, 100.0, 100.0);
+        assert!(!is_person_crop);
+        assert!(x >= 0.0 && y >= 0.0);
+        assert!(x + width <= 100.0);
+        assert!(y + height <= 100.0);
+    }
+
+    #[test]
     fn settings_are_clamped_to_safe_sampling_range() {
         let settings = FaceMonitorLocalSettings {
             enabled: true,
@@ -1984,7 +2214,7 @@ mod tests {
           "pipeline":{{"personDetector":"person-detector","faceEngine":"face-recognizer","personReIdEngine":"person-reid","fusionPolicy":"quality-temporal-v1"}},
           "components":[
             {{"id":"face-detector","category":"face_detector","family":"yunet","file":"face-detector.onnx","sha256":"{}","adapterId":"builtin.face-detector.yunet.v1","engine":"onnxruntime"}},
-            {{"id":"face-recognizer","category":"face_recognizer","family":"sface","file":"face.onnx","sha256":"{}","adapterId":"builtin.face-recognizer.sface.v1","engine":"onnxruntime","input":{{"colorOrder":"RGB","resizeMode":"aligned_112","normalization":"sface_127_5"}},"output":{{"embeddingDimension":128,"distanceMetric":"cosine"}}}},
+            {{"id":"face-recognizer","category":"face_recognizer","family":"sface","file":"face.onnx","sha256":"{}","adapterId":"builtin.face-recognizer.sface.v1","engine":"onnxruntime","input":{{"colorOrder":"BGR","resizeMode":"aligned_112","normalization":"sface_127_5"}},"output":{{"embeddingDimension":128,"distanceMetric":"cosine"}}}},
             {{"id":"person-detector","category":"person_detector","family":"yolox","file":"person-detector.onnx","sha256":"{}","adapterId":"builtin.person-detector.yolox.v1","engine":"onnxruntime"}},
             {{"id":"person-reid","category":"person_reid","family":"osnet-x025","file":"osnet.onnx","sha256":"{}","adapterId":"builtin.person-reid.osnet.v1","engine":"onnxruntime","input":{{"colorOrder":"RGB","resizeMode":"256x128","normalization":"imagenet"}},"output":{{"embeddingDimension":512,"distanceMetric":"cosine"}}}}
           ]
