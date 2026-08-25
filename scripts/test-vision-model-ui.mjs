@@ -5,6 +5,10 @@ const modelCenter = await readFile(
   new URL("../src/components/VisionModelCenter.vue", import.meta.url),
   "utf8",
 );
+const runtimeStatus = await readFile(
+  new URL("../src/components/VisionRuntimeStatus.vue", import.meta.url),
+  "utf8",
+);
 
 assert.match(
   modelCenter,
@@ -20,6 +24,22 @@ assert.doesNotMatch(
   modelCenter,
   /profile\.active \|\| activeProfile\.value === profile\.profileId/,
   "旧运行时快照不能参与模型列表选中态判断",
+);
+
+assert.match(
+  runtimeStatus,
+  /status\?\.modelProfileId \|\| '-'/,
+  "运行状态必须展示识别引擎当前实际加载的模型 Profile",
+);
+assert.match(
+  runtimeStatus,
+  /status\?\.modelVersion \|\| '-'/,
+  "运行状态必须展示识别引擎当前实际加载的模型版本",
+);
+assert.doesNotMatch(
+  runtimeStatus,
+  /snapshot\?\.activeProfileId \|\| status\?\.modelProfileId/,
+  "持久化快照不能覆盖实际运行模型状态",
 );
 
 console.log("vision model UI selection guards passed");

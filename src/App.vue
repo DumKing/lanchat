@@ -7909,6 +7909,29 @@ async function closeWindow() {
                           <button type="button" :aria-label="`移除第 ${index + 1} 张照片`" :title="`移除第 ${index + 1} 张照片`" @click="removePendingLocalFacePhoto(index)">×</button>
                         </div>
                       </div>
+                      <div class="face-monitor-saved-people">
+                        <div class="face-monitor-saved-people-header">
+                          <strong>已保存人员</strong>
+                          <NButton size="tiny" quaternary @click="refreshFaceMonitorRules">刷新</NButton>
+                        </div>
+                        <NText v-if="facePeople.length === 0" depth="3">暂无已保存人员。</NText>
+                        <div v-else class="face-monitor-saved-people-list">
+                          <article v-for="person in facePeople" :key="person.personId" class="face-monitor-saved-person-row">
+                            <NAvatar :size="30">{{ person.displayName.slice(0, 1).toUpperCase() || '?' }}</NAvatar>
+                            <div class="face-monitor-saved-person-main">
+                              <strong>{{ person.displayName }}</strong>
+                              <span>{{ person.sampleCount ?? 0 }} 张参考照片 · 人脸 {{ person.activeFaceEmbeddingCount ?? 0 }} · 人体 {{ person.activeBodyEmbeddingCount ?? 0 }}</span>
+                            </div>
+                            <NTag size="small" :bordered="false" :type="person.enabled && !person.deletedAt ? 'success' : 'default'">
+                              {{ person.enabled && !person.deletedAt ? '已启用' : '已停用' }}
+                            </NTag>
+                            <NSpace :size="2" :wrap="false">
+                              <NButton size="tiny" quaternary @click="openFacePersonDetail(person)">查看</NButton>
+                              <NButton size="tiny" quaternary type="error" @click="deleteLocalFacePerson(person)">删除</NButton>
+                            </NSpace>
+                          </article>
+                        </div>
+                      </div>
                     </div>
                     <div class="face-monitor-people">
                       <strong>摄像头人物识别告警（独立于狼来了）</strong>
@@ -8750,6 +8773,14 @@ async function closeWindow() {
 .private-call-audio-profile strong { color: #1f2937; font-size: 17px; }
 .private-call-audio-profile span { color: #768397; font-size: 12px; }
 .face-monitor-people { display: grid; gap: 9px; padding-top: 4px; }
+.face-monitor-saved-people { display: grid; gap: 7px; padding-top: 5px; }
+.face-monitor-saved-people-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.face-monitor-saved-people-list { display: grid; gap: 4px; }
+.face-monitor-saved-person-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--panel-border); border-radius: 7px; background: var(--input-bg); }
+.face-monitor-saved-person-main { min-width: 0; }
+.face-monitor-saved-person-main strong, .face-monitor-saved-person-main span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.face-monitor-saved-person-main strong { font-size: 13px; }
+.face-monitor-saved-person-main span { margin-top: 2px; color: var(--text-secondary); font-size: 11px; }
 .face-monitor-alert-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 34px; padding: 7px 9px; border: 1px solid var(--panel-border); border-radius: 7px; background: var(--input-bg); }
 .face-monitor-alert-row > :first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .face-person-preview-list { display: flex; flex-wrap: wrap; gap: 8px; }
