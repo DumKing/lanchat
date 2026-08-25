@@ -3,7 +3,7 @@
 //! Windows 发布包将官方 Runtime 放到 Tauri 的资源目录。这里显式加载
 //! `openvino_c.dll`，而不依赖用户机器是否安装过 OpenVINO。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const WINDOWS_RUNTIME_RELATIVE_DIR: &str = "openvino-runtime/windows-x86_64";
 
@@ -20,6 +20,55 @@ pub fn packaged_runtime_directory(resource_dir: &Path) -> std::path::PathBuf {
     resource_dir.join(WINDOWS_RUNTIME_RELATIVE_DIR)
 }
 
+fn packaged_runtime_directory_candidates(
+    resource_dir: Option<&Path>,
+    executable_path: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    let mut append_root = |root: &Path| {
+        for runtime_dir in [
+            packaged_runtime_directory(root),
+            root.join("resources").join(WINDOWS_RUNTIME_RELATIVE_DIR),
+        ] {
+            if !candidates.contains(&runtime_dir) {
+                candidates.push(runtime_dir);
+            }
+        }
+    };
+
+    if let Some(resource_dir) = resource_dir {
+        append_root(resource_dir);
+    }
+    if let Some(executable_dir) = executable_path.and_then(Path::parent) {
+        append_root(executable_dir);
+    }
+    candidates
+}
+
+fn resolve_packaged_runtime_library(
+    resource_dir: Option<&Path>,
+    executable_path: Option<&Path>,
+) -> Option<PathBuf> {
+    packaged_runtime_directory_candidates(resource_dir, executable_path)
+        .into_iter()
+        .map(|runtime_dir| runtime_dir.join("openvino_c.dll"))
+        .find(|library| library.is_file())
+}
+
+fn packaged_runtime_not_found_error(
+    resource_dir: Option<&Path>,
+    executable_path: Option<&Path>,
+) -> String {
+    let searched_directories = packaged_runtime_directory_candidates(resource_dir, executable_path)
+        .into_iter()
+        .map(|directory| directory.display().to_string())
+        .collect::<Vec<_>>()
+        .join(";");
+    format!(
+        "VISION_OPENVINO_RUNTIME_REQUIRED:未在应用资源目录找到 openvino_c.dll:{searched_directories}"
+    )
+}
+
 pub fn validate_ir_pair(xml_path: &Path) -> Result<(), String> {
     if xml_path.extension().and_then(|value| value.to_str()) != Some("xml") {
         return Err("VISION_OPENVINO_IR_XML_REQUIRED".to_string());
@@ -33,14 +82,15 @@ pub fn validate_ir_pair(xml_path: &Path) -> Result<(), String> {
 
 #[cfg(feature = "openvino-runtime")]
 pub fn configure_packaged_runtime(resource_dir: Option<&Path>) -> Result<(), String> {
-    let resource_dir =
-        resource_dir.ok_or_else(|| "VISION_OPENVINO_RUNTIME_REQUIRED".to_string())?;
-    let runtime_dir = packaged_runtime_directory(resource_dir);
-    let library = packaged_runtime_library(resource_dir);
-    if !library.is_file() {
-        return Err("VISION_OPENVINO_RUNTIME_REQUIRED".to_string());
-    }
-    configure_windows_runtime_directory(&runtime_dir)?;
+    let executable_path = std::env::current_exe().ok();
+    let library = resolve_packaged_runtime_library(resource_dir, executable_path.as_deref())
+        .ok_or_else(|| {
+            packaged_runtime_not_found_error(resource_dir, executable_path.as_deref())
+        })?;
+    let runtime_dir = library
+        .parent()
+        .ok_or_else(|| "VISION_OPENVINO_RUNTIME_REQUIRED:运行时路径无效".to_string())?;
+    configure_windows_runtime_directory(runtime_dir)?;
     openvino_sys::library::load_from(library)
         .map_err(|error| format!("VISION_OPENVINO_RUNTIME_REQUIRED:{error}"))
 }
@@ -98,6 +148,7 @@ fn configure_windows_runtime_directory(_runtime_dir: &Path) -> Result<(), String
 
 #[cfg(feature = "openvino-runtime")]
 pub fn verify_runtime() -> Result<(), String> {
+    configure_packaged_runtime(None)?;
     openvino::Core::new()
         .map(|_| ())
         .map_err(|error| format!("VISION_OPENVINO_RUNTIME_REQUIRED:{error}"))
@@ -116,6 +167,7 @@ pub struct OpenVinoSession {
 impl OpenVinoSession {
     pub fn load_cpu(xml_path: &Path) -> Result<Self, String> {
         validate_ir_pair(xml_path)?;
+        configure_packaged_runtime(None)?;
         let weights = xml_path.with_extension("bin");
         let xml = xml_path.to_string_lossy();
         let weights = weights.to_string_lossy();
@@ -195,7 +247,10 @@ pub fn verify_runtime() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{packaged_runtime_directory, packaged_runtime_library, validate_ir_pair};
+    use super::{
+        packaged_runtime_directory, packaged_runtime_directory_candidates,
+        packaged_runtime_library, resolve_packaged_runtime_library, validate_ir_pair,
+    };
     use tempfile::tempdir;
 
     #[test]
@@ -229,6 +284,54 @@ mod tests {
         assert_eq!(
             packaged_runtime_directory(root.path()),
             root.path().join("openvino-runtime").join("windows-x86_64")
+        );
+    }
+
+    #[test]
+    fn runtime_candidates_cover_tauri_and_portable_resource_layouts() {
+        let root = tempfile::tempdir().expect("resource root");
+        let executable = root.path().join("portable").join("lanchat.exe");
+        let candidates =
+            packaged_runtime_directory_candidates(Some(root.path()), Some(&executable));
+
+        assert_eq!(
+            candidates,
+            vec![
+                root.path().join("openvino-runtime").join("windows-x86_64"),
+                root.path()
+                    .join("resources")
+                    .join("openvino-runtime")
+                    .join("windows-x86_64"),
+                root.path()
+                    .join("portable")
+                    .join("openvino-runtime")
+                    .join("windows-x86_64"),
+                root.path()
+                    .join("portable")
+                    .join("resources")
+                    .join("openvino-runtime")
+                    .join("windows-x86_64"),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolves_runtime_from_portable_resources_next_to_the_executable() {
+        let root = tempfile::tempdir().expect("resource root");
+        let executable = root.path().join("portable").join("lanchat.exe");
+        let runtime_dir = root
+            .path()
+            .join("portable")
+            .join("resources")
+            .join("openvino-runtime")
+            .join("windows-x86_64");
+        std::fs::create_dir_all(&runtime_dir).expect("runtime dir");
+        let library = runtime_dir.join("openvino_c.dll");
+        std::fs::write(&library, []).expect("runtime library");
+
+        assert_eq!(
+            resolve_packaged_runtime_library(None, Some(&executable)),
+            Some(library)
         );
     }
 }

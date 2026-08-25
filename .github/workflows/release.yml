@@ -212,6 +212,18 @@ jobs:
           "@ | Set-Content -Encoding UTF8 (Join-Path $portableRoot "README.txt")
           Compress-Archive -Path "$portableRoot/*" -DestinationPath "release-assets/portable/lanchat-windows-portable.zip" -Force
 
+      - name: Verify packaged OpenVINO Runtime layout
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $runtimeDir = "release-assets/portable/lanchat-windows-portable/resources/openvino-runtime/windows-x86_64"
+          foreach ($runtimeFile in @("openvino_c.dll", "openvino.dll", "openvino_intel_cpu_plugin.dll")) {
+            $runtimePath = Join-Path $runtimeDir $runtimeFile
+            if (-not (Test-Path -LiteralPath $runtimePath)) {
+              throw "绿色包缺少 OpenVINO Runtime 文件：$runtimePath"
+            }
+          }
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
