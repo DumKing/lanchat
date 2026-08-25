@@ -147,11 +147,30 @@ fn configure_windows_runtime_directory(_runtime_dir: &Path) -> Result<(), String
 }
 
 #[cfg(feature = "openvino-runtime")]
+fn should_attempt_packaged_runtime_recovery(error: &str) -> bool {
+    error.contains("Unable to find the `openvino_c` library to load")
+}
+
+#[cfg(feature = "openvino-runtime")]
+fn create_openvino_core() -> Result<openvino::Core, String> {
+    match openvino::Core::new() {
+        Ok(core) => Ok(core),
+        Err(error) => {
+            let initial_error = error.to_string();
+            if !should_attempt_packaged_runtime_recovery(&initial_error) {
+                return Err(format!("VISION_OPENVINO_RUNTIME_REQUIRED:{initial_error}"));
+            }
+            configure_packaged_runtime(None)?;
+            openvino::Core::new().map_err(|recovery_error| {
+                format!("VISION_OPENVINO_RUNTIME_REQUIRED:{recovery_error}")
+            })
+        }
+    }
+}
+
+#[cfg(feature = "openvino-runtime")]
 pub fn verify_runtime() -> Result<(), String> {
-    configure_packaged_runtime(None)?;
-    openvino::Core::new()
-        .map(|_| ())
-        .map_err(|error| format!("VISION_OPENVINO_RUNTIME_REQUIRED:{error}"))
+    create_openvino_core().map(|_| ())
 }
 
 /// 一个复用的 OpenVINO CPU InferRequest。每个模型组件各自持有一个，会由上层
@@ -167,12 +186,10 @@ pub struct OpenVinoSession {
 impl OpenVinoSession {
     pub fn load_cpu(xml_path: &Path) -> Result<Self, String> {
         validate_ir_pair(xml_path)?;
-        configure_packaged_runtime(None)?;
         let weights = xml_path.with_extension("bin");
         let xml = xml_path.to_string_lossy();
         let weights = weights.to_string_lossy();
-        let mut core = openvino::Core::new()
-            .map_err(|error| format!("VISION_OPENVINO_RUNTIME_REQUIRED:{error}"))?;
+        let mut core = create_openvino_core()?;
         let model = core
             .read_model_from_file(&xml, &weights)
             .map_err(|error| format!("VISION_OPENVINO_MODEL_LOAD_FAILED:{error}"))?;
@@ -249,7 +266,8 @@ pub fn verify_runtime() -> Result<(), String> {
 mod tests {
     use super::{
         packaged_runtime_directory, packaged_runtime_directory_candidates,
-        packaged_runtime_library, resolve_packaged_runtime_library, validate_ir_pair,
+        packaged_runtime_library, resolve_packaged_runtime_library,
+        should_attempt_packaged_runtime_recovery, validate_ir_pair,
     };
     use tempfile::tempdir;
 
@@ -333,5 +351,15 @@ mod tests {
             resolve_packaged_runtime_library(None, Some(&executable)),
             Some(library)
         );
+    }
+
+    #[test]
+    fn only_missing_runtime_errors_trigger_packaged_runtime_recovery() {
+        assert!(should_attempt_packaged_runtime_recovery(
+            "Unable to find the `openvino_c` library to load"
+        ));
+        assert!(!should_attempt_packaged_runtime_recovery(
+            "failed to create CPU plugin"
+        ));
     }
 }
