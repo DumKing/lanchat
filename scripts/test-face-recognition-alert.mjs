@@ -90,6 +90,13 @@ assert.match(app, /识别率排行榜/, "自动告警页签应命名为识别率
 assert.match(api, /clearCameraFaceAlerts/, "一键清空排行榜必须清除自动识别告警记录");
 assert.match(lib, /clear_camera_face_alerts/, "后端必须提供清空自动识别排行榜的命令");
 assert.match(app, /multiple @change="handleLocalFacePhotoSelected"/, "本机人员录入必须支持一次选择多张参考照片");
+const localPersonSettingsSection = app.slice(
+  app.indexOf('id="vision-person-registration"'),
+  app.indexOf('摄像头人物识别告警（独立于狼来了）'),
+);
+assert.match(localPersonSettingsSection, /v-for="person in facePeople"/, "设置页本机人员录入区下方必须展示已保存人员列表");
+assert.match(localPersonSettingsSection, /@click="openFacePersonDetail\(person\)"/, "设置页人员列表必须可查看详情");
+assert.match(localPersonSettingsSection, /@click="deleteLocalFacePerson\(person\)"/, "设置页人员列表必须可删除本地人员");
 assert.match(api, /photoPaths: string\[\]/, "多图录入和超管下发必须通过照片数组传递");
 assert.match(types, /photoUrls\?: string\[\]/, "人员详情类型必须返回全部参考照片");
 assert.match(app, /facePersonImageSources/, "人员详情必须将全部参考照片转换为可展示地址");

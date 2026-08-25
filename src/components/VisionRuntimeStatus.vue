@@ -46,7 +46,7 @@ const runtimeType = computed(() => {
     <div class="vision-runtime-metrics">
       <span>{{ t('vision.runtime.frames') }}<b>{{ diagnostics?.acceptedFrames ?? status?.acceptedFrames ?? 0 }}</b></span>
       <span>{{ t('vision.runtime.dropped') }}<b>{{ diagnostics?.droppedFrames ?? status?.droppedFrames ?? 0 }}</b></span>
-      <span>{{ t('vision.runtime.model') }}<b>{{ snapshot?.activeProfileId || status?.modelProfileId || '-' }} · {{ snapshot?.activeProfileVersion || status?.modelVersion || '-' }}</b></span>
+      <span>{{ t('vision.runtime.model') }}<b>{{ status?.modelProfileId || '-' }} · {{ status?.modelVersion || '-' }}</b></span>
       <span>{{ t('vision.runtime.embedding_dimensions') }}<b>{{ status ? `${status.faceEmbeddingDimension ?? '-'} / ${status.bodyEmbeddingDimension ?? '-'}` : '-' }}</b></span>
     </div>
     <div v-if="diagnostics" class="vision-runtime-detail">
