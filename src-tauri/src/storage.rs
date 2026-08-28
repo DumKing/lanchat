@@ -46,6 +46,7 @@ pub struct Peer {
     pub nickname_locked: bool,
     pub build_version: String,
     pub build_timestamp: i64,
+    pub platform_os: String,
 }
 
 impl Peer {
@@ -617,6 +618,7 @@ impl Storage {
             "build_timestamp",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
+        ensure_column(&conn, "peers", "platform_os", "TEXT NOT NULL DEFAULT ''")?;
         ensure_column(
             &conn,
             "channel_members",
@@ -2048,6 +2050,7 @@ impl Storage {
             nickname_locked: peer.nickname_locked,
             build_version: peer.build_version.trim().to_string(),
             build_timestamp: peer.build_timestamp,
+            platform_os: peer.platform_os.trim().to_ascii_lowercase(),
         };
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         let duplicate_ids = find_duplicate_peer_ids(&conn, &normalized)?;
@@ -2065,8 +2068,8 @@ impl Storage {
         }
         conn.execute(
             "
-            INSERT INTO peers (device_id, nickname, avatar, address, port, online, last_seen_at, client_kind, supports_chat, nickname_locked, build_version, build_timestamp)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            INSERT INTO peers (device_id, nickname, avatar, address, port, online, last_seen_at, client_kind, supports_chat, nickname_locked, build_version, build_timestamp, platform_os)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
             ON CONFLICT(device_id) DO UPDATE SET
                 nickname = excluded.nickname,
                 avatar = COALESCE(excluded.avatar, peers.avatar),
@@ -2078,7 +2081,8 @@ impl Storage {
                 supports_chat = excluded.supports_chat,
                 nickname_locked = excluded.nickname_locked,
                 build_version = excluded.build_version,
-                build_timestamp = excluded.build_timestamp
+                build_timestamp = excluded.build_timestamp,
+                platform_os = excluded.platform_os
             ",
             params![
                 normalized.device_id,
@@ -2092,7 +2096,8 @@ impl Storage {
                 if normalized.supports_chat { 1 } else { 0 },
                 if normalized.nickname_locked { 1 } else { 0 },
                 normalized.build_version,
-                normalized.build_timestamp
+                normalized.build_timestamp,
+                normalized.platform_os
             ],
         )
         .map_err(|err| format!("保存局域网设备失败：{err}"))?;
@@ -2121,7 +2126,7 @@ impl Storage {
     pub fn get_peer(&self, device_id: &str) -> Result<Option<Peer>, String> {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         conn.query_row(
-            "SELECT p.device_id, p.nickname, dn.note, p.avatar, p.address, p.port, p.online, p.last_seen_at, p.client_kind, p.supports_chat, p.nickname_locked, p.build_version, p.build_timestamp
+            "SELECT p.device_id, p.nickname, dn.note, p.avatar, p.address, p.port, p.online, p.last_seen_at, p.client_kind, p.supports_chat, p.nickname_locked, p.build_version, p.build_timestamp, p.platform_os
              FROM peers p LEFT JOIN device_notes dn ON lower(dn.device_id) = lower(p.device_id)
              WHERE p.device_id = ?1",
             params![normalize_device_id(device_id)],
@@ -2140,6 +2145,7 @@ impl Storage {
                     nickname_locked: row.get::<_, i64>(10)? == 1,
                     build_version: row.get(11)?,
                     build_timestamp: row.get(12)?,
+                    platform_os: row.get(13)?,
                 })
             },
         )
@@ -2151,7 +2157,7 @@ impl Storage {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         let mut stmt = conn
             .prepare(
-                "SELECT p.device_id, p.nickname, dn.note, p.avatar, p.address, p.port, p.online, p.last_seen_at, p.client_kind, p.supports_chat, p.nickname_locked, p.build_version, p.build_timestamp
+                "SELECT p.device_id, p.nickname, dn.note, p.avatar, p.address, p.port, p.online, p.last_seen_at, p.client_kind, p.supports_chat, p.nickname_locked, p.build_version, p.build_timestamp, p.platform_os
                  FROM peers p LEFT JOIN device_notes dn ON lower(dn.device_id) = lower(p.device_id)
                  ORDER BY p.online DESC,
                           CASE WHEN trim(COALESCE(dn.note, '')) <> '' THEN 0 ELSE 1 END,
@@ -2174,6 +2180,7 @@ impl Storage {
                     nickname_locked: row.get::<_, i64>(10)? == 1,
                     build_version: row.get(11)?,
                     build_timestamp: row.get(12)?,
+                    platform_os: row.get(13)?,
                 })
             })
             .map_err(|err| format!("读取局域网设备失败：{err}"))?;
@@ -3166,6 +3173,7 @@ mod tests {
                 nickname_locked: false,
                 build_version: "0.3.0+10".to_string(),
                 build_timestamp: 10,
+                platform_os: "windows".to_string(),
             })
             .expect("peer saved");
         storage
@@ -3183,6 +3191,7 @@ mod tests {
                 nickname_locked: true,
                 build_version: "0.3.0+20".to_string(),
                 build_timestamp: 20,
+                platform_os: "windows".to_string(),
             })
             .expect("peer updated");
 
@@ -3592,6 +3601,7 @@ mod tests {
                 nickname_locked: false,
                 build_version: "0.3.0+10".to_string(),
                 build_timestamp: 10,
+                platform_os: "windows".to_string(),
             })
             .expect("peer");
 
@@ -3803,6 +3813,7 @@ mod tests {
                 nickname_locked: false,
                 build_version: "0.1.0".to_string(),
                 build_timestamp: 0,
+                platform_os: String::new(),
             })
             .expect("legacy peer saved");
         storage
@@ -3866,6 +3877,7 @@ mod tests {
                     nickname_locked: false,
                     build_version: "0.3.3".to_string(),
                     build_timestamp: 0,
+                    platform_os: "windows".to_string(),
                 })
                 .expect("peer saved");
         }
@@ -3926,6 +3938,7 @@ mod tests {
                 nickname_locked: false,
                 build_version: "0.3.0+10".to_string(),
                 build_timestamp: 10,
+                platform_os: "windows".to_string(),
             })
             .expect("peer");
 
@@ -3957,6 +3970,7 @@ mod tests {
                 nickname_locked: false,
                 build_version: "0.3.0+10".to_string(),
                 build_timestamp: 10,
+                platform_os: "windows".to_string(),
             })
             .expect("limited peer saved");
 

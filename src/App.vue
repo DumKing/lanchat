@@ -52,7 +52,7 @@ import VisionRuntimeStatus from "./components/VisionRuntimeStatus.vue";
 import { DEFAULT_GROUP_ID, useLanChatStore } from "./stores/lanchat";
 import { useDesktopPetStore } from "./stores/desktopPet";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, ExternalPushConfig, ExternalPushKind, PetPackageSource, PetStateKind, PetStatePlaybackConfig } from "./types/desktop-pet";
-import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AdminRemoteUpdate, AppVersionInfo, CallSignal, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Nudge, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, SimulationMeta, TrayAttentionItem, UpdateCheckResult, UpdateGithubTokenInfo } from "./types/lanchat";
+import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AdminRemoteUpdate, AdminRemoteUpdateDispatchTarget, AdminRemoteUpdateProgress, AppVersionInfo, CallSignal, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Nudge, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, SimulationMeta, TrayAttentionItem, UpdateCheckResult, UpdateGithubTokenInfo } from "./types/lanchat";
 import { DDZ_TURN_TIMEOUT_MS, canBeat, dealHands, evaluatePlay, isTurnTimedOut, playLabel, sortCards, turnRemainingSeconds, type DdzCard, type DdzPhase, type DdzPlay } from "./games/doudizhu";
 import { GOMOKU_TURN_TIMEOUT_MS, chooseAutoGomokuPoint, cloneGomokuBoard, createGomokuBoard, gomokuStoneLabel, gomokuTurnRemainingSeconds, isGomokuTurnTimedOut, placeGomokuStone, type GomokuBoard, type GomokuPhase, type GomokuPoint, type GomokuStone } from "./games/gomoku";
 import { cloneXiangqiBoard, createXiangqiBoard, createXiangqiDisplayGrid, isLegalXiangqiMove, moveXiangqiPiece, otherXiangqiSide, resignXiangqiSide, undoXiangqiMove, xiangqiPieceLabel, xiangqiSideLabel, type XiangqiBoard, type XiangqiPhase, type XiangqiPiece, type XiangqiPoint, type XiangqiSide } from "./games/xiangqi";
@@ -335,6 +335,7 @@ const {
   latestAdminAlertPushPolicy,
   adminNotifications,
   latestAdminRemoteUpdate,
+  latestAdminRemoteUpdateProgress,
   manualAddress,
   manualPort,
   draft,
@@ -641,9 +642,12 @@ const updateGithubTokenInfo = ref<UpdateGithubTokenInfo | null>(null);
 const updateGithubTokenDraft = ref("");
 const updateGithubTokenSaving = ref(false);
 const adminRemoteUpdateTargetId = ref<string | null>(null);
+const adminRemoteUpdateScope = ref<"device" | "all_online_windows">("device");
 const adminRemoteUpdateVersion = ref("");
 const adminRemoteUpdatePackagePath = ref("");
+const adminRemoteUpdateForce = ref(false);
 const adminRemoteUpdateSending = ref(false);
+const adminRemoteUpdateResults = ref<AdminRemoteUpdateDispatchTarget[]>([]);
 const processedRemoteUpdateCommandIds = new Set<string>();
 const updateReminderOpen = ref(false);
 const nativeUpdateInstalling = ref(false);
@@ -1089,11 +1093,37 @@ const alertRankingRows = computed(() => {
     .sort((a, b) => (b.probability ?? -1) - (a.probability ?? -1) || b.feedbackTotal - a.feedbackTotal || b.lastAt - a.lastAt);
 });
 const adminRemoteUpdateTargetOptions = computed(() => peers.value
-  .filter((peer) => peer.online && !sameDeviceId(peer.device_id, profile.value?.device_id))
+  .filter((peer) => peer.online && peer.platform_os === "windows" && !sameDeviceId(peer.device_id, profile.value?.device_id))
   .map((peer) => ({
     label: `${peerDisplayName(peer)} · ${peer.address}`,
     value: peer.device_id,
   })));
+const adminRemoteUpdateWindowsCount = computed(() => adminRemoteUpdateTargetOptions.value.length);
+const canIssueAdminRemoteUpdate = computed(() => (
+  !!adminRemoteUpdateVersion.value.trim()
+  && !adminRemoteUpdateSending.value
+  && (adminRemoteUpdateScope.value === "all_online_windows"
+    ? adminRemoteUpdateWindowsCount.value > 0
+    : !!adminRemoteUpdateTargetId.value)
+));
+function adminRemoteUpdatePhaseLabel(phase: string) {
+  return ({
+    received: "已送达，等待目标处理",
+    downloading: "下载中",
+    verifying: "正在校验",
+    installing: "正在安装并重启",
+    skipped_version: "已跳过：本机版本不低于目标版本",
+    skipped_platform: "已跳过：非 Windows",
+    undelivered: "未送达",
+    failed: "失败",
+  } as Record<string, string>)[phase] ?? phase;
+}
+function adminRemoteUpdateProgressPercent(row: AdminRemoteUpdateDispatchTarget) {
+  const progress = row.downloaded;
+  const total = row.total;
+  if (row.phase !== "downloading" || !total || total <= 0) return 0;
+  return Math.min(100, Math.round(((progress ?? 0) / total) * 100));
+}
 const alertRankingTab = ref<"manual" | "automatic">("manual");
 const automaticAlertRankingRows = computed(() => {
   const map = new Map<string, {
@@ -2001,9 +2031,35 @@ watch(latestAdminRemoteUpdate, (command: AdminRemoteUpdate | null) => {
     || processedRemoteUpdateCommandIds.has(command.command_id)
     || !sameDeviceId(command.target_device_id, profile.value?.device_id)) return;
   processedRemoteUpdateCommandIds.add(command.command_id);
+  adminRemoteUpdateResults.value = [{
+    target_device_id: command.target_device_id,
+    nickname: profile.value?.nickname || "本机",
+    address: "本机",
+    command_id: command.command_id,
+    delivery_id: command.delivery_id,
+    phase: "received",
+    error: null,
+  }];
   void api.executeAdminRemoteUpdate(command).catch((err) => {
-    store.error = `执行远程强制更新失败：${stringifyError(err)}`;
+    store.error = `执行远程更新失败：${stringifyError(err)}`;
   });
+});
+watch(latestAdminRemoteUpdateProgress, (progress: AdminRemoteUpdateProgress | null) => {
+  if (!progress) return;
+  const index = adminRemoteUpdateResults.value.findIndex((row) =>
+    row.command_id === progress.command_id || (
+      row.target_device_id === progress.target_device_id && row.delivery_id === progress.delivery_id
+    ));
+  if (index < 0) return;
+  const next = [...adminRemoteUpdateResults.value];
+  next[index] = {
+    ...next[index],
+    phase: progress.phase,
+    error: progress.error,
+    downloaded: progress.downloaded,
+    total: progress.total,
+  };
+  adminRemoteUpdateResults.value = next;
 });
 watch(activeSection, (next, previous) => {
   if (previous === "vision" && next !== "vision") {
@@ -4080,17 +4136,23 @@ async function chooseAdminRemoteUpdatePackage() {
 }
 
 async function issueAdminRemoteUpdate() {
-  const targetDeviceId = adminRemoteUpdateTargetId.value;
   const targetVersion = adminRemoteUpdateVersion.value.trim();
-  if (!targetDeviceId || !targetVersion || adminRemoteUpdateSending.value) return;
+  const allOnlineWindows = adminRemoteUpdateScope.value === "all_online_windows";
+  const targetDeviceIds = allOnlineWindows
+    ? []
+    : (adminRemoteUpdateTargetId.value ? [adminRemoteUpdateTargetId.value] : []);
+  if ((!targetDeviceIds.length && !allOnlineWindows) || !targetVersion || adminRemoteUpdateSending.value) return;
   adminRemoteUpdateSending.value = true;
   try {
-    await api.sendAdminRemoteUpdate(
-      targetDeviceId,
+    const dispatch = await api.sendAdminRemoteUpdate(
+      targetDeviceIds,
+      allOnlineWindows,
       targetVersion,
       adminRemoteUpdatePackagePath.value.trim() || null,
+      adminRemoteUpdateForce.value,
     );
-    showOperationSuccess(`已向目标设备下发 ${targetVersion} 强制更新`);
+    adminRemoteUpdateResults.value = dispatch.targets;
+    showOperationSuccess(`已创建 ${dispatch.targets.length} 台设备的 ${targetVersion} 更新任务`);
   } catch (err) {
     store.error = stringifyError(err);
   } finally {
@@ -8012,10 +8074,16 @@ async function closeWindow() {
                     </NSpace>
                   </NSpace>
                 </NCard>
-                <NCard v-if="settingsCategory === 'admin' && superAdminEnabled" title="指定设备强制更新" size="small">
+                <NCard v-if="settingsCategory === 'admin' && superAdminEnabled" title="远程更新下发" size="small">
                   <NSpace vertical>
-                    <NText depth="3">选择在线设备和目标版本。可携带本地安装包走局域网下载；留空则由目标设备从 GitHub Release 下载并自动安装重启。</NText>
-                    <NFormItem label="目标设备" :show-feedback="false">
+                    <NText depth="3">仅向当前在线的 Windows 客户端下发。携带本地安装包时，目标设备会从本机局域网文件服务下载；留空则从 GitHub Release 下载。</NText>
+                    <NRadioGroup v-model:value="adminRemoteUpdateScope" name="admin-remote-update-scope">
+                      <NSpace>
+                        <NRadioButton value="device">指定设备</NRadioButton>
+                        <NRadioButton value="all_online_windows">全部在线 Windows（{{ adminRemoteUpdateWindowsCount }}）</NRadioButton>
+                      </NSpace>
+                    </NRadioGroup>
+                    <NFormItem v-if="adminRemoteUpdateScope === 'device'" label="目标设备" :show-feedback="false">
                       <NSelect v-model:value="adminRemoteUpdateTargetId" :options="adminRemoteUpdateTargetOptions" filterable placeholder="选择在线设备" />
                     </NFormItem>
                     <NFormItem label="目标版本" :show-feedback="false">
@@ -8027,7 +8095,21 @@ async function closeWindow() {
                         <NButton secondary @click="chooseAdminRemoteUpdatePackage">选择 EXE / MSI / ZIP</NButton>
                       </NSpace>
                     </NFormItem>
-                    <NButton type="warning" :loading="adminRemoteUpdateSending" :disabled="!adminRemoteUpdateTargetId || !adminRemoteUpdateVersion.trim()" @click="issueAdminRemoteUpdate">下发强制更新</NButton>
+                    <NCheckbox v-model:checked="adminRemoteUpdateForce">强制更新：即使目标版本不低于指定版本也重新安装</NCheckbox>
+                    <NButton type="warning" :loading="adminRemoteUpdateSending" :disabled="!canIssueAdminRemoteUpdate" @click="issueAdminRemoteUpdate">下发更新</NButton>
+                    <div v-if="adminRemoteUpdateResults.length" class="admin-remote-update-results">
+                      <div v-for="row in adminRemoteUpdateResults" :key="row.command_id || `${row.target_device_id}-${row.phase}`" class="admin-remote-update-result-row">
+                        <div class="admin-remote-update-result-meta">
+                          <strong>{{ row.nickname }}</strong>
+                          <span>{{ row.address }}</span>
+                        </div>
+                        <div class="admin-remote-update-result-status">
+                          <span>{{ adminRemoteUpdatePhaseLabel(row.phase) }}</span>
+                          <NProgress v-if="row.phase === 'downloading'" type="line" :percentage="adminRemoteUpdateProgressPercent(row)" :height="5" processing />
+                          <small v-if="row.error">{{ row.error }}</small>
+                        </div>
+                      </div>
+                    </div>
                   </NSpace>
                 </NCard>
                 <NCard v-if="settingsCategory === 'admin' && superAdminEnabled" title="摄像头人物识别策略" size="small">
@@ -8818,6 +8900,11 @@ async function closeWindow() {
 .camera-live-preview { position: relative; overflow: hidden; width: min(100%, 720px); aspect-ratio: 16 / 9; border: 1px solid var(--panel-border); border-radius: 8px; background: #111827; }
 .camera-live-preview video { display: block; width: 100%; height: 100%; object-fit: cover; }
 .camera-live-preview span { position: absolute; left: 10px; bottom: 8px; padding: 3px 7px; border-radius: 4px; background: rgba(0, 0, 0, 0.56); color: #fff; font-size: 12px; }
+.admin-remote-update-results { display: grid; gap: 6px; max-height: 220px; overflow: auto; padding-top: 4px; }
+.admin-remote-update-result-row { display: grid; grid-template-columns: minmax(150px, .8fr) minmax(220px, 1.2fr); align-items: center; gap: 12px; padding: 8px 10px; border: 1px solid var(--panel-border); border-radius: 7px; background: var(--input-bg); }
+.admin-remote-update-result-meta, .admin-remote-update-result-status { min-width: 0; display: grid; gap: 3px; }
+.admin-remote-update-result-meta strong, .admin-remote-update-result-meta span, .admin-remote-update-result-status span, .admin-remote-update-result-status small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-remote-update-result-meta span, .admin-remote-update-result-status small { color: var(--text-secondary); font-size: 12px; }
 </style>
 
 
