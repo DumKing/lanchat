@@ -138,6 +138,8 @@ export type AdminRemoteUpdate = {
   force: boolean;
   package?: FileMeta | null;
   package_sha256?: string | null;
+  package_signature?: FileMeta | null;
+  package_signature_sha256?: string | null;
   issued_by_device_id: string;
   issued_by_nickname: string;
   created_at: number;

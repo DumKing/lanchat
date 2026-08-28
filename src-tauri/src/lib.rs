@@ -26,7 +26,7 @@ use face_monitor::{
     FaceMonitorLocalSettings, FaceMonitorRuntime, FaceMonitorStatus, PersonTemplate,
     ReferencePhotoCandidateAnalysis,
 };
-use file_server::FileServer;
+use file_server::{FileMeta, FileServer};
 use fs2::FileExt;
 use network::{local_ip_address, Network};
 use protocol::MessageRecallFrame;
@@ -43,6 +43,8 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::net::IpAddr;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -60,6 +62,7 @@ use tauri::{
     WindowEvent,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_updater::UpdaterExt;
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 use vision::worker::{decode_raw_frame, encode_frame_as_jpeg, LatestFrameMailbox, VisionWorker};
@@ -2334,10 +2337,7 @@ fn clear_update_github_token() -> Result<UpdateGithubTokenInfo, String> {
 #[tauri::command]
 fn open_update_url(url: String) -> Result<(), String> {
     let url = url.trim();
-    if !(url.starts_with("https://github.com/")
-        || url.starts_with("https://api.github.com/")
-        || url.starts_with("https://objects.githubusercontent.com/"))
-    {
+    if !is_allowed_remote_update_url(url) {
         return Err("更新链接不合法".to_string());
     }
     tauri_plugin_opener::open_url(url, None::<&str>)
@@ -2518,6 +2518,158 @@ async fn download_remote_update_package(
     Ok(target)
 }
 
+async fn download_remote_update_signature(
+    file: &FileMeta,
+    expected_sha256: Option<&str>,
+) -> Result<String, String> {
+    const MAX_SIGNATURE_BYTES: usize = 64 * 1024;
+    if !is_allowed_remote_update_url(&file.url) {
+        return Err("局域网更新签名地址不合法".to_string());
+    }
+    let response = update_http_client()
+        .get(&file.url)
+        .header("User-Agent", "LanChat")
+        .send()
+        .await
+        .map_err(|error| format!("下载局域网更新签名失败：{error}"))?
+        .error_for_status()
+        .map_err(|error| format!("下载局域网更新签名失败：{error}"))?;
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| format!("读取局域网更新签名失败：{error}"))?;
+    if bytes.len() > MAX_SIGNATURE_BYTES {
+        return Err("局域网更新签名文件过大".to_string());
+    }
+    if let Some(expected) = expected_sha256 {
+        let expected = expected.trim().to_ascii_lowercase();
+        if expected.len() != 64 || !expected.chars().all(|value| value.is_ascii_hexdigit()) {
+            return Err("局域网更新命令缺少有效的签名 SHA-256".to_string());
+        }
+        if hex::encode(sha2::Sha256::digest(&bytes)) != expected {
+            return Err("局域网更新签名校验失败，已取消安装".to_string());
+        }
+    }
+    String::from_utf8(bytes.to_vec()).map_err(|_| "局域网更新签名不是有效的 UTF-8 文本".to_string())
+}
+
+fn local_updater_endpoint(file: &FileMeta) -> Result<reqwest::Url, String> {
+    let mut url = reqwest::Url::parse(&file.url)
+        .map_err(|error| format!("局域网更新元数据地址无效：{error}"))?;
+    url.set_host(Some("127.0.0.1"))
+        .map_err(|_| "局域网更新元数据无法切换到本机回环地址".to_string())?;
+    Ok(url)
+}
+
+fn create_lan_updater_endpoint(
+    app: &tauri::AppHandle,
+    file_server: &FileServer,
+    command: &AdminRemoteUpdateFrame,
+    package: &FileMeta,
+    signature: &str,
+) -> Result<reqwest::Url, String> {
+    let root = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| format!("读取更新元数据目录失败：{error}"))?
+        .join("lan-updater-manifests");
+    std::fs::create_dir_all(&root).map_err(|error| format!("创建更新元数据目录失败：{error}"))?;
+    let path = root.join(format!("{}.json", command.command_id));
+    let manifest = serde_json::json!({
+        "version": command.target_version.clone(),
+        "url": package.url.clone(),
+        "signature": signature,
+        "notes": format!("{} 通过局域网下发的签名更新", command.issued_by_nickname),
+        "pub_date": chrono::Utc::now().to_rfc3339(),
+    });
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&manifest)
+            .map_err(|error| format!("生成局域网更新元数据失败：{error}"))?,
+    )
+    .map_err(|error| format!("保存局域网更新元数据失败：{error}"))?;
+    let file =
+        file_server.share_file_with_options(path, Some("application/json".to_string()), None)?;
+    local_updater_endpoint(&file)
+}
+
+fn powershell_text_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn powershell_path_literal(path: &Path) -> String {
+    powershell_text_literal(&path.to_string_lossy())
+}
+
+/// Builds the detached Windows updater. It keeps its own log because the app must exit before
+/// the installer can replace its executable.
+fn build_remote_update_install_script(
+    update_root: &Path,
+    package: &Path,
+    current_executable: &Path,
+    process_id: u32,
+    portable_root: Option<&Path>,
+) -> Result<String, String> {
+    let package_literal = powershell_path_literal(package);
+    let executable_literal = powershell_path_literal(current_executable);
+    let log_literal = powershell_path_literal(&update_root.join("install-update.log"));
+    let install_directory = current_executable
+        .parent()
+        .ok_or_else(|| "当前程序路径无效".to_string())?;
+    let nsis_install_directory =
+        powershell_text_literal(&format!("/D={}", install_directory.to_string_lossy()));
+    let extension = package
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let install_command = match extension.as_str() {
+        "exe" => format!(
+            "$process = Start-Process -FilePath {package_literal} -ArgumentList @('/S', {nsis_install_directory}) -Verb RunAs -PassThru -Wait\nif ($process.ExitCode -ne 0) {{ throw \"安装程序异常退出：$($process.ExitCode)\" }}"
+        ),
+        "msi" => format!(
+            "$process = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', {package_literal}, '/qn', '/norestart') -Verb RunAs -PassThru -Wait\nif ($process.ExitCode -ne 0) {{ throw \"安装程序异常退出：$($process.ExitCode)\" }}"
+        ),
+        "zip" => {
+            let root = portable_root.ok_or_else(|| "ZIP 更新包只能用于绿色版 LanChat".to_string())?;
+            let root_literal = powershell_path_literal(root);
+            let staging_literal = powershell_path_literal(&update_root.join("staging"));
+            format!(
+                "Expand-Archive -LiteralPath {package_literal} -DestinationPath {staging_literal} -Force\n$payload = Get-ChildItem -LiteralPath {staging_literal} -Directory | Select-Object -First 1\nif ($null -eq $payload) {{ throw '更新包结构无效' }}\nCopy-Item -Path (Join-Path $payload.FullName '*') -Destination {root_literal} -Recurse -Force"
+            )
+        }
+        _ => return Err("仅支持 EXE、MSI 或 ZIP 更新包".to_string()),
+    };
+
+    Ok(format!(
+        r#"$ErrorActionPreference = 'Stop'
+$log = {log_literal}
+function Write-UpdateLog([string]$message) {{
+  Add-Content -LiteralPath $log -Value ("$(Get-Date -Format o) $message")
+}}
+try {{
+  Write-UpdateLog '远程更新脚本已启动'
+  $deadline = (Get-Date).AddSeconds(60)
+  while (Get-Process -Id {process_id} -ErrorAction SilentlyContinue) {{
+    if ((Get-Date) -ge $deadline) {{ throw '等待 LanChat 退出超时' }}
+    Start-Sleep -Milliseconds 250
+  }}
+  Write-UpdateLog '旧版已退出，开始安装'
+  {install_command}
+  Write-UpdateLog '安装成功，启动 LanChat'
+  Start-Process -FilePath {executable_literal}
+  exit 0
+}} catch {{
+  Write-UpdateLog ("安装失败：" + ($_ | Out-String))
+  if (Test-Path -LiteralPath {executable_literal}) {{
+    Start-Process -FilePath {executable_literal}
+  }}
+  exit 1
+}}
+"#
+    ))
+}
+
 #[cfg(target_os = "windows")]
 fn schedule_remote_update_install(app: &tauri::AppHandle, package: &Path) -> Result<(), String> {
     let current_executable =
@@ -2526,42 +2678,30 @@ fn schedule_remote_update_install(app: &tauri::AppHandle, package: &Path) -> Res
         .parent()
         .ok_or_else(|| "更新包路径无效".to_string())?;
     let script = update_root.join("install-update.ps1");
-    let extension = package
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let process_id = std::process::id();
-    let install_command = match extension.as_str() {
-        "exe" => format!(
-            "Start-Process -FilePath '{}' -ArgumentList '/S' -Wait",
-            package.to_string_lossy().replace('\'', "''")
-        ),
-        "msi" => format!(
-            "Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i','{}','/qn','/norestart') -Wait",
-            package.to_string_lossy().replace('\'', "''")
-        ),
-        "zip" => {
-            let root = running_portable_root()
-                .ok_or_else(|| "ZIP 更新包只能用于绿色版 LanChat".to_string())?;
-            format!(
-                "$staging=Join-Path '{}' 'staging'; Expand-Archive -LiteralPath '{}' -DestinationPath $staging -Force; $payload=Get-ChildItem -LiteralPath $staging -Directory | Select-Object -First 1; if($null -eq $payload){{throw '更新包结构无效'}}; Copy-Item -Path (Join-Path $payload.FullName '*') -Destination '{}' -Recurse -Force",
-                update_root.to_string_lossy().replace('\'', "''"),
-                package.to_string_lossy().replace('\'', "''"),
-                root.to_string_lossy().replace('\'', "''")
-            )
-        }
-        _ => return Err("仅支持 EXE、MSI 或 ZIP 更新包".to_string()),
-    };
-    let script_text = format!(
-        "$ErrorActionPreference='Stop'\n$deadline=(Get-Date).AddSeconds(60)\nwhile(Get-Process -Id {process_id} -ErrorAction SilentlyContinue){{if((Get-Date)-ge $deadline){{throw '等待 LanChat 退出超时'}};Start-Sleep -Milliseconds 250}}\n{install_command}\nStart-Process -FilePath '{}'\n",
-        current_executable.to_string_lossy().replace('\'', "''")
-    );
+    let script_text = build_remote_update_install_script(
+        update_root,
+        package,
+        &current_executable,
+        std::process::id(),
+        running_portable_root().as_deref(),
+    )?;
     std::fs::write(&script, script_text)
         .map_err(|error| format!("生成远程更新脚本失败：{error}"))?;
-    std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-        .arg(&script)
+    let mut command = std::process::Command::new("powershell.exe");
+    command
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-File",
+        ])
+        .arg(&script);
+    // Avoid the transient console window when the updater is launched from the GUI process.
+    command.creation_flags(0x0800_0000);
+    command
         .spawn()
         .map_err(|error| format!("启动远程更新程序失败：{error}"))?;
     app.exit(0);
@@ -2581,6 +2721,7 @@ async fn send_admin_remote_update(
     all_online_windows: bool,
     target_version: String,
     package_path: Option<String>,
+    signature_path: Option<String>,
     force: bool,
 ) -> Result<AdminRemoteUpdateDispatch, String> {
     ensure_super_admin_session(&state)?;
@@ -2626,7 +2767,7 @@ async fn send_admin_remote_update(
             "选中的设备当前不在线，或尚未上报 Windows 平台信息".to_string()
         });
     }
-    let (package, package_sha256) = match package_path
+    let (package, package_sha256, package_signature, package_signature_sha256) = match package_path
         .as_deref()
         .map(str::trim)
         .filter(|path| !path.is_empty())
@@ -2638,13 +2779,52 @@ async fn send_admin_remote_update(
                 .and_then(|value| value.to_str())
                 .unwrap_or_default()
                 .to_ascii_lowercase();
-            if !matches!(extension.as_str(), "exe" | "msi" | "zip") {
-                return Err("更新包仅支持 EXE、MSI 或 ZIP".to_string());
+            if !matches!(extension.as_str(), "exe" | "msi") {
+                return Err("局域网签名更新仅支持 Tauri 生成的 Setup EXE 或 MSI".to_string());
             }
-            let hash = sha256_file(&path)?;
-            (Some(state.file_server.share_file(path)?), Some(hash))
+            let signature_path = signature_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "请选择与安装包匹配的 .sig 签名文件".to_string())?;
+            let signature_path = PathBuf::from(signature_path);
+            if !signature_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| name.ends_with(".sig"))
+            {
+                return Err("局域网更新签名文件必须以 .sig 结尾".to_string());
+            }
+            let package_name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| "更新包文件名无效".to_string())?;
+            let expected_signature_name = format!("{package_name}.sig");
+            let actual_signature_name = signature_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| "签名文件名无效".to_string())?;
+            if actual_signature_name != expected_signature_name {
+                return Err(format!("签名文件必须是 {expected_signature_name}"));
+            }
+            let package_hash = sha256_file(&path)?;
+            let signature_hash = sha256_file(&signature_path)?;
+            (
+                Some(state.file_server.share_file(path)?),
+                Some(package_hash),
+                Some(state.file_server.share_file(signature_path)?),
+                Some(signature_hash),
+            )
         }
-        None => (None, None),
+        None => {
+            if signature_path
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+            {
+                return Err("未选择安装包时不能单独下发签名文件".to_string());
+            }
+            (None, None, None, None)
+        }
     };
     let delivery_id = Uuid::new_v4().to_string();
     for peer in target_peers {
@@ -2656,6 +2836,8 @@ async fn send_admin_remote_update(
             force,
             package: package.clone(),
             package_sha256: package_sha256.clone(),
+            package_signature: package_signature.clone(),
+            package_signature_sha256: package_signature_sha256.clone(),
             issued_by_device_id: profile.device_id.clone(),
             issued_by_nickname: profile.nickname.clone(),
             created_at: chrono::Utc::now().timestamp_millis(),
@@ -2719,13 +2901,108 @@ async fn execute_admin_remote_update(
         reporter.report("skipped_version", 0, None, None).await;
         return Ok(());
     }
-    let (url, file_name, expected_sha256) = if let Some(package) = command.package {
-        let expected = command
-            .package_sha256
-            .as_deref()
-            .ok_or_else(|| "局域网更新包缺少 SHA-256 校验值".to_string())?;
-        (package.url, package.name, Some(expected.to_string()))
-    } else {
+    if let Some(package) = command.package.as_ref() {
+        let signature = command
+            .package_signature
+            .as_ref()
+            .ok_or_else(|| "局域网更新缺少 .sig 签名文件".to_string())?;
+        let signature_contents = match download_remote_update_signature(
+            signature,
+            command.package_signature_sha256.as_deref(),
+        )
+        .await
+        {
+            Ok(contents) => contents,
+            Err(error) => {
+                reporter
+                    .report("failed", 0, None, Some(error.clone()))
+                    .await;
+                return Err(error);
+            }
+        };
+        let endpoint = match create_lan_updater_endpoint(
+            &app,
+            &state.file_server,
+            &command,
+            package,
+            &signature_contents,
+        ) {
+            Ok(endpoint) => endpoint,
+            Err(error) => {
+                reporter
+                    .report("failed", 0, None, Some(error.clone()))
+                    .await;
+                return Err(error);
+            }
+        };
+
+        // Tauri updater owns the payload download, Minisign verification and platform installer.
+        // The manifest is served only from this process on loopback; its payload URL stays on LAN.
+        let mut builder = app
+            .updater_builder()
+            .endpoints(vec![endpoint])
+            .map_err(|error| format!("创建局域网 updater 失败：{error}"))?
+            .no_proxy();
+        if command.force {
+            builder = builder.version_comparator(|_, _| true);
+        }
+        let updater = builder
+            .build()
+            .map_err(|error| format!("启动局域网 updater 失败：{error}"))?;
+        let update = match updater.check().await {
+            Ok(Some(update)) => update,
+            Ok(None) => {
+                let error = "局域网更新版本不高于当前版本".to_string();
+                reporter
+                    .report("skipped_version", 0, None, Some(error.clone()))
+                    .await;
+                return Ok(());
+            }
+            Err(error) => {
+                let error = format!("读取局域网更新元数据失败：{error}");
+                reporter
+                    .report("failed", 0, None, Some(error.clone()))
+                    .await;
+                return Err(error);
+            }
+        };
+        let progress_reporter = reporter.clone();
+        let mut downloaded = 0_u64;
+        let mut total = None;
+        let bytes = match update
+            .download(
+                |chunk_length, content_length| {
+                    downloaded = downloaded.saturating_add(chunk_length as u64);
+                    total = content_length;
+                    let reporter = progress_reporter.clone();
+                    let current = downloaded;
+                    tauri::async_runtime::spawn(async move {
+                        reporter
+                            .report("downloading", current, content_length, None)
+                            .await;
+                    });
+                },
+                || {},
+            )
+            .await
+        {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let error = format!("局域网更新包验签失败：{error}");
+                reporter
+                    .report("failed", downloaded, total, Some(error.clone()))
+                    .await;
+                return Err(error);
+            }
+        };
+        reporter.report("verifying", downloaded, total, None).await;
+        reporter.report("installing", downloaded, total, None).await;
+        return update
+            .install(bytes)
+            .map_err(|error| format!("启动签名更新安装程序失败：{error}"));
+    }
+
+    let (url, file_name, expected_sha256) = {
         let tag = format!("v{target_version}");
         let api_url =
             format!("https://api.github.com/repos/{UPDATE_REPOSITORY}/releases/tags/{tag}");
@@ -2913,6 +3190,40 @@ mod platform_info_tests {
         assert!(!should_execute_admin_remote_update("0.6.5", "0.6.5", false));
         assert!(!should_execute_admin_remote_update("0.6.6", "0.6.5", false));
         assert!(should_execute_admin_remote_update("0.6.6", "0.6.5", true));
+    }
+
+    #[test]
+    fn remote_update_installer_script_hides_console_and_recovers_on_failure() {
+        let script = build_remote_update_install_script(
+            Path::new("C:/temp/lanchat-update"),
+            Path::new("C:/temp/lanchat-update/lanchat-setup.exe"),
+            Path::new("C:/Program Files/LanChat/lanchat.exe"),
+            1234,
+            None,
+        )
+        .expect("build installer script");
+
+        assert!(script.contains("install-update.log"));
+        assert!(script.contains("-Verb RunAs"));
+        assert!(script.contains("/D=C:/Program Files/LanChat"));
+        assert!(script.contains("安装程序异常退出"));
+        assert!(script.contains("Start-Process -FilePath 'C:/Program Files/LanChat/lanchat.exe'"));
+    }
+
+    #[test]
+    fn lan_updater_metadata_is_requested_only_via_loopback() {
+        let endpoint = local_updater_endpoint(&FileMeta {
+            name: "remote-update.json".to_string(),
+            size: 42,
+            url: "http://192.168.1.21:18145/files/token/remote-update.json".to_string(),
+            mime_type: Some("application/json".to_string()),
+            duration_ms: None,
+        })
+        .expect("rewrite file server URL to loopback");
+        assert_eq!(
+            endpoint.as_str(),
+            "http://127.0.0.1:18145/files/token/remote-update.json"
+        );
     }
 }
 

@@ -52,8 +52,8 @@ export const api = {
   clearUpdateGithubToken: () => invoke<UpdateGithubTokenInfo>("clear_update_github_token"),
   isPortableRuntime: () => invoke<boolean>("is_portable_runtime"),
   installPortableUpdate: (downloadUrl: string, sha256: string) => invoke<void>("install_portable_update", { downloadUrl, sha256 }),
-  sendAdminRemoteUpdate: (targetDeviceIds: string[], allOnlineWindows: boolean, targetVersion: string, packagePath?: string | null, force = false) =>
-    invoke<AdminRemoteUpdateDispatch>("send_admin_remote_update", { targetDeviceIds, allOnlineWindows, targetVersion, packagePath: packagePath || null, force }),
+  sendAdminRemoteUpdate: (targetDeviceIds: string[], allOnlineWindows: boolean, targetVersion: string, packagePath?: string | null, signaturePath?: string | null, force = false) =>
+    invoke<AdminRemoteUpdateDispatch>("send_admin_remote_update", { targetDeviceIds, allOnlineWindows, targetVersion, packagePath: packagePath || null, signaturePath: signaturePath || null, force }),
   executeAdminRemoteUpdate: (command: AdminRemoteUpdate) => invoke<void>("execute_admin_remote_update", { command }),
   authenticateSuperAdmin: (password: string) => invoke<boolean>("authenticate_super_admin", { password }),
   clearSuperAdminSession: () => invoke<void>("clear_super_admin_session"),

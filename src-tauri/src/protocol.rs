@@ -289,6 +289,11 @@ pub struct AdminRemoteUpdateFrame {
     pub package: Option<FileMeta>,
     #[serde(default)]
     pub package_sha256: Option<String>,
+    /// Tauri bundler generated `.sig` file corresponding to `package`.
+    #[serde(default)]
+    pub package_signature: Option<FileMeta>,
+    #[serde(default)]
+    pub package_signature_sha256: Option<String>,
     pub issued_by_device_id: String,
     pub issued_by_nickname: String,
     pub created_at: i64,
@@ -616,6 +621,8 @@ mod tests {
             force: false,
             package: None,
             package_sha256: None,
+            package_signature: None,
+            package_signature_sha256: None,
             issued_by_device_id: "11:22:33:44:55:66".to_string(),
             issued_by_nickname: "管理员".to_string(),
             created_at: 10,

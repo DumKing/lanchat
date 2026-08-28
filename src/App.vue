@@ -603,6 +603,7 @@ let callPeerConnection: RTCPeerConnection | null = null;
 let callLocalStream: MediaStream | null = null;
 let callRemoteStream: MediaStream | null = null;
 let detachedCallWindow: DetachedCallWindow | null = null;
+let detachedCallWindowUnavailable = false;
 let queuedCallCandidates: RTCIceCandidateInit[] = [];
 const pendingCallCandidatesById = new Map<string, RTCIceCandidateInit[]>();
 let callDisconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -645,10 +646,12 @@ const adminRemoteUpdateTargetId = ref<string | null>(null);
 const adminRemoteUpdateScope = ref<"device" | "all_online_windows">("device");
 const adminRemoteUpdateVersion = ref("");
 const adminRemoteUpdatePackagePath = ref("");
+const adminRemoteUpdateSignaturePath = ref("");
 const adminRemoteUpdateForce = ref(false);
 const adminRemoteUpdateSending = ref(false);
 const adminRemoteUpdateResults = ref<AdminRemoteUpdateDispatchTarget[]>([]);
 const processedRemoteUpdateCommandIds = new Set<string>();
+const pendingAdminRemoteUpdate = ref<AdminRemoteUpdate | null>(null);
 const updateReminderOpen = ref(false);
 const nativeUpdateInstalling = ref(false);
 const nativeUpdateProgress = ref({ downloaded: 0, total: 0, phase: "idle" as "idle" | "downloading" | "installing" });
@@ -1101,6 +1104,7 @@ const adminRemoteUpdateTargetOptions = computed(() => peers.value
 const adminRemoteUpdateWindowsCount = computed(() => adminRemoteUpdateTargetOptions.value.length);
 const canIssueAdminRemoteUpdate = computed(() => (
   !!adminRemoteUpdateVersion.value.trim()
+  && (!adminRemoteUpdatePackagePath.value.trim() || !!adminRemoteUpdateSignaturePath.value.trim())
   && !adminRemoteUpdateSending.value
   && (adminRemoteUpdateScope.value === "all_online_windows"
     ? adminRemoteUpdateWindowsCount.value > 0
@@ -1600,6 +1604,7 @@ async function jumpToActiveMention() {
   };
 }
 async function checkUpdates(manual = false) {
+  if (pendingAdminRemoteUpdate.value && !manual) return;
   updateChecking.value = true;
   updateError.value = "";
   try {
@@ -1629,6 +1634,40 @@ function scheduleAutomaticUpdateChecks() {
   updateCheckTimer = window.setInterval(() => {
     void checkUpdates(false);
   }, UPDATE_CHECK_INTERVAL_MS);
+}
+async function openUpdateReminderForAdminRemoteUpdate(command: AdminRemoteUpdate) {
+  const current = await api.getAppVersionInfo();
+  const packageUrl = command.package?.url ?? "";
+  const packageName = command.package?.name?.toLowerCase() ?? "";
+  const isPortablePackage = packageName.endsWith(".zip");
+  const fallbackReleaseUrl = `https://github.com/DumKing/lanchat/releases/tag/v${command.target_version}`;
+  pendingAdminRemoteUpdate.value = command;
+  updateInfo.value = {
+    repository: "LAN",
+    current,
+    latestVersion: command.target_version,
+    latestBuild: null,
+    title: `${command.issued_by_nickname} 下发了 LanChat ${command.target_version}`,
+    notes: command.package
+      ? "更新包将从超管设备的局域网文件服务下载，下载完成后沿用当前自动更新的安装与重启流程。"
+      : "未携带局域网安装包，将从 GitHub Release 下载并沿用当前自动更新流程。",
+    releaseUrl: packageUrl || fallbackReleaseUrl,
+    downloads: {
+      windowsPortable: isPortablePackage ? packageUrl : null,
+      windowsPortableSha256: isPortablePackage ? command.package_sha256 ?? null : null,
+      windowsInstaller: !isPortablePackage ? packageUrl : null,
+      macosDmg: null,
+      releasePage: packageUrl || fallbackReleaseUrl,
+    },
+    updateAvailable: true,
+    force: command.force,
+    minSupportedVersion: null,
+    forceRequired: command.force,
+    checkedAt: Date.now(),
+  };
+  updateError.value = "";
+  updateReminderOpen.value = true;
+  if (command.force) void installNativeUpdate(true);
 }
 function isMessagePaneAtBottom() {
   const pane = messagePane.value;
@@ -1688,6 +1727,13 @@ async function installNativeUpdate(force = false) {
   nativeUpdateInstalling.value = true;
   nativeUpdateProgress.value = { downloaded: 0, total: 0, phase: "downloading" };
   try {
+    const remoteCommand = pendingAdminRemoteUpdate.value;
+    if (remoteCommand) {
+      await api.executeAdminRemoteUpdate(remoteCommand);
+      pendingAdminRemoteUpdate.value = null;
+      if (!(force || remoteCommand.force)) updateReminderOpen.value = false;
+      return;
+    }
     await api.refreshUpdateProxy().catch(() => undefined);
     if (await api.isPortableRuntime()) {
       const url = updateInfo.value?.downloads.windowsPortable;
@@ -1730,7 +1776,7 @@ async function openPreferredUpdateUrl() {
   const url = preferredUpdateUrl.value;
   if (!url) return;
   try {
-    if (!forceUpdateRequired.value) updateReminderOpen.value = false;
+    if (!forceUpdateRequired.value) dismissUpdateReminder();
     await api.openUpdateUrl(url);
   } catch (err) {
     store.error = stringifyError(err);
@@ -1740,7 +1786,7 @@ async function openReleasePage() {
   const url = updateInfo.value?.downloads.releasePage || updateInfo.value?.releaseUrl;
   if (!url) return;
   try {
-    if (!forceUpdateRequired.value) updateReminderOpen.value = false;
+    if (!forceUpdateRequired.value) dismissUpdateReminder();
     await api.openUpdateUrl(url);
   } catch (err) {
     store.error = stringifyError(err);
@@ -2040,8 +2086,8 @@ watch(latestAdminRemoteUpdate, (command: AdminRemoteUpdate | null) => {
     phase: "received",
     error: null,
   }];
-  void api.executeAdminRemoteUpdate(command).catch((err) => {
-    store.error = `执行远程更新失败：${stringifyError(err)}`;
+  void openUpdateReminderForAdminRemoteUpdate(command).catch((err) => {
+    store.error = `打开远程更新提醒失败：${stringifyError(err)}`;
   });
 });
 watch(latestAdminRemoteUpdateProgress, (progress: AdminRemoteUpdateProgress | null) => {
@@ -2060,6 +2106,25 @@ watch(latestAdminRemoteUpdateProgress, (progress: AdminRemoteUpdateProgress | nu
     total: progress.total,
   };
   adminRemoteUpdateResults.value = next;
+  if (pendingAdminRemoteUpdate.value?.command_id === progress.command_id) {
+    if (progress.phase === "downloading" || progress.phase === "verifying") {
+      nativeUpdateProgress.value = {
+        downloaded: progress.downloaded,
+        total: progress.total ?? 0,
+        phase: "downloading",
+      };
+    } else if (progress.phase === "installing") {
+      nativeUpdateProgress.value = {
+        downloaded: progress.downloaded,
+        total: progress.total ?? 0,
+        phase: "installing",
+      };
+    } else if (progress.phase === "failed") {
+      nativeUpdateInstalling.value = false;
+      updateError.value = progress.error || "局域网更新失败";
+      updateReminderOpen.value = true;
+    }
+  }
 });
 watch(activeSection, (next, previous) => {
   if (previous === "vision" && next !== "vision") {
@@ -2158,6 +2223,10 @@ function dismissUpdateReminder() {
   }
   const info = updateInfo.value;
   updateReminderOpen.value = false;
+  if (pendingAdminRemoteUpdate.value) {
+    pendingAdminRemoteUpdate.value = null;
+    return;
+  }
   if (info && typeof window !== "undefined") {
     window.localStorage.setItem("lanchat-dismissed-update-reminder", updateReminderKey(info));
   }
@@ -4130,9 +4199,19 @@ async function chooseAdminRemoteUpdatePackage() {
     multiple: false,
     directory: false,
     title: "选择 LanChat 更新包",
-    filters: [{ name: "LanChat 更新包", extensions: ["exe", "msi", "zip"] }],
+    filters: [{ name: "LanChat Tauri 更新包", extensions: ["exe", "msi"] }],
   });
   adminRemoteUpdatePackagePath.value = typeof selected === "string" ? selected : "";
+}
+
+async function chooseAdminRemoteUpdateSignature() {
+  const selected = await openFileDialog({
+    multiple: false,
+    directory: false,
+    title: "选择 LanChat 更新签名文件",
+    filters: [{ name: "Tauri 签名文件", extensions: ["sig"] }],
+  });
+  adminRemoteUpdateSignaturePath.value = typeof selected === "string" ? selected : "";
 }
 
 async function issueAdminRemoteUpdate() {
@@ -4149,6 +4228,7 @@ async function issueAdminRemoteUpdate() {
       allOnlineWindows,
       targetVersion,
       adminRemoteUpdatePackagePath.value.trim() || null,
+      adminRemoteUpdateSignaturePath.value.trim() || null,
       adminRemoteUpdateForce.value,
     );
     adminRemoteUpdateResults.value = dispatch.targets;
@@ -4297,6 +4377,13 @@ function syncDetachedCallWindow() {
     void ensureCallMediaPlaying(current.remoteAudio, "远端音频");
   }
 }
+function fallbackToInlineCallPanel(error?: unknown) {
+  // WebView2 may expose Document Picture-in-Picture but still reject window creation.
+  // Calling is independent from its presentation, so keep the active call usable here.
+  detachedCallWindowUnavailable = true;
+  callPanelExpanded.value = true;
+  if (error) console.warn("独立通话窗口不可用，已回退到主界面通话面板", error);
+}
 async function openDetachedCallWindow() {
   const session = callSession.value;
   if (!session || typeof window === "undefined") return;
@@ -4307,8 +4394,8 @@ async function openDetachedCallWindow() {
   }
   type PictureInPictureApi = { requestWindow: (options: { width: number; height: number }) => Promise<Window> };
   const pictureInPicture = (window as Window & { documentPictureInPicture?: PictureInPictureApi }).documentPictureInPicture;
-  if (!pictureInPicture) {
-    store.error = "当前系统运行环境不支持独立通话窗口，可使用通话条上的展开按钮查看画面";
+  if (detachedCallWindowUnavailable || !pictureInPicture?.requestWindow) {
+    fallbackToInlineCallPanel();
     return;
   }
   try {
@@ -4381,7 +4468,7 @@ async function openDetachedCallWindow() {
     }, { once: true });
     syncDetachedCallWindow();
   } catch (error) {
-    store.error = `打开独立通话窗口失败：${stringifyError(error)}`;
+    fallbackToInlineCallPanel(error);
   }
 }
 function formatCallMediaPermissionError(error: unknown, media: CallMedia) {
@@ -4488,7 +4575,7 @@ async function startPrivateCall(media: CallMedia) {
     callMuted.value = false;
     callCameraOn.value = media === "video";
     callSession.value = session;
-    void openDetachedCallWindow();
+    callPanelExpanded.value = true;
     const stream = await prepareLocalCallMedia(media);
     const peerConnection = createCallPeerConnection(session);
     stream.getTracks().forEach((track) => peerConnection.addTrack(track, stream));
@@ -4520,12 +4607,12 @@ async function handleIncomingNudge(nudge: Nudge) {
   await store.addSystemNotice(nudge.sender_device_id, `${nudge.sender_nickname} 抖了一下你`);
   await api.revealAndShakeMainWindow().catch(() => undefined);
 }
-async function acceptIncomingCall(openIndependentWindow = true) {
+async function acceptIncomingCall() {
   const signal = incomingCallSignal.value;
   const session = callSession.value;
   if (!signal || !session || session.status !== "incoming") return;
   try {
-    if (openIndependentWindow) void openDetachedCallWindow();
+    callPanelExpanded.value = true;
     const stream = await prepareLocalCallMedia(session.media);
     callMuted.value = false;
     callCameraOn.value = session.media === "video";
@@ -4584,7 +4671,7 @@ async function handleDesktopPetCallAction(action: "accept_call" | "reject_call",
   callActionInProgress.value = true;
   try {
     if (action === "accept_call") {
-      await acceptIncomingCall(false);
+      await acceptIncomingCall();
       if (callSession.value?.status === "connected") {
         await store.addSystemNotice(session.peerDeviceId, `已接听 ${session.peerNickname} 的${session.media === "video" ? "视频" : "语音"}通话`);
       }
@@ -8076,7 +8163,7 @@ async function closeWindow() {
                 </NCard>
                 <NCard v-if="settingsCategory === 'admin' && superAdminEnabled" title="远程更新下发" size="small">
                   <NSpace vertical>
-                    <NText depth="3">仅向当前在线的 Windows 客户端下发。携带本地安装包时，目标设备会从本机局域网文件服务下载；留空则从 GitHub Release 下载。</NText>
+                    <NText depth="3">仅向当前在线的 Windows 客户端下发。携带本地安装包时，目标设备会从本机局域网文件服务下载；留空则从 GitHub Release 下载。局域网包无需 .sig 签名文件，但会校验 SHA-256 完整性。</NText>
                     <NRadioGroup v-model:value="adminRemoteUpdateScope" name="admin-remote-update-scope">
                       <NSpace>
                         <NRadioButton value="device">指定设备</NRadioButton>
@@ -8092,7 +8179,10 @@ async function closeWindow() {
                     <NFormItem label="本地安装包（可选）" :show-feedback="false">
                       <NSpace vertical style="width: 100%">
                         <NInput v-model:value="adminRemoteUpdatePackagePath" readonly clearable placeholder="不选择时从 GitHub 下载" />
-                        <NButton secondary @click="chooseAdminRemoteUpdatePackage">选择 EXE / MSI / ZIP</NButton>
+                        <NButton secondary @click="chooseAdminRemoteUpdatePackage">选择安装包 EXE / MSI</NButton>
+                        <NInput v-model:value="adminRemoteUpdateSignaturePath" readonly clearable placeholder="选择安装包后必须同时选择同名 .sig 文件" />
+                        <NButton secondary :disabled="!adminRemoteUpdatePackagePath" @click="chooseAdminRemoteUpdateSignature">选择 .sig 签名文件</NButton>
+                        <NText depth="3">局域网下发必须选择 Tauri 构建产物及同名 .sig 文件，例如 lanchat_0.6.5_x64-setup.exe 和 lanchat_0.6.5_x64-setup.exe.sig。</NText>
                       </NSpace>
                     </NFormItem>
                     <NCheckbox v-model:checked="adminRemoteUpdateForce">强制更新：即使目标版本不低于指定版本也重新安装</NCheckbox>
