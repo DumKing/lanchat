@@ -146,7 +146,7 @@ fn configure_windows_runtime_directory(_runtime_dir: &Path) -> Result<(), String
     Ok(())
 }
 
-#[cfg(feature = "openvino-runtime")]
+#[cfg(any(feature = "openvino-runtime", test))]
 fn should_attempt_packaged_runtime_recovery(error: &str) -> bool {
     error.contains("Unable to find the `openvino_c` library to load")
 }

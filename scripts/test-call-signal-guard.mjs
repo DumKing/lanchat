@@ -26,5 +26,17 @@ if (!source.includes("handleDesktopPetCallAction")) {
 if (!source.includes("remoteCallAudio") || !source.includes("ensureCallMediaPlaying")) {
   throw new Error("语音通话必须挂载远端音频流并主动恢复播放");
 }
+if (!source.includes("openDetachedCallWindow") || !source.includes("callPanelExpanded.value = true")) {
+  throw new Error("独立通话窗口不可用时必须回退到主界面通话面板");
+}
+if (source.includes("store.error = `打开独立通话窗口失败：${stringifyError(error)}`")) {
+  throw new Error("独立通话窗口创建失败不能升级为全局操作失败弹窗");
+}
+if (/callSession\.value = session;\s*void openDetachedCallWindow\(\);\s*const stream = await prepareLocalCallMedia/s.test(source)) {
+  throw new Error("发起通话时不能在媒体准备前自动创建独立通话窗口");
+}
+if (/if \(openIndependentWindow\) void openDetachedCallWindow\(\);/.test(source)) {
+  throw new Error("接听通话时不能自动创建独立通话窗口，应保持主界面通话面板可用");
+}
 
 console.log("call signal guard checks passed");

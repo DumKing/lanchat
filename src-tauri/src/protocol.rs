@@ -32,6 +32,7 @@ pub enum WireFrame {
     CameraFaceAlert(CameraFaceAlertFrame),
     CameraFaceAlertFeedback(CameraFaceAlertFeedbackFrame),
     AdminRemoteUpdate(AdminRemoteUpdateFrame),
+    AdminRemoteUpdateProgress(AdminRemoteUpdateProgressFrame),
     Ping,
     Pong,
 }
@@ -53,6 +54,8 @@ pub struct HelloFrame {
     pub build_version: String,
     #[serde(default)]
     pub build_timestamp: i64,
+    #[serde(default)]
+    pub platform_os: String,
     pub public_key: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +78,8 @@ pub struct PeerStatusFrame {
     pub build_version: String,
     #[serde(default)]
     pub build_timestamp: i64,
+    #[serde(default)]
+    pub platform_os: String,
     pub updated_at: i64,
 }
 
@@ -272,15 +277,50 @@ pub struct AdminAlertModeFrame {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdminRemoteUpdateFrame {
     pub command_id: String,
+    /// 一个批量下发动作内共享的批次标识。旧命令缺失时会回退为 command_id。
+    #[serde(default)]
+    pub delivery_id: String,
     pub target_device_id: String,
     pub target_version: String,
+    /// 为 false 时，仅在本机版本低于目标版本时执行更新。
+    #[serde(default)]
+    pub force: bool,
     #[serde(default)]
     pub package: Option<FileMeta>,
     #[serde(default)]
     pub package_sha256: Option<String>,
+    /// Tauri bundler generated `.sig` file corresponding to `package`.
+    #[serde(default)]
+    pub package_signature: Option<FileMeta>,
+    #[serde(default)]
+    pub package_signature_sha256: Option<String>,
     pub issued_by_device_id: String,
     pub issued_by_nickname: String,
     pub created_at: i64,
+}
+
+/// 每台目标设备把下载、校验和安装状态回传给下发者，同时供本机显示进度。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdminRemoteUpdateProgressFrame {
+    pub command_id: String,
+    pub delivery_id: String,
+    pub target_device_id: String,
+    pub target_version: String,
+    /// lan | github
+    pub source: String,
+    /// received | downloading | verifying | installing | completed | skipped_version | failed
+    pub phase: String,
+    pub downloaded: u64,
+    #[serde(default)]
+    pub total: Option<u64>,
+    #[serde(default)]
+    pub error: Option<String>,
+    pub issued_by_device_id: String,
+    pub reported_at: i64,
+}
+
+fn default_remote_update_delivery_id(command_id: &str) -> String {
+    command_id.trim().to_string()
 }
 
 /// The reference image is transferred through the issuer's LAN file server,
@@ -443,7 +483,13 @@ pub fn encode_frame(frame: &WireFrame) -> Result<String, serde_json::Error> {
 }
 
 pub fn decode_frame(input: &str) -> Result<WireFrame, serde_json::Error> {
-    serde_json::from_str(input.trim_end())
+    let mut frame = serde_json::from_str(input.trim_end())?;
+    if let WireFrame::AdminRemoteUpdate(command) = &mut frame {
+        if command.delivery_id.trim().is_empty() {
+            command.delivery_id = default_remote_update_delivery_id(&command.command_id);
+        }
+    }
+    Ok(frame)
 }
 
 #[cfg(test)]
@@ -555,6 +601,7 @@ mod tests {
             supports_chat: true,
             build_version: "0.3.0+1".to_string(),
             build_timestamp: 1,
+            platform_os: "windows".to_string(),
             public_key: None,
         });
 
@@ -562,6 +609,58 @@ mod tests {
         let decoded = decode_frame(&encoded).expect("frame should decode");
 
         assert_eq!(decoded, frame);
+    }
+
+    #[test]
+    fn admin_remote_update_round_trips_with_batch_policy_and_progress() {
+        let command = WireFrame::AdminRemoteUpdate(AdminRemoteUpdateFrame {
+            command_id: "command-1".to_string(),
+            delivery_id: "delivery-1".to_string(),
+            target_device_id: "aa:bb:cc:dd:ee:ff".to_string(),
+            target_version: "0.6.6".to_string(),
+            force: false,
+            package: None,
+            package_sha256: None,
+            package_signature: None,
+            package_signature_sha256: None,
+            issued_by_device_id: "11:22:33:44:55:66".to_string(),
+            issued_by_nickname: "管理员".to_string(),
+            created_at: 10,
+        });
+        assert_eq!(
+            decode_frame(&encode_frame(&command).expect("command encodes"))
+                .expect("command decodes"),
+            command
+        );
+
+        let legacy = decode_frame(
+            r#"{"type":"AdminRemoteUpdate","payload":{"command_id":"legacy","target_device_id":"aa:bb:cc:dd:ee:ff","target_version":"0.6.6","issued_by_device_id":"admin","issued_by_nickname":"管理员","created_at":10}}"#,
+        )
+        .expect("legacy command decodes");
+        let WireFrame::AdminRemoteUpdate(legacy) = legacy else {
+            panic!("expected admin remote update");
+        };
+        assert!(!legacy.force);
+        assert_eq!(legacy.delivery_id, "legacy");
+
+        let progress = WireFrame::AdminRemoteUpdateProgress(AdminRemoteUpdateProgressFrame {
+            command_id: "command-1".to_string(),
+            delivery_id: "delivery-1".to_string(),
+            target_device_id: "aa:bb:cc:dd:ee:ff".to_string(),
+            target_version: "0.6.6".to_string(),
+            source: "lan".to_string(),
+            phase: "downloading".to_string(),
+            downloaded: 512,
+            total: Some(1024),
+            error: None,
+            issued_by_device_id: "11:22:33:44:55:66".to_string(),
+            reported_at: 11,
+        });
+        assert_eq!(
+            decode_frame(&encode_frame(&progress).expect("progress encodes"))
+                .expect("progress decodes"),
+            progress
+        );
     }
     #[test]
     fn game_frame_round_trips() {
@@ -828,6 +927,7 @@ mod tests {
             supports_chat: true,
             build_version: "0.3.0+10".to_string(),
             build_timestamp: 10,
+            platform_os: "windows".to_string(),
             updated_at: 10,
         });
 

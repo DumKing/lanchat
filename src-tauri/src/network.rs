@@ -5,10 +5,11 @@ use crate::identity::normalize_device_id;
 use crate::protocol::{
     decode_frame, encode_frame, AckFrame, AdminAlertModeFrame, AdminAlertPushPolicyFrame,
     AdminChannelControlFrame, AdminDiscoModeFrame, AdminNicknameFrame, AdminRemoteUpdateFrame,
-    CallSignalFrame, CameraFaceAlertFeedbackFrame, CameraFaceAlertFrame, ChannelMemberFrame,
-    ChannelNoticeFrame, ChatMessageFrame, FaceMonitorPolicyFrame, FacePersonPolicyFrame, GameFrame,
-    HelloFrame, NudgeFrame, PeerStatusFrame, PrivateChannelInviteFrame, QuickAlertFeedbackFrame,
-    QuickAlertFrame, QuickAlertTrustResetFrame, WireFrame,
+    AdminRemoteUpdateProgressFrame, CallSignalFrame, CameraFaceAlertFeedbackFrame,
+    CameraFaceAlertFrame, ChannelMemberFrame, ChannelNoticeFrame, ChatMessageFrame,
+    FaceMonitorPolicyFrame, FacePersonPolicyFrame, GameFrame, HelloFrame, NudgeFrame,
+    PeerStatusFrame, PrivateChannelInviteFrame, QuickAlertFeedbackFrame, QuickAlertFrame,
+    QuickAlertTrustResetFrame, WireFrame,
 };
 use crate::storage::{
     system_login_nickname, ChannelMemberSeed, Message, MessageStatus, MessageType, Peer, Profile,
@@ -789,13 +790,24 @@ impl Network {
             if delivered { "info" } else { "warn" },
             "admin-update",
             if delivered {
-                "远程强制更新已下发"
+                "远程更新已下发"
             } else {
-                "远程强制更新未送达"
+                "远程更新未送达"
             },
             Some(target),
         );
         Ok(delivered)
+    }
+
+    pub async fn send_admin_remote_update_progress(
+        &self,
+        app: AppHandle,
+        target_device_id: &str,
+        frame: AdminRemoteUpdateProgressFrame,
+    ) -> Result<bool, String> {
+        let target = normalize_device_id(target_device_id);
+        self.send_direct_frame(app, &target, WireFrame::AdminRemoteUpdateProgress(frame))
+            .await
     }
 
     pub async fn send_admin_notification_frame(
@@ -1291,6 +1303,7 @@ impl Network {
             supports_chat: self.supports_chat,
             build_version: BUILD_VERSION.to_string(),
             build_timestamp: build_timestamp(),
+            platform_os: std::env::consts::OS.to_string(),
             public_key: None,
         });
         writer
@@ -1334,6 +1347,7 @@ impl Network {
             nickname_locked: remote_hello.nickname_locked,
             build_version: remote_hello.build_version.clone(),
             build_timestamp: remote_hello.build_timestamp,
+            platform_os: remote_hello.platform_os.clone(),
         };
         let peer = self.store_peer_update(peer, true)?;
         emit_debug_log(
@@ -1774,13 +1788,18 @@ impl Network {
                             &read_app,
                             "warn",
                             "admin-update",
-                            "收到远程强制更新",
+                            "收到远程更新",
                             Some(format!(
                                 "{} {}",
                                 frame.target_version, frame.issued_by_nickname
                             )),
                         );
                         read_app.emit("admin_remote_update_received", frame).ok();
+                    }
+                    Ok(WireFrame::AdminRemoteUpdateProgress(frame)) => {
+                        read_app
+                            .emit("admin_remote_update_progress_received", frame)
+                            .ok();
                     }
                     Ok(WireFrame::FacePersonPolicy(frame)) => {
                         let frame = match localize_face_reference_photo(&read_app, &frame).await {
@@ -2428,6 +2447,7 @@ fn status_frame_with_capabilities(
         supports_chat,
         build_version: BUILD_VERSION.to_string(),
         build_timestamp: build_timestamp(),
+        platform_os: std::env::consts::OS.to_string(),
         updated_at: chrono::Utc::now().timestamp_millis(),
     }
 }
@@ -2459,6 +2479,7 @@ fn peer_from_status_at(frame: PeerStatusFrame, source_address: String, seen_at: 
         supports_chat: frame.supports_chat,
         build_version: frame.build_version,
         build_timestamp: frame.build_timestamp,
+        platform_os: frame.platform_os,
     }
 }
 
@@ -2562,6 +2583,10 @@ fn start_mdns(app: AppHandle, network: Network) -> Result<(), String> {
                 nickname_locked: false,
                 build_version: String::new(),
                 build_timestamp: 0,
+                platform_os: props
+                    .get("platform_os")
+                    .map(|value| value.val_str().to_ascii_lowercase())
+                    .unwrap_or_default(),
             };
             if let Ok(peer) = network.store_peer_update(peer, false) {
                 emit_debug_log(
@@ -2614,6 +2639,7 @@ fn register_mdns_service(
             "supports_chat",
             if supports_chat { "true" } else { "false" },
         ),
+        ("platform_os", std::env::consts::OS),
     ];
     let service = ServiceInfo::new(
         SERVICE_TYPE,
@@ -2757,6 +2783,7 @@ mod tests {
                 supports_chat: true,
                 build_version: "0.3.0+1".to_string(),
                 build_timestamp: 1,
+                platform_os: "windows".to_string(),
                 updated_at: 1,
             },
             "192.168.1.22".to_string(),

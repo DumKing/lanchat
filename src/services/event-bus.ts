@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AdminRemoteUpdate, CallSignal, ChannelNoticePayload, Conversation, DebugLog, GameFrame, Message, Nudge, Peer, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset } from "../types/lanchat";
+import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AdminRemoteUpdate, AdminRemoteUpdateProgress, CallSignal, ChannelNoticePayload, Conversation, DebugLog, GameFrame, Message, Nudge, Peer, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset } from "../types/lanchat";
 
 export async function registerLanChatEvents(handlers: {
   onPeerOnline: (peer: Peer) => void;
@@ -25,6 +25,7 @@ export async function registerLanChatEvents(handlers: {
   onAdminNotificationSubmissionReceived: (notification: AdminNotification) => void;
   onAdminNotificationDecisionReceived: (notification: AdminNotification) => void;
   onAdminRemoteUpdateReceived: (command: AdminRemoteUpdate) => void;
+  onAdminRemoteUpdateProgress: (progress: AdminRemoteUpdateProgress) => void;
 }) {
   const unlistenPeerOnline = await listen<Peer>("peer_online", (event) => {
     handlers.onPeerOnline(event.payload);
@@ -95,6 +96,12 @@ export async function registerLanChatEvents(handlers: {
   const unlistenAdminRemoteUpdate = await listen<AdminRemoteUpdate>("admin_remote_update_received", (event) => {
     handlers.onAdminRemoteUpdateReceived(event.payload);
   });
+  const unlistenAdminRemoteUpdateProgress = await listen<AdminRemoteUpdateProgress>("admin_remote_update_progress_received", (event) => {
+    handlers.onAdminRemoteUpdateProgress(event.payload);
+  });
+  const unlistenLocalAdminRemoteUpdateProgress = await listen<AdminRemoteUpdateProgress>("admin_remote_update_progress", (event) => {
+    handlers.onAdminRemoteUpdateProgress(event.payload);
+  });
 
   return () => {
     unlistenPeerOnline();
@@ -120,6 +127,8 @@ export async function registerLanChatEvents(handlers: {
     unlistenAdminNotificationSubmission();
     unlistenAdminNotificationDecision();
     unlistenAdminRemoteUpdate();
+    unlistenAdminRemoteUpdateProgress();
+    unlistenLocalAdminRemoteUpdateProgress();
   };
 }
 
