@@ -2,7 +2,7 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import { api } from "../services/tauri-api";
 import { registerLanChatEvents } from "../services/event-bus";
-import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AdminRemoteUpdate, CallSignal, ChannelMember, ChannelNoticePayload, Conversation, DebugLog, GameFrame, Message, Nudge, Peer, PetAlertMode, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset } from "../types/lanchat";
+import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AdminRemoteUpdate, AdminRemoteUpdateProgress, CallSignal, ChannelMember, ChannelNoticePayload, Conversation, DebugLog, GameFrame, Message, Nudge, Peer, PetAlertMode, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset } from "../types/lanchat";
 import { sameDeviceId, sortPeersForDisplay } from "../utils/peerPresentation";
 
 export const DEFAULT_GROUP_ID = "lan-room";
@@ -41,6 +41,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
   const latestAdminAlertPushPolicy = ref<AdminAlertPushPolicy | null>(null);
   const adminNotifications = ref<AdminNotification[]>([]);
   const latestAdminRemoteUpdate = ref<AdminRemoteUpdate | null>(null);
+  const latestAdminRemoteUpdateProgress = ref<AdminRemoteUpdateProgress | null>(null);
   let peerRefreshTimer: number | null = null;
   let peerRefreshRevision = 0;
   let conversationRefreshRevision = 0;
@@ -206,7 +207,11 @@ export const useLanChatStore = defineStore("lanchat", () => {
         },
         onAdminRemoteUpdateReceived(command) {
           latestAdminRemoteUpdate.value = command;
-          pushDebugLog({ ts: Date.now(), level: "warn", scope: "admin-update", message: "收到远程强制更新", detail: `${command.target_version} ${command.issued_by_nickname}` });
+          pushDebugLog({ ts: Date.now(), level: "warn", scope: "admin-update", message: "收到远程更新", detail: `${command.target_version} ${command.issued_by_nickname}` });
+        },
+        onAdminRemoteUpdateProgress(progress) {
+          latestAdminRemoteUpdateProgress.value = progress;
+          pushDebugLog({ ts: Date.now(), level: progress.phase === "failed" ? "error" : "info", scope: "admin-update", message: `远程更新：${progress.phase}`, detail: progress.target_device_id });
         },
       });
       runtimeStarted = true;
@@ -944,6 +949,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
     latestAdminAlertPushPolicy,
     adminNotifications,
     latestAdminRemoteUpdate,
+    latestAdminRemoteUpdateProgress,
     initialize,
     stopRuntime,
     refreshPeers,

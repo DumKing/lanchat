@@ -33,8 +33,8 @@ use protocol::MessageRecallFrame;
 use protocol::{
     AdminAlertModeFrame, AdminAlertPushPolicyFrame, AdminDiscoModeFrame,
     AdminNotificationDecisionFrame, AdminNotificationFrame, AdminNotificationSubmissionFrame,
-    AdminRemoteUpdateFrame, QuickAlertFeedbackFrame, QuickAlertFrame, QuickAlertTrustResetFrame,
-    SimulationMeta,
+    AdminRemoteUpdateFrame, AdminRemoteUpdateProgressFrame, QuickAlertFeedbackFrame,
+    QuickAlertFrame, QuickAlertTrustResetFrame, SimulationMeta,
 };
 use protocol::{CallSignalFrame, GameFrame};
 use serde::{Deserialize, Serialize};
@@ -46,7 +46,7 @@ use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use storage::{
     AdminNotificationRecord, CameraFaceAlertRecord, ChannelMember, ChannelMemberSeed, Conversation,
     FaceMonitorPolicyRecord, FacePersonRecord, FacePersonSampleRecord, Message, MessageType, Peer,
@@ -690,6 +690,68 @@ struct AppState {
     vision_model_root: PathBuf,
     // 由状态持有，确保应用生命周期内只有一个视觉推理 Worker。
     _vision_worker: VisionWorker,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AdminRemoteUpdateDispatchTarget {
+    target_device_id: String,
+    nickname: String,
+    address: String,
+    command_id: Option<String>,
+    delivery_id: String,
+    phase: String,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AdminRemoteUpdateDispatch {
+    delivery_id: String,
+    target_version: String,
+    force: bool,
+    targets: Vec<AdminRemoteUpdateDispatchTarget>,
+}
+
+#[derive(Clone)]
+struct AdminRemoteUpdateReporter {
+    app: tauri::AppHandle,
+    network: Network,
+    command: AdminRemoteUpdateFrame,
+    source: String,
+}
+
+impl AdminRemoteUpdateReporter {
+    async fn report(
+        &self,
+        phase: &str,
+        downloaded: u64,
+        total: Option<u64>,
+        error: Option<String>,
+    ) {
+        let progress = AdminRemoteUpdateProgressFrame {
+            command_id: self.command.command_id.clone(),
+            delivery_id: self.command.delivery_id.clone(),
+            target_device_id: self.command.target_device_id.clone(),
+            target_version: self.command.target_version.clone(),
+            source: self.source.clone(),
+            phase: phase.to_string(),
+            downloaded,
+            total,
+            error,
+            issued_by_device_id: self.command.issued_by_device_id.clone(),
+            reported_at: chrono::Utc::now().timestamp_millis(),
+        };
+        self.app
+            .emit("admin_remote_update_progress", &progress)
+            .ok();
+        let _ = self
+            .network
+            .send_admin_remote_update_progress(
+                self.app.clone(),
+                &self.command.issued_by_device_id,
+                progress,
+            )
+            .await;
+    }
 }
 
 fn ensure_full_client(state: &AppState, capability: &str) -> Result<(), String> {
@@ -2310,6 +2372,14 @@ fn normalized_remote_update_version(value: &str) -> Result<String, String> {
     Ok(value)
 }
 
+fn should_execute_admin_remote_update(
+    local_version: &str,
+    target_version: &str,
+    force: bool,
+) -> bool {
+    force || compare_versions(local_version, target_version) == std::cmp::Ordering::Less
+}
+
 fn sha256_file(path: &Path) -> Result<String, String> {
     let mut file = File::open(path).map_err(|error| format!("读取更新包失败：{error}"))?;
     let mut hasher = sha2::Sha256::new();
@@ -2355,6 +2425,7 @@ async fn download_remote_update_package(
     url: &str,
     file_name: &str,
     expected_sha256: Option<&str>,
+    reporter: Option<&AdminRemoteUpdateReporter>,
 ) -> Result<PathBuf, String> {
     const MAX_UPDATE_PACKAGE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
     if !is_allowed_remote_update_url(url) {
@@ -2386,14 +2457,19 @@ async fn download_remote_update_package(
         .map_err(|error| format!("下载远程更新包失败：{error}"))?
         .error_for_status()
         .map_err(|error| format!("下载远程更新包失败：{error}"))?;
-    if response.content_length().unwrap_or(0) > MAX_UPDATE_PACKAGE_BYTES {
+    let total = response.content_length();
+    if total.unwrap_or(0) > MAX_UPDATE_PACKAGE_BYTES {
         return Err("远程更新包超过 2GB，已取消下载".to_string());
+    }
+    if let Some(reporter) = reporter {
+        reporter.report("downloading", 0, total, None).await;
     }
     let mut file = tokio::fs::File::create(&temporary)
         .await
         .map_err(|error| format!("创建更新包文件失败：{error}"))?;
     let mut downloaded = 0_u64;
     let mut hasher = sha2::Sha256::new();
+    let mut last_reported_at = Instant::now() - Duration::from_secs(1);
     while let Some(chunk) = response
         .chunk()
         .await
@@ -2409,11 +2485,22 @@ async fn download_remote_update_package(
         file.write_all(&chunk)
             .await
             .map_err(|error| format!("写入远程更新包失败：{error}"))?;
+        if let Some(reporter) = reporter {
+            if last_reported_at.elapsed() >= Duration::from_millis(250) {
+                reporter
+                    .report("downloading", downloaded, total, None)
+                    .await;
+                last_reported_at = Instant::now();
+            }
+        }
     }
     file.flush()
         .await
         .map_err(|error| format!("完成远程更新包失败：{error}"))?;
     drop(file);
+    if let Some(reporter) = reporter {
+        reporter.report("verifying", downloaded, total, None).await;
+    }
     if let Some(expected) = expected_sha256 {
         let expected = expected.trim().to_ascii_lowercase();
         if expected.len() != 64 || !expected.chars().all(|value| value.is_ascii_hexdigit()) {
@@ -2490,23 +2577,54 @@ fn schedule_remote_update_install(_app: &tauri::AppHandle, _package: &Path) -> R
 async fn send_admin_remote_update(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
-    target_device_id: String,
+    target_device_ids: Vec<String>,
+    all_online_windows: bool,
     target_version: String,
     package_path: Option<String>,
-) -> Result<AdminRemoteUpdateFrame, String> {
+    force: bool,
+) -> Result<AdminRemoteUpdateDispatch, String> {
     ensure_super_admin_session(&state)?;
-    let target_device_id = target_device_id.trim().to_ascii_lowercase();
-    if target_device_id.is_empty() {
-        return Err("请选择要强制更新的在线设备".to_string());
-    }
     let target_version = normalized_remote_update_version(&target_version)?;
-    let target_peer = state
-        .storage
-        .get_peer(&target_device_id)?
-        .filter(|peer| peer.online)
-        .ok_or_else(|| "目标设备不在线，无法下发强制更新".to_string())?;
-    if target_peer.device_id == state.storage.get_or_create_profile()?.device_id {
-        return Err("不能向本机下发远程强制更新".to_string());
+    let profile = state.storage.get_or_create_profile()?;
+    let requested = target_device_ids
+        .iter()
+        .map(|device_id| device_id.trim().to_ascii_lowercase())
+        .filter(|device_id| !device_id.is_empty())
+        .collect::<std::collections::HashSet<_>>();
+    let mut target_peers = Vec::new();
+    let mut results = Vec::new();
+    for peer in state.storage.list_peers()?.into_iter().filter(|peer| {
+        peer.online
+            && peer.device_id != profile.device_id
+            && (all_online_windows || requested.contains(&peer.device_id))
+    }) {
+        if peer.platform_os == "windows" {
+            target_peers.push(peer);
+        } else {
+            let reason = if peer.platform_os.is_empty() {
+                "客户端平台未知，未下发 Windows 更新".to_string()
+            } else {
+                format!("{} 客户端不支持 Windows 更新", peer.platform_os)
+            };
+            results.push(AdminRemoteUpdateDispatchTarget {
+                target_device_id: peer.device_id,
+                nickname: peer.nickname,
+                address: peer.address,
+                command_id: None,
+                delivery_id: String::new(),
+                phase: "skipped_platform".to_string(),
+                error: Some(reason),
+            });
+        }
+    }
+    if target_peers.is_empty() {
+        return Err(if all_online_windows {
+            "没有可下发的在线 Windows 设备".to_string()
+        } else if requested.is_empty() {
+            "请选择要更新的在线 Windows 设备".to_string()
+        } else {
+            "选中的设备当前不在线，或尚未上报 Windows 平台信息".to_string()
+        });
     }
     let (package, package_sha256) = match package_path
         .as_deref()
@@ -2528,25 +2646,48 @@ async fn send_admin_remote_update(
         }
         None => (None, None),
     };
-    let profile = state.storage.get_or_create_profile()?;
-    let frame = AdminRemoteUpdateFrame {
-        command_id: Uuid::new_v4().to_string(),
-        target_device_id: target_device_id.clone(),
-        target_version,
-        package,
-        package_sha256,
-        issued_by_device_id: profile.device_id,
-        issued_by_nickname: profile.nickname,
-        created_at: chrono::Utc::now().timestamp_millis(),
-    };
-    if !state
-        .network
-        .send_admin_remote_update(app, &target_device_id, frame.clone())
-        .await?
-    {
-        return Err("远程强制更新未送达，请确认目标设备在线".to_string());
+    let delivery_id = Uuid::new_v4().to_string();
+    for peer in target_peers {
+        let frame = AdminRemoteUpdateFrame {
+            command_id: Uuid::new_v4().to_string(),
+            delivery_id: delivery_id.clone(),
+            target_device_id: peer.device_id.clone(),
+            target_version: target_version.clone(),
+            force,
+            package: package.clone(),
+            package_sha256: package_sha256.clone(),
+            issued_by_device_id: profile.device_id.clone(),
+            issued_by_nickname: profile.nickname.clone(),
+            created_at: chrono::Utc::now().timestamp_millis(),
+        };
+        let (phase, error) = match state
+            .network
+            .send_admin_remote_update(app.clone(), &peer.device_id, frame.clone())
+            .await
+        {
+            Ok(true) => ("received".to_string(), None),
+            Ok(false) => (
+                "undelivered".to_string(),
+                Some("设备连接已断开，命令未送达".to_string()),
+            ),
+            Err(error) => ("failed".to_string(), Some(error)),
+        };
+        results.push(AdminRemoteUpdateDispatchTarget {
+            target_device_id: peer.device_id,
+            nickname: peer.nickname,
+            address: peer.address,
+            command_id: Some(frame.command_id),
+            delivery_id: delivery_id.clone(),
+            phase,
+            error,
+        });
     }
-    Ok(frame)
+    Ok(AdminRemoteUpdateDispatch {
+        delivery_id,
+        target_version,
+        force,
+        targets: results,
+    })
 }
 
 #[tauri::command]
@@ -2560,7 +2701,22 @@ async fn execute_admin_remote_update(
         return Err("远程更新目标与本机不匹配".to_string());
     }
     let target_version = normalized_remote_update_version(&command.target_version)?;
-    if target_version == local_app_version_info().version {
+    let reporter = AdminRemoteUpdateReporter {
+        app: app.clone(),
+        network: state.network.clone(),
+        source: if command.package.is_some() {
+            "lan".to_string()
+        } else {
+            "github".to_string()
+        },
+        command: command.clone(),
+    };
+    if !should_execute_admin_remote_update(
+        &local_app_version_info().version,
+        &target_version,
+        command.force,
+    ) {
+        reporter.report("skipped_version", 0, None, None).await;
         return Ok(());
     }
     let (url, file_name, expected_sha256) = if let Some(package) = command.package {
@@ -2609,8 +2765,23 @@ async fn execute_admin_remote_update(
         };
         (url, file_name, hash)
     };
-    let package =
-        download_remote_update_package(&url, &file_name, expected_sha256.as_deref()).await?;
+    let package = match download_remote_update_package(
+        &url,
+        &file_name,
+        expected_sha256.as_deref(),
+        Some(&reporter),
+    )
+    .await
+    {
+        Ok(package) => package,
+        Err(error) => {
+            reporter
+                .report("failed", 0, None, Some(error.clone()))
+                .await;
+            return Err(error);
+        }
+    };
+    reporter.report("installing", 0, None, None).await;
     schedule_remote_update_install(&app, &package)
 }
 
@@ -2734,6 +2905,14 @@ mod platform_info_tests {
             info.global_shortcut_requires_permission,
             cfg!(target_os = "macos")
         );
+    }
+
+    #[test]
+    fn remote_update_version_policy_skips_same_or_newer_versions_unless_forced() {
+        assert!(should_execute_admin_remote_update("0.6.4", "0.6.5", false));
+        assert!(!should_execute_admin_remote_update("0.6.5", "0.6.5", false));
+        assert!(!should_execute_admin_remote_update("0.6.6", "0.6.5", false));
+        assert!(should_execute_admin_remote_update("0.6.6", "0.6.5", true));
     }
 }
 

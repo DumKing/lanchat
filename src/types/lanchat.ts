@@ -62,6 +62,7 @@ export type Peer = {
   nickname_locked?: boolean;
   build_version?: string;
   build_timestamp?: number;
+  platform_os?: string;
 };
 
 export type ConversationKind = "direct" | "group";
@@ -131,13 +132,48 @@ export type FileMeta = {
 
 export type AdminRemoteUpdate = {
   command_id: string;
+  delivery_id: string;
   target_device_id: string;
   target_version: string;
+  force: boolean;
   package?: FileMeta | null;
   package_sha256?: string | null;
   issued_by_device_id: string;
   issued_by_nickname: string;
   created_at: number;
+};
+
+export type AdminRemoteUpdateProgress = {
+  command_id: string;
+  delivery_id: string;
+  target_device_id: string;
+  target_version: string;
+  source: "lan" | "github" | string;
+  phase: string;
+  downloaded: number;
+  total?: number | null;
+  error?: string | null;
+  issued_by_device_id: string;
+  reported_at: number;
+};
+
+export type AdminRemoteUpdateDispatchTarget = {
+  target_device_id: string;
+  nickname: string;
+  address: string;
+  command_id?: string | null;
+  delivery_id: string;
+  phase: string;
+  error?: string | null;
+  downloaded?: number;
+  total?: number | null;
+};
+
+export type AdminRemoteUpdateDispatch = {
+  delivery_id: string;
+  target_version: string;
+  force: boolean;
+  targets: AdminRemoteUpdateDispatchTarget[];
 };
 
 export type PreviewMediaCacheInfo = {
