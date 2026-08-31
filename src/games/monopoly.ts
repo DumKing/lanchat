@@ -149,7 +149,7 @@ export function propertyDistrictOf(board: MonopolyTile[], index: number): number
   return tile?.kind === "property" ? tile.district : null;
 }
 
-export function createMonopolyState(players: MonopolyPlayerSeed[], options: { startingCoins?: number; maxRounds?: number; now?: number } = {}): MonopolyState {
+export function createMonopolyState(players: MonopolyPlayerSeed[], options: { startingCoins?: number; maxRounds?: number; now?: number; seed?: number } = {}): MonopolyState {
   const startingCoins = normalizeStartingCoins(options.startingCoins ?? 5000);
   const maxRounds = normalizeMaxRounds(options.maxRounds ?? 20);
   const board = createMonopolyBoard();
