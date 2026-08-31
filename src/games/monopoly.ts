@@ -37,6 +37,8 @@ export type MonopolyTile = MonopolyCornerTile | MonopolyEventTile | MonopolyProp
 
 export type MonopolyDirection = "clockwise" | "counterclockwise";
 export type MonopolyCard = "acquittal" | "seize" | "frame" | "double" | "fixed_dice" | "roadblock" | "turtle" | "reverse" | "loot" | "seal";
+export type MonopolyGod = "wealth" | "poverty" | "angel" | "devil";
+export type MonopolyRandomEvent = "demolish" | "downgrade" | "takeover" | "jail" | "subsidy" | "rich_to_poor" | "upgrade" | "maintenance" | "dispute" | "rent_holiday";
 
 export type MonopolyPlayerSeed = {
   deviceId: string;
@@ -53,6 +55,8 @@ export type MonopolyPlayer = MonopolyPlayerSeed & {
   cards: MonopolyCard[];
   turtleTurns: number;
   forcedDice?: number;
+  god?: MonopolyGod;
+  godTurns: number;
 };
 
 export type MonopolyPropertyState = {
@@ -73,6 +77,8 @@ export type MonopolyState = {
   players: MonopolyPlayer[];
   properties: Record<number, MonopolyPropertyState>;
   roadblocks: MonopolyRoadblock[];
+  rentHolidayDistrict?: number;
+  rentHolidayRounds: number;
   startingCoins: number;
   maxRounds: number;
   completedRounds: number;
@@ -169,12 +175,14 @@ export function createMonopolyState(players: MonopolyPlayerSeed[], options: { st
     jailTurns: 0,
     cards: [],
     turtleTurns: 0,
+    godTurns: 0,
   }));
   const state: MonopolyState = {
     board,
     players: seats,
     properties,
     roadblocks: [],
+    rentHolidayRounds: 0,
     startingCoins,
     maxRounds,
     completedRounds: 0,
@@ -237,9 +245,11 @@ export function upgradeMonopolyProperty(state: MonopolyState, playerId: string, 
 
 export function monopolyLandingRent(state: MonopolyState, payerId: string, index: number): number {
   const property = state.properties[index];
-  if (!property || !property.ownerDeviceId || property.ownerDeviceId === payerId || property.sealedTurns > 0) return 0;
+  const payer = state.players.find((player) => player.deviceId === payerId);
+  if (!property || !property.ownerDeviceId || property.ownerDeviceId === payerId || property.sealedTurns > 0 || payer?.god === "wealth") return 0;
   const tile = state.board[index];
   if (tile?.kind !== "property") return 0;
+  if (state.rentHolidayRounds > 0 && state.rentHolidayDistrict === tile.district) return 0;
   const district = state.board
     .filter((item): item is MonopolyPropertyTile => item.kind === "property" && item.district === tile.district)
     .map((item) => item.index)
@@ -257,7 +267,8 @@ export function monopolyLandingRent(state: MonopolyState, payerId: string, index
     if (!candidate || candidate.ownerDeviceId !== property.ownerDeviceId || candidate.sealedTurns > 0) break;
     segment.push(candidate.index);
   }
-  return segment.reduce((total, propertyIndex) => total + propertyToll(state.properties[propertyIndex]!), 0);
+  const rent = segment.reduce((total, propertyIndex) => total + propertyToll(state.properties[propertyIndex]!), 0);
+  return payer?.god === "poverty" ? rent * 2 : rent;
 }
 
 export function applyMonopolyPropertySeal(state: MonopolyState, index: number, turns = 3): MonopolyState {
@@ -277,6 +288,11 @@ export function endMonopolyTurn(state: MonopolyState, now = Date.now()): Monopol
   for (const property of Object.values(next.properties)) {
     if (property.ownerDeviceId === currentId && property.sealedTurns > 0) property.sealedTurns -= 1;
   }
+  const currentPlayer = playerOf(next, currentId);
+  if (currentPlayer?.godTurns && currentPlayer.godTurns > 0) {
+    currentPlayer.godTurns -= 1;
+    if (currentPlayer.godTurns === 0) currentPlayer.god = undefined;
+  }
   const activePlayers = next.players.filter((player) => !player.eliminated);
   if (activePlayers.length <= 1) return { ...next, turnStartedAt: now };
   let nextIndex = currentIndex;
@@ -284,7 +300,13 @@ export function endMonopolyTurn(state: MonopolyState, now = Date.now()): Monopol
     nextIndex = (nextIndex + 1) % next.players.length;
   } while (next.players[nextIndex]?.eliminated);
   next.currentPlayerId = next.players[nextIndex]!.deviceId;
-  if (nextIndex <= currentIndex) next.completedRounds += 1;
+  if (nextIndex <= currentIndex) {
+    next.completedRounds += 1;
+    if (next.rentHolidayRounds > 0) {
+      next.rentHolidayRounds -= 1;
+      if (next.rentHolidayRounds === 0) next.rentHolidayDistrict = undefined;
+    }
+  }
   next.turnStartedAt = now;
   return next;
 }
@@ -485,6 +507,122 @@ export function useMonopolyCard(state: MonopolyState, playerId: string, card: Mo
   return failed(state, "未知道具卡");
 }
 
+export function acquireMonopolyGod(state: MonopolyState, playerId: string, god: MonopolyGod): MonopolyState {
+  const player = state.players.find((item) => item.deviceId === playerId);
+  if (!player || player.eliminated) return state;
+  const next = cloneMonopolyState(state);
+  const holder = playerOf(next, playerId)!;
+  holder.god = god;
+  holder.godTurns = 3;
+  const amount = godCashAmount(next.startingCoins);
+  if (god === "wealth") {
+    for (const opponent of next.players) {
+      if (opponent.deviceId === playerId || opponent.eliminated) continue;
+      const paid = Math.min(amount, opponent.coins);
+      opponent.coins -= paid;
+      holder.coins += paid;
+    }
+  }
+  if (god === "poverty") {
+    const opponents = next.players.filter((opponent) => opponent.deviceId !== playerId && !opponent.eliminated);
+    for (const opponent of opponents) {
+      const paid = Math.min(amount, holder.coins);
+      holder.coins -= paid;
+      opponent.coins += paid;
+    }
+  }
+  next.logs.push(`${holder.nickname} 获得了${godLabel(god)}附身`);
+  return next;
+}
+
+export function resolveMonopolyLanding(state: MonopolyState, playerId: string, index: number, _random: () => number = Math.random): MonopolyState {
+  const player = state.players.find((item) => item.deviceId === playerId);
+  const property = state.properties[index];
+  if (!player || player.eliminated || !property || property.level === "empty") return state;
+  if (player.god !== "angel" && player.god !== "devil") return state;
+  const next = cloneMonopolyState(state);
+  const target = next.properties[index]!;
+  if (player.god === "angel") {
+    if (target.level === "house") target.level = "level2";
+    else if (target.level === "level2") target.level = "level3";
+    next.logs.push(`${player.nickname} 的天使升级了一块地产`);
+  } else if (target.level === "level3") {
+    target.level = "level2";
+    next.logs.push(`${player.nickname} 的恶魔降低了一块地产`);
+  } else if (target.level === "level2") {
+    target.level = "house";
+    next.logs.push(`${player.nickname} 的恶魔降低了一块地产`);
+  } else {
+    target.level = "empty";
+    target.ownerDeviceId = null;
+    target.sealedTurns = 0;
+    target.tollMultiplier = 1;
+    next.logs.push(`${player.nickname} 的恶魔拆除了一座小屋`);
+  }
+  return next;
+}
+
+export function applyMonopolyRandomEvent(state: MonopolyState, event: MonopolyRandomEvent, random: () => number = Math.random): MonopolyState {
+  const next = cloneMonopolyState(state);
+  const properties = Object.values(next.properties);
+  const activePlayers = next.players.filter((player) => !player.eliminated);
+  const pick = <T>(items: T[]): T | undefined => items[Math.min(items.length - 1, Math.max(0, Math.floor(random() * items.length)))];
+  if (event === "subsidy") {
+    for (const player of activePlayers) player.coins += 100;
+    next.logs.push("随机事件：财政补贴");
+  } else if (event === "demolish" || event === "dispute") {
+    const property = pick(properties.filter((item) => item.level === "house"));
+    if (property) {
+      property.level = "empty";
+      property.ownerDeviceId = null;
+      property.sealedTurns = 0;
+      property.tollMultiplier = 1;
+    }
+    next.logs.push(`随机事件：${event === "demolish" ? "拆迁令" : "产权纠纷"}`);
+  } else if (event === "downgrade") {
+    const property = pick(properties.filter((item) => item.level === "level2" || item.level === "level3"));
+    if (property) property.level = property.level === "level3" ? "level2" : "house";
+    next.logs.push("随机事件：楼市下调");
+  } else if (event === "upgrade") {
+    const property = pick(properties.filter((item) => item.level === "house" || item.level === "level2"));
+    if (property) property.level = property.level === "house" ? "level2" : "level3";
+    next.logs.push("随机事件：城市改造");
+  } else if (event === "jail") {
+    const target = pick(activePlayers.filter((player) => player.jailTurns === 0));
+    if (target) return sendMonopolyPlayerToJail(next, target.deviceId);
+    next.logs.push("随机事件：临时拘捕未找到目标");
+  } else if (event === "rich_to_poor") {
+    const richest = [...activePlayers].sort((a, b) => b.coins - a.coins)[0];
+    const poorest = [...activePlayers].sort((a, b) => a.coins - b.coins)[0];
+    if (richest && poorest && richest.deviceId !== poorest.deviceId) {
+      const amount = Math.min(200, richest.coins);
+      richest.coins -= amount;
+      poorest.coins += amount;
+    }
+    next.logs.push("随机事件：富者济贫");
+  } else if (event === "maintenance") {
+    for (const player of activePlayers) {
+      const count = properties.filter((property) => property.ownerDeviceId === player.deviceId && property.level !== "empty").length;
+      player.coins = Math.max(0, player.coins - Math.min(250, count * 50));
+    }
+    next.logs.push("随机事件：维护支出");
+  } else if (event === "takeover") {
+    const property = pick(properties.filter((item) => item.ownerDeviceId));
+    const target = pick(activePlayers.filter((player) => player.deviceId !== property?.ownerDeviceId));
+    if (property && target) property.ownerDeviceId = target.deviceId;
+    next.logs.push("随机事件：强制征收");
+  } else if (event === "rent_holiday") {
+    const property = pick(properties.filter((item) => item.level !== "empty"));
+    const tile = property ? next.board[property.index] : undefined;
+    if (tile?.kind === "property") {
+      next.rentHolidayDistrict = tile.district;
+      next.rentHolidayRounds = 1;
+    }
+    next.logs.push("随机事件：租金假日");
+  }
+  return next;
+}
+
 function directPurchasePrice(level: MonopolyPropertyLevel): number {
   if (level === "house") return MONOPOLY_ECONOMY.houseDirectPurchase;
   if (level === "level2") return MONOPOLY_ECONOMY.level2DirectPurchase;
@@ -537,6 +675,14 @@ function propertyLabel(level: MonopolyPropertyLevel): string {
   if (level === "level3") return "三级";
   if (level === "house") return "小屋";
   return "空地";
+}
+
+function godCashAmount(startingCoins: number): number {
+  return Math.round(Math.min(500, Math.max(100, startingCoins * 0.2)) / 50) * 50;
+}
+
+function godLabel(god: MonopolyGod): string {
+  return { wealth: "财神", poverty: "穷鬼", angel: "天使", devil: "恶魔" }[god];
 }
 
 function failed(state: MonopolyState, error: string): MonopolyActionResult {

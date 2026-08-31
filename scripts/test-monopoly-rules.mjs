@@ -26,6 +26,8 @@ try {
     MONOPOLY_TURN_TIMEOUT_MS,
     applyMonopolyPropertySeal,
     applyMonopolyPriceDouble,
+    applyMonopolyRandomEvent,
+    acquireMonopolyGod,
     discardMonopolyCard,
     drawMonopolyCard,
     createMonopolyBoard,
@@ -42,6 +44,7 @@ try {
     teleportMonopolyPlayer,
     upgradeMonopolyProperty,
     useMonopolyCard,
+    resolveMonopolyLanding,
   } = monopoly;
 
   const board = createMonopolyBoard();
@@ -202,6 +205,30 @@ try {
   result = useMonopolyCard(state, "a", "seize", { propertyIndex: 1 });
   assert.equal(result.ok, true);
   assert.equal(result.state.properties[1].ownerDeviceId, "a");
+
+  state = createMonopolyState([
+    { deviceId: "a", nickname: "甲" },
+    { deviceId: "b", nickname: "乙" },
+  ], { startingCoins: 5000, maxRounds: 20, seed: 9 });
+  result = purchaseMonopolyProperty(state, "a", 1);
+  assert.equal(result.ok, true);
+  state = result.state;
+  state = acquireMonopolyGod(state, "b", "wealth");
+  assert.equal(monopolyLandingRent(state, "b", 1), 0, "wealth god should waive every property rent");
+  state = acquireMonopolyGod(state, "b", "poverty");
+  assert.equal(monopolyLandingRent(state, "b", 1), 1000, "poverty god should double property rent");
+  state = acquireMonopolyGod(state, "b", "angel");
+  state = resolveMonopolyLanding(state, "b", 1, () => 0);
+  assert.equal(state.properties[1].level, "level2", "angel acts before the property settlement");
+  state = acquireMonopolyGod(state, "b", "devil");
+  state = resolveMonopolyLanding(state, "b", 1, () => 0);
+  assert.equal(state.properties[1].level, "house");
+  state = resolveMonopolyLanding(state, "b", 1, () => 0);
+  assert.equal(state.properties[1].level, "empty", "devil can turn a house into empty land");
+  assert.equal(state.properties[1].ownerDeviceId, null);
+  const coinsBeforeSubsidy = state.players.map((player) => player.coins);
+  state = applyMonopolyRandomEvent(state, "subsidy", () => 0);
+  assert.deepEqual(state.players.map((player, index) => player.coins - coinsBeforeSubsidy[index]), [100, 100], "subsidy event grants every active player 100 coins");
 
   console.log("monopoly board rules ok");
 } finally {
