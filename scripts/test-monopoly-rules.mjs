@@ -21,7 +21,28 @@ try {
   });
 
   const monopoly = await import(`${pathToFileURL(outfile).href}?t=${Date.now()}`);
-  const { MONOPOLY_BOARD_SIZE, createMonopolyBoard, propertyDistrictOf } = monopoly;
+  const {
+    MONOPOLY_BOARD_SIZE,
+    MONOPOLY_TURN_TIMEOUT_MS,
+    applyMonopolyPropertySeal,
+    applyMonopolyPriceDouble,
+    discardMonopolyCard,
+    drawMonopolyCard,
+    createMonopolyBoard,
+    createMonopolyState,
+    declareMonopolyBankruptcy,
+    endMonopolyTurn,
+    moveMonopolyPlayer,
+    monopolyLandingRent,
+    monopolyCardWeights,
+    monopolyTurnRemainingSeconds,
+    propertyDistrictOf,
+    purchaseMonopolyProperty,
+    sendMonopolyPlayerToJail,
+    teleportMonopolyPlayer,
+    upgradeMonopolyProperty,
+    useMonopolyCard,
+  } = monopoly;
 
   const board = createMonopolyBoard();
   assert.equal(MONOPOLY_BOARD_SIZE, 40);
@@ -46,6 +67,141 @@ try {
   assert.equal(propertyDistrictOf(board, 9), 1);
   assert.equal(propertyDistrictOf(board, 5), null, "event tiles do not belong to a property district");
   assert.equal(propertyDistrictOf(board, 10), null, "corner tiles do not belong to a property district");
+
+  let state = createMonopolyState([
+    { deviceId: "a", nickname: "甲" },
+    { deviceId: "b", nickname: "乙" },
+  ], { startingCoins: 5000, maxRounds: 20 });
+  assert.equal(MONOPOLY_TURN_TIMEOUT_MS, 30_000);
+  assert.equal(monopolyTurnRemainingSeconds(undefined, 1000), 30);
+  assert.equal(state.properties[1].level, "empty");
+
+  let result = purchaseMonopolyProperty(state, "a", 1);
+  assert.equal(result.ok, true);
+  state = result.state;
+  assert.equal(state.players[0].coins, 4650, "empty land should cost 350");
+  assert.equal(state.properties[1].level, "house");
+  assert.equal(state.properties[1].ownerDeviceId, "a");
+  assert.equal(monopolyLandingRent(state, "b", 1), 500);
+
+  result = upgradeMonopolyProperty(state, "a", 1);
+  assert.equal(result.ok, true);
+  state = result.state;
+  assert.equal(state.players[0].coins, 3650, "house to level2 should cost 1000");
+  assert.equal(state.properties[1].level, "level2");
+  assert.equal(monopolyLandingRent(state, "b", 1), 1000);
+
+  result = upgradeMonopolyProperty(state, "a", 1);
+  assert.equal(result.ok, true);
+  state = result.state;
+  assert.equal(state.players[0].coins, 1650, "level2 to level3 should cost 2000");
+  assert.equal(state.properties[1].level, "level3");
+  assert.equal(monopolyLandingRent(state, "b", 1), 2000);
+
+  state = createMonopolyState([
+    { deviceId: "a", nickname: "甲" },
+    { deviceId: "b", nickname: "乙" },
+  ], { startingCoins: 50_000, maxRounds: 20 });
+  for (const index of [1, 2, 3, 4]) {
+    result = purchaseMonopolyProperty(state, "a", index);
+    assert.equal(result.ok, true);
+    state = result.state;
+  }
+  assert.equal(monopolyLandingRent(state, "b", 2), 2000, "four houses should form a four-tile row");
+  state = applyMonopolyPropertySeal(state, 3, 3);
+  assert.equal(monopolyLandingRent(state, "b", 2), 1000, "a sealed property should cut the row into 1+2 and 4");
+  state = endMonopolyTurn(state);
+  assert.equal(state.properties[3].sealedTurns, 2, "seals decrease after the owner's turn");
+  state = endMonopolyTurn(state);
+  assert.equal(state.properties[3].sealedTurns, 2, "another player's turn does not decrease the seal");
+
+  state = declareMonopolyBankruptcy(state, "a");
+  assert.equal(state.players[0].eliminated, true);
+  assert.equal(state.properties[1].ownerDeviceId, null);
+  assert.equal(state.properties[1].level, "house", "bankruptcy preserves building level");
+  result = purchaseMonopolyProperty(state, "b", 1);
+  assert.equal(result.ok, true);
+  assert.equal(result.state.players[1].coins, 49_500, "a bank-held house should cost 500 to buy directly");
+
+  state = createMonopolyState([{ deviceId: "a", nickname: "甲" }], { startingCoins: 5000, maxRounds: 20 });
+  state.players[0].position = 38;
+  result = moveMonopolyPlayer(state, "a", 4);
+  assert.equal(result.ok, true);
+  state = result.state;
+  assert.equal(state.players[0].position, 2);
+  assert.equal(state.players[0].coins, 5200, "passing start should grant 200 coins");
+
+  state.players[0].position = 10;
+  result = teleportMonopolyPlayer(state, "a", 0);
+  assert.equal(result.ok, true);
+  state = result.state;
+  assert.equal(state.players[0].position, 0);
+  assert.equal(state.players[0].coins, 5400, "teleporting to start should settle the start reward");
+
+  result = purchaseMonopolyProperty(state, "a", 1);
+  assert.equal(result.ok, true);
+  state = result.state;
+  state = applyMonopolyPriceDouble(state, "a", () => 0);
+  assert.equal(state.properties[1].tollMultiplier, 2, "price-double corner should mark an owned property once");
+  assert.equal(monopolyLandingRent(state, "b", 1), 1000);
+
+  state = sendMonopolyPlayerToJail(state, "a");
+  assert.equal(state.players[0].position, 30);
+  assert.equal(state.players[0].jailTurns, 3);
+
+  state = createMonopolyState([
+    { deviceId: "a", nickname: "甲" },
+    { deviceId: "b", nickname: "乙" },
+  ], { startingCoins: 5000, maxRounds: 20, seed: 7 });
+  assert.equal(state.players[0].cards.length, 3, "every player should start with three cards");
+  assert.equal(new Set(state.players[0].cards).size, 3, "opening cards should not repeat");
+  assert.ok(state.players[0].cards.filter((card) => ["seize", "frame", "loot", "seal"].includes(card)).length <= 1);
+  assert.equal(monopolyCardWeights(state, "a").seize, 3, "normal seize probability should stay low");
+
+  state.players[0].coins = 100;
+  state.players[1].coins = 50_000;
+  for (const index of [1, 2, 3, 4]) {
+    state.properties[index] = { ...state.properties[index], ownerDeviceId: "b", level: "house" };
+  }
+  assert.equal(monopolyCardWeights(state, "a").seize, 8, "a player low on money and buildings gets a limited comeback boost");
+  const fullDraw = drawMonopolyCard(state, "a", () => 0);
+  assert.equal(fullDraw.card, null, "players with three cards should not receive another card");
+  state = discardMonopolyCard(state, "a", state.players[0].cards[0]);
+  assert.equal(state.players[0].cards.length, 2);
+  const drawn = drawMonopolyCard(state, "a", () => 0);
+  assert.ok(drawn.card, "players with free backpack space should draw a card");
+  assert.equal(drawn.state.players[0].cards.length, 3);
+
+  state = createMonopolyState([
+    { deviceId: "a", nickname: "甲" },
+    { deviceId: "b", nickname: "乙" },
+  ], { startingCoins: 50_000, maxRounds: 20, seed: 3 });
+  state.players[0].cards = ["reverse", "roadblock", "seize"];
+  state.players[1].cards = ["turtle", "loot", "seal"];
+  result = useMonopolyCard(state, "a", "reverse", { playerId: "b" });
+  assert.equal(result.ok, true);
+  state = result.state;
+  assert.equal(state.players[1].direction, "counterclockwise", "reverse is permanent until another reverse card");
+  result = useMonopolyCard(state, "a", "roadblock", { index: 39 });
+  assert.equal(result.ok, true);
+  state = result.state;
+  state.players[0].position = 38;
+  result = moveMonopolyPlayer(state, "a", 4);
+  assert.equal(result.ok, true);
+  assert.equal(result.state.players[0].position, 39, "roadblocks should stop their owner too");
+  assert.equal(result.state.roadblocks.length, 0, "a triggered roadblock disappears");
+
+  state = createMonopolyState([
+    { deviceId: "a", nickname: "甲" },
+    { deviceId: "b", nickname: "乙" },
+  ], { startingCoins: 50_000, maxRounds: 20, seed: 3 });
+  state.players[0].cards = ["seize"];
+  result = purchaseMonopolyProperty(state, "b", 1);
+  assert.equal(result.ok, true);
+  state = result.state;
+  result = useMonopolyCard(state, "a", "seize", { propertyIndex: 1 });
+  assert.equal(result.ok, true);
+  assert.equal(result.state.properties[1].ownerDeviceId, "a");
 
   console.log("monopoly board rules ok");
 } finally {
