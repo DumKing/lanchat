@@ -72,11 +72,19 @@ export type MonopolyRoadblock = {
   placedByDeviceId: string;
 };
 
+export type MonopolyGodToken = {
+  index: number;
+  god: MonopolyGod;
+  /** 神明仅在非角落格刷新，两个完整回合无人拾取即消失。 */
+  expiresAtRound: number;
+};
+
 export type MonopolyState = {
   board: MonopolyTile[];
   players: MonopolyPlayer[];
   properties: Record<number, MonopolyPropertyState>;
   roadblocks: MonopolyRoadblock[];
+  godTokens: MonopolyGodToken[];
   rentHolidayDistrict?: number;
   rentHolidayRounds: number;
   startingCoins: number;
@@ -182,6 +190,7 @@ export function createMonopolyState(players: MonopolyPlayerSeed[], options: { st
     players: seats,
     properties,
     roadblocks: [],
+    godTokens: [],
     rentHolidayRounds: 0,
     startingCoins,
     maxRounds,
@@ -280,7 +289,7 @@ export function applyMonopolyPropertySeal(state: MonopolyState, index: number, t
   return next;
 }
 
-export function endMonopolyTurn(state: MonopolyState, now = Date.now()): MonopolyState {
+export function endMonopolyTurn(state: MonopolyState, now = Date.now(), random: () => number = Math.random): MonopolyState {
   const currentIndex = state.players.findIndex((player) => player.deviceId === state.currentPlayerId);
   if (currentIndex < 0) return state;
   const next = cloneMonopolyState(state);
@@ -306,6 +315,18 @@ export function endMonopolyTurn(state: MonopolyState, now = Date.now()): Monopol
       next.rentHolidayRounds -= 1;
       if (next.rentHolidayRounds === 0) next.rentHolidayDistrict = undefined;
     }
+    next.godTokens = next.godTokens.filter((token) => token.expiresAtRound > next.completedRounds);
+    if (next.completedRounds > 0 && next.completedRounds % 3 === 0) {
+      for (const player of next.players) {
+        if (player.eliminated || player.cards.length >= 3) continue;
+        const card = selectMonopolyCard(next, player.deviceId, random, false);
+        if (card) {
+          player.cards.push(card);
+          next.logs.push(`${player.nickname} 获得了一张道具卡`);
+        }
+      }
+      refreshMonopolyGodTokens(next, random);
+    }
   }
   next.turnStartedAt = now;
   return next;
@@ -329,7 +350,7 @@ export function declareMonopolyBankruptcy(state: MonopolyState, playerId: string
   return next;
 }
 
-export function moveMonopolyPlayer(state: MonopolyState, playerId: string, steps: number): MonopolyActionResult {
+export function moveMonopolyPlayer(state: MonopolyState, playerId: string, steps: number, random: () => number = Math.random): MonopolyActionResult {
   const player = state.players.find((item) => item.deviceId === playerId);
   const requestedDistance = Math.floor(steps);
   if (!player || player.eliminated) return failed(state, "玩家无法移动");
@@ -341,7 +362,7 @@ export function moveMonopolyPlayer(state: MonopolyState, playerId: string, steps
   const direction = nextPlayer.direction === "clockwise" ? 1 : -1;
   for (let moved = 0; moved < distance; moved += 1) {
     nextPlayer.position = (nextPlayer.position + direction + MONOPOLY_BOARD_SIZE) % MONOPOLY_BOARD_SIZE;
-    if (nextPlayer.position === 0) grantStartReward(next, nextPlayer);
+    if (nextPlayer.position === 0) grantStartReward(next, nextPlayer, random);
     const roadblockIndex = next.roadblocks.findIndex((roadblock) => roadblock.index === nextPlayer.position);
     if (roadblockIndex >= 0) {
       next.roadblocks.splice(roadblockIndex, 1);
@@ -354,7 +375,7 @@ export function moveMonopolyPlayer(state: MonopolyState, playerId: string, steps
   return { ok: true, state: next };
 }
 
-export function teleportMonopolyPlayer(state: MonopolyState, playerId: string, targetIndex: number): MonopolyActionResult {
+export function teleportMonopolyPlayer(state: MonopolyState, playerId: string, targetIndex: number, random: () => number = Math.random): MonopolyActionResult {
   const player = state.players.find((item) => item.deviceId === playerId);
   if (!player || player.eliminated) return failed(state, "玩家无法传送");
   if (!Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= MONOPOLY_BOARD_SIZE || targetIndex === player.position) {
@@ -363,7 +384,7 @@ export function teleportMonopolyPlayer(state: MonopolyState, playerId: string, t
   const next = cloneMonopolyState(state);
   const nextPlayer = playerOf(next, playerId)!;
   nextPlayer.position = targetIndex;
-  if (targetIndex === 0) grantStartReward(next, nextPlayer);
+  if (targetIndex === 0) grantStartReward(next, nextPlayer, random);
   next.logs.push(`${nextPlayer.nickname} 使用飞机场传送`);
   return { ok: true, state: next };
 }
@@ -384,6 +405,15 @@ export function sendMonopolyPlayerToJail(state: MonopolyState, playerId: string)
   if (!player || player.eliminated) return state;
   const next = cloneMonopolyState(state);
   const nextPlayer = playerOf(next, playerId)!;
+  const acquittalIndex = nextPlayer.cards.indexOf("acquittal");
+  if (acquittalIndex >= 0) {
+    nextPlayer.cards.splice(acquittalIndex, 1);
+    nextPlayer.position = 0;
+    nextPlayer.jailTurns = 0;
+    grantStartReward(next, nextPlayer);
+    next.logs.push(`${nextPlayer.nickname} 使用免罪卡回到起点`);
+    return next;
+  }
   nextPlayer.position = 30;
   nextPlayer.jailTurns = 3;
   next.logs.push(`${nextPlayer.nickname} 被送入监狱`);
@@ -535,6 +565,17 @@ export function acquireMonopolyGod(state: MonopolyState, playerId: string, god: 
   return next;
 }
 
+/** 只在房主权威状态机调用；同一玩家最多携带一位神明。 */
+export function collectMonopolyGodToken(state: MonopolyState, playerId: string, index: number): MonopolyState {
+  const token = state.godTokens.find((item) => item.index === index);
+  if (!token) return state;
+  const next = acquireMonopolyGod(state, playerId, token.god);
+  return {
+    ...next,
+    godTokens: next.godTokens.filter((item) => item.index !== index),
+  };
+}
+
 export function resolveMonopolyLanding(state: MonopolyState, playerId: string, index: number, _random: () => number = Math.random): MonopolyState {
   const player = state.players.find((item) => item.deviceId === playerId);
   const property = state.properties[index];
@@ -630,7 +671,7 @@ function directPurchasePrice(level: MonopolyPropertyLevel): number {
   return MONOPOLY_ECONOMY.emptyPurchase;
 }
 
-function grantStartReward(state: MonopolyState, player: MonopolyPlayer): void {
+function grantStartReward(state: MonopolyState, player: MonopolyPlayer, random: () => number = Math.random): void {
   player.coins += 200;
   const candidates = Object.values(state.properties).filter((property) =>
     property.ownerDeviceId === player.deviceId && (property.level === "house" || property.level === "level2"),
@@ -639,7 +680,7 @@ function grantStartReward(state: MonopolyState, player: MonopolyPlayer): void {
     state.logs.push(`${player.nickname} 经过起点，获得 200 金币`);
     return;
   }
-  const selected = candidates[Math.floor(Math.random() * candidates.length)]!;
+  const selected = candidates[Math.floor(random() * candidates.length)]!;
   selected.level = selected.level === "house" ? "level2" : "level3";
   state.logs.push(`${player.nickname} 经过起点，获得 200 金币并升级一座建筑`);
 }
@@ -662,8 +703,22 @@ function cloneMonopolyState(state: MonopolyState): MonopolyState {
     players: state.players.map((player) => ({ ...player })),
     properties: Object.fromEntries(Object.entries(state.properties).map(([index, property]) => [index, { ...property }])),
     roadblocks: state.roadblocks.map((roadblock) => ({ ...roadblock })),
+    godTokens: state.godTokens.map((token) => ({ ...token })),
     logs: [...state.logs],
   };
+}
+
+function refreshMonopolyGodTokens(state: MonopolyState, random: () => number): void {
+  const candidates = state.board.filter((tile) => tile.kind !== "corner").map((tile) => tile.index);
+  const gods: MonopolyGod[] = ["wealth", "poverty", "angel", "devil"];
+  while (state.godTokens.length < 2 && candidates.length > 0) {
+    const index = Math.max(0, Math.min(candidates.length - 1, Math.floor(random() * candidates.length)));
+    const tileIndex = candidates.splice(index, 1)[0];
+    if (tileIndex === undefined || state.godTokens.some((token) => token.index === tileIndex)) continue;
+    const god = gods[Math.max(0, Math.min(gods.length - 1, Math.floor(random() * gods.length)))]!;
+    state.godTokens.push({ index: tileIndex, god, expiresAtRound: state.completedRounds + 2 });
+    state.logs.push(`${godLabel(god)} 出现在棋盘上`);
+  }
 }
 
 function playerOf(state: MonopolyState, playerId: string): MonopolyPlayer | undefined {

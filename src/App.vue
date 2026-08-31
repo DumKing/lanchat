@@ -60,6 +60,8 @@ import { MINESWEEPER_DEFAULT_HEIGHT, MINESWEEPER_DEFAULT_MINES, MINESWEEPER_DEFA
 import { MINESWEEPER_DIFFICULTIES, createMinesweeperLeaderboardRecord, difficultyByKey, formatMinesweeperElapsed, minesweeperDifficultyLabel, recordsForDifficulty, upsertMinesweeperLeaderboardRecords, type MinesweeperLeaderboardRecord } from "./games/minesweeperLeaderboard";
 import { formatWinRate, incrementGameStats, recordsForGame, upsertGameStatsRecords, type GameStatsRecord, type RankedGameType } from "./games/gameLeaderboard";
 import { createGameRoomShell, gameDefinitionOf, gameRegistry, type GameRoomShell, type GameType } from "./games/registry";
+import { MONOPOLY_TURN_TIMEOUT_MS, monopolyTurnRemainingSeconds, type MonopolyCard, type MonopolyCardTarget } from "./games/monopoly";
+import { applyMonopolyRoomAction, createMonopolyRoomState, type MonopolyRoomAction, type MonopolyRoomSeat, type MonopolyRoomState } from "./games/monopolyRoom";
 import { alertTemperature, alertTruthScore, senderCredibility } from "./utils/alertCredibility";
 import { detectMentionKind, trayConversationTitle, type MentionKind } from "./utils/messageMentions";
 import { peerDisplayName, peerOriginalName, sameDeviceId, sortPeersForDisplay } from "./utils/peerPresentation";
@@ -268,7 +270,7 @@ type XiangqiActionPayload =
   | { action: "resign"; playerId: string }
   | { action: "leave"; playerId: string }
   | { action: "chat"; message: RoomChatItem };
-type GameActionPayload = DdzActionPayload | GomokuActionPayload | XiangqiActionPayload | MinesweeperActionPayload;
+type GameActionPayload = DdzActionPayload | GomokuActionPayload | XiangqiActionPayload | MinesweeperActionPayload | MonopolyRoomAction;
 type GameInvitePayload = {
   roomId: string;
   roomName: string;
@@ -754,14 +756,18 @@ const petDiscoDurationMs = computed(() =>
 );
 const selectedGameType = ref<GameType>("doudizhu");
 const roomNameDraft = ref("午休娱乐局");
+const monopolyStartingCoinsDraft = ref(5000);
+const monopolyMaxRoundsDraft = ref(20);
 const gameRoomsState = ref<GameRoomShell[]>([]);
 const activeGameRoomId = ref("");
 const selectedCardIds = ref<string[]>([]);
 const selectedXiangqiPoint = ref<XiangqiPoint | null>(null);
+const selectedMonopolyTargetIndex = ref(0);
 const doudizhuRooms = ref<Record<string, DdzTableState>>({});
 const gomokuRooms = ref<Record<string, GomokuTableState>>({});
 const xiangqiRooms = ref<Record<string, XiangqiTableState>>({});
 const minesweeperRooms = ref<Record<string, MinesweeperTableState>>({});
+const monopolyRooms = ref<Record<string, MonopolyRoomState>>({});
 const emojiOptions = ["😀", "😄", "😂", "😉", "👍", "👏", "🎉", "🔥", "❤️", "👌", "😎", "🤝", "🍵", "🃏", "💣", "🚀"];
 const navExpanded = ref(readSavedNavExpanded());
 const themeOptions: Array<{ label: string; key: UiThemeKey; accent: string; hover: string; pressed: string }> = [
@@ -979,15 +985,18 @@ const activeDdzState = computed(() => doudizhuRooms.value[activeGameRoomId.value
 const activeGomokuState = computed(() => gomokuRooms.value[activeGameRoomId.value] ?? null);
 const activeXiangqiState = computed(() => xiangqiRooms.value[activeGameRoomId.value] ?? null);
 const activeMinesweeperState = computed(() => minesweeperRooms.value[activeGameRoomId.value] ?? null);
+const activeMonopolyState = computed(() => monopolyRooms.value[activeGameRoomId.value] ?? null);
 const myDeviceId = computed(() => profile.value?.device_id ?? "");
 const myDdzSeat = computed(() => activeDdzState.value?.players.find((player) => player.deviceId === myDeviceId.value) ?? null);
 const myGomokuSeat = computed(() => activeGomokuState.value?.players.find((player) => player.deviceId === myDeviceId.value) ?? null);
 const myXiangqiSeat = computed(() => activeXiangqiState.value?.players.find((player) => player.deviceId === myDeviceId.value) ?? null);
 const myMinesweeperSeat = computed(() => activeMinesweeperState.value?.players.find((player) => player.deviceId === myDeviceId.value) ?? null);
+const myMonopolySeat = computed(() => activeMonopolyState.value?.seats.find((player) => player.deviceId === myDeviceId.value) ?? null);
 const myGameSeat = computed(() => {
   if (activeGameRoom.value?.gameType === "gomoku") return myGomokuSeat.value;
   if (activeGameRoom.value?.gameType === "xiangqi") return myXiangqiSeat.value;
   if (activeGameRoom.value?.gameType === "minesweeper") return myMinesweeperSeat.value;
+  if (activeGameRoom.value?.gameType === "monopoly") return myMonopolySeat.value;
   return myDdzSeat.value;
 });
 const myDdzHand = computed(() => sortCards(activeDdzState.value?.hands[myDeviceId.value] ?? []));
@@ -996,6 +1005,7 @@ const selectedPlay = computed(() => evaluatePlay(selectedCards.value));
 const isMyDdzTurn = computed(() => activeDdzState.value?.turnDeviceId === myDeviceId.value);
 const isMyGomokuTurn = computed(() => activeGomokuState.value?.turnDeviceId === myDeviceId.value);
 const isMyXiangqiTurn = computed(() => activeXiangqiState.value?.turnDeviceId === myDeviceId.value);
+const isMyMonopolyTurn = computed(() => activeMonopolyState.value?.phase === "playing" && activeMonopolyState.value.game.currentPlayerId === myDeviceId.value);
 const isDdzLeading = computed(() => !activeDdzState.value?.lastPlay || activeDdzState.value.lastPlay.playerId === myDeviceId.value);
 const canPassDdz = computed(() => activeDdzState.value?.phase === "playing" && isMyDdzTurn.value && !isDdzLeading.value);
 const canPlaySelectedCards = computed(() => {
@@ -1016,7 +1026,7 @@ const selectedCreateRoomGame = computed(() => gameDefinitionOf(selectedGameType.
 const leaderboardTitle = computed(() => `${activeGameDefinition.value.name}排行榜`);
 const rankedActiveGame = computed<RankedGameType | null>(() => {
   const game = activeGameRoom.value?.gameType ?? selectedGameType.value;
-  return game === "doudizhu" || game === "gomoku" || game === "xiangqi" ? game : null;
+  return game === "doudizhu" || game === "gomoku" || game === "xiangqi" || game === "monopoly" ? game : null;
 });
 const activeGameStatsRows = computed(() => {
   const game = rankedActiveGame.value;
@@ -1198,6 +1208,7 @@ const activeRoomChatMessages = computed(() => {
   if (activeGameRoom.value?.gameType === "gomoku") return activeGomokuState.value?.chatMessages ?? [];
   if (activeGameRoom.value?.gameType === "xiangqi") return activeXiangqiState.value?.chatMessages ?? [];
   if (activeGameRoom.value?.gameType === "minesweeper") return activeMinesweeperState.value?.chatMessages ?? [];
+  if (activeGameRoom.value?.gameType === "monopoly") return activeMonopolyState.value?.chatMessages ?? [];
   return activeDdzState.value?.chatMessages ?? [];
 });
 const activeTurnRemainingSeconds = computed(() => {
@@ -1210,6 +1221,20 @@ const activeGomokuTurnRemainingSeconds = computed(() => {
   if (!state || !state.turnDeviceId || state.phase !== "playing" || state.pendingUndo) return 0;
   return gomokuTurnRemainingSeconds(state.turnStartedAt, nowTick.value, GOMOKU_TURN_TIMEOUT_MS);
 });
+const activeMonopolyTurnRemainingSeconds = computed(() => {
+  const state = activeMonopolyState.value;
+  if (!state || state.phase !== "playing") return 0;
+  return monopolyTurnRemainingSeconds(state.game.turnStartedAt, nowTick.value, MONOPOLY_TURN_TIMEOUT_MS);
+});
+const monopolyBoardTiles = computed(() => activeMonopolyState.value?.game.board ?? []);
+const monopolyCurrentPlayer = computed(() => activeMonopolyState.value?.game.players.find((player) => player.deviceId === activeMonopolyState.value?.game.currentPlayerId) ?? null);
+const monopolyMyPlayer = computed(() => activeMonopolyState.value?.game.players.find((player) => player.deviceId === myDeviceId.value) ?? null);
+const monopolyPendingProperty = computed(() => {
+  const pending = activeMonopolyState.value?.pendingLanding;
+  return pending?.kind === "buy" ? activeMonopolyState.value?.game.properties[pending.index] ?? null : null;
+});
+const monopolySettlementRows = computed(() => [...(activeMonopolyState.value?.game.players ?? [])]
+  .sort((a, b) => b.coins - a.coins || a.nickname.localeCompare(b.nickname)));
 const visibleLandlordCards = computed(() => {
   const state = activeDdzState.value;
   if (!state || state.landlordCards.length === 0 || state.phase === "bidding") return [null, null, null];
@@ -1329,7 +1354,20 @@ const roomPrimaryLabel = computed(() => {
     if (state.phase === "lobby") return myMinesweeperSeat.value.ready ? "取消准备" : "准备";
     if (state.phase === "ended") return isRoomHost() ? "再来一局" : "等待房主开局";
     return myMinesweeperBoardState.value?.status === "playing" ? "扫雷中" : "等待结算";
-  }  if (room.gameType === "xiangqi") {
+  }
+  if (room.gameType === "monopoly") {
+    const state = activeMonopolyState.value;
+    if (!state) return "先创建房间";
+    if (!myMonopolySeat.value) return "加入房间";
+    if (state.phase === "lobby") {
+      const allReady = state.seats.length >= 2 && state.seats.every((seat) => seat.ready);
+      if (isRoomHost() && allReady) return "开始游戏";
+      return myMonopolySeat.value.ready ? "取消准备" : "准备";
+    }
+    if (state.phase === "ended") return isRoomHost() ? "再来一局" : "等待房主开局";
+    return isMyMonopolyTurn.value ? "轮到你" : "等待中";
+  }
+  if (room.gameType === "xiangqi") {
     const state = activeXiangqiState.value;
     if (!state) return "先创建房间";
     if (!myXiangqiSeat.value) return "加入房间";
@@ -1349,6 +1387,7 @@ const isGameStarted = computed(() => {
   if (activeGameRoom.value?.gameType === "gomoku") return activeGomokuState.value?.phase === "playing";
   if (activeGameRoom.value?.gameType === "xiangqi") return activeXiangqiState.value?.phase === "playing";
   if (activeGameRoom.value?.gameType === "minesweeper") return activeMinesweeperState.value?.phase === "playing";
+  if (activeGameRoom.value?.gameType === "monopoly") return activeMonopolyState.value?.phase === "playing";
   return activeDdzState.value?.phase === "bidding" || activeDdzState.value?.phase === "playing";
 });
 const gameAttentionCount = computed(() => {
@@ -1362,6 +1401,9 @@ const gameAttentionCount = computed(() => {
     if (state.phase !== "playing") continue;
     const shouldRemind = state.turnDeviceId === deviceId || (!!state.pendingUndo && state.pendingUndo.requesterId !== deviceId);
     if (shouldRemind) count += 1;
+  }
+  for (const state of Object.values(monopolyRooms.value)) {
+    if (state.phase === "playing" && state.game.currentPlayerId === deviceId) count += 1;
   }
   for (const state of Object.values(xiangqiRooms.value)) {
     if (state.phase !== "playing") continue;
@@ -1401,6 +1443,11 @@ function buildTrayAttentionItems(): TrayAttentionItem[] {
     for (const state of Object.values(xiangqiRooms.value)) {
       if (state.phase !== "playing") continue;
       if (state.turnDeviceId === deviceId || (!!state.pendingUndo && state.pendingUndo.requesterId !== deviceId)) {
+        gameItems.push({ id: state.roomId, kind: "game", title: gameRoomTrayTitle(state.roomId), count: 1 });
+      }
+    }
+    for (const state of Object.values(monopolyRooms.value)) {
+      if (state.phase === "playing" && state.game.currentPlayerId === deviceId) {
         gameItems.push({ id: state.roomId, kind: "game", title: gameRoomTrayTitle(state.roomId), count: 1 });
       }
     }
@@ -2007,6 +2054,11 @@ watch(activeGomokuTurnRemainingSeconds, async (remaining) => {
   if (!state || remaining > 0 || autoTurnRunning) return;
   await handleGomokuTurnTimeout(state);
 });
+watch(activeMonopolyTurnRemainingSeconds, async (remaining) => {
+  const state = activeMonopolyState.value;
+  if (!state || remaining > 0 || autoTurnRunning) return;
+  await handleMonopolyTurnTimeout(state);
+});
 watch(latestGameFrame, (frame) => {
   if (!frame) return;
   processGameFrame(frame);
@@ -2182,7 +2234,7 @@ watch(petStopHotkey, (next) => {
 });
 watch(alertRecords, saveAlertRecords, { deep: true });
 watch(
-  [unreadByConversation, conversations, gameRoomsState, doudizhuRooms, gomokuRooms, xiangqiRooms],
+  [unreadByConversation, conversations, gameRoomsState, doudizhuRooms, gomokuRooms, xiangqiRooms, monopolyRooms],
   () => {
     void syncTrayAttention();
   },
@@ -2594,6 +2646,8 @@ async function createGameRoom() {
     minesweeperRooms.value = { ...minesweeperRooms.value, [room.roomId]: state as MinesweeperTableState };
   } else if (room.gameType === "xiangqi") {
     xiangqiRooms.value = { ...xiangqiRooms.value, [room.roomId]: state as XiangqiTableState };
+  } else if (room.gameType === "monopoly") {
+    monopolyRooms.value = { ...monopolyRooms.value, [room.roomId]: state as MonopolyRoomState };
   } else {
     doudizhuRooms.value = { ...doudizhuRooms.value, [room.roomId]: state as DdzTableState };
   }
@@ -2610,11 +2664,22 @@ function openGameRoom(roomId: string) {
   selectedXiangqiPoint.value = null;
   activeSection.value = "games";
 }
-function createInitialGameState(room: GameRoomShell): DdzTableState | GomokuTableState | XiangqiTableState | MinesweeperTableState {
+function createInitialGameState(room: GameRoomShell): DdzTableState | GomokuTableState | XiangqiTableState | MinesweeperTableState | MonopolyRoomState {
   if (room.gameType === "gomoku") return createInitialGomokuState(room);
   if (room.gameType === "minesweeper") return createInitialMinesweeperState(room);
   if (room.gameType === "xiangqi") return createInitialXiangqiState(room);
+  if (room.gameType === "monopoly") return createInitialMonopolyState(room, monopolyStartingCoinsDraft.value, monopolyMaxRoundsDraft.value);
   return createInitialDdzState(room);
+}
+function createInitialMonopolyState(room: GameRoomShell, startingCoins = 5000, maxRounds = 20): MonopolyRoomState {
+  const host = room.players[0];
+  if (!host) throw new Error("大富翁房间缺少房主");
+  return createMonopolyRoomState({
+    roomId: room.roomId,
+    host: { ...host },
+    startingCoins,
+    maxRounds,
+  });
 }
 function createInitialDdzState(room: GameRoomShell): DdzTableState {
   return {
@@ -2715,6 +2780,16 @@ function currentDdzPlayer(): DdzSeat | null {
     handCount: 0,
   };
 }
+function currentMonopolyPlayer(): MonopolyRoomSeat | null {
+  if (!profile.value) return null;
+  return {
+    deviceId: profile.value.device_id,
+    nickname: profile.value.nickname,
+    avatar: profile.value.avatar,
+    online: true,
+    ready: false,
+  };
+}
 function otherDdzSeats() {
   const state = activeDdzState.value;
   if (!state) return [];
@@ -2738,6 +2813,8 @@ function removeGameRoom(roomId: string) {
   xiangqiRooms.value = xiangqiRest;
   const { [roomId]: _removedMinesweeper, ...minesweeperRest } = minesweeperRooms.value;
   minesweeperRooms.value = minesweeperRest;
+  const { [roomId]: _removedMonopoly, ...monopolyRest } = monopolyRooms.value;
+  monopolyRooms.value = monopolyRest;
   if (activeGameRoomId.value === roomId) {
     activeGameRoomId.value = gameRoomsState.value[0]?.roomId ?? "";
     selectedCardIds.value = [];
@@ -2830,6 +2907,7 @@ function roomStateForSnapshot(roomId: string) {
   if (room.gameType === "gomoku") return gomokuRooms.value[roomId] ?? null;
   if (room.gameType === "xiangqi") return xiangqiRooms.value[roomId] ?? null;
   if (room.gameType === "minesweeper") return minesweeperRooms.value[roomId] ?? null;
+  if (room.gameType === "monopoly") return monopolyRooms.value[roomId] ?? null;
   return doudizhuRooms.value[roomId] ?? null;
 }
 function applyRoomAction(roomId: string, action: GameActionPayload) {
@@ -2838,7 +2916,17 @@ function applyRoomAction(roomId: string, action: GameActionPayload) {
   if (room.gameType === "gomoku") return applyGomokuAction(roomId, action as GomokuActionPayload);
   if (room.gameType === "xiangqi") return applyXiangqiAction(roomId, action as XiangqiActionPayload);
   if (room.gameType === "minesweeper") return applyMinesweeperAction(roomId, action as MinesweeperActionPayload);
+  if (room.gameType === "monopoly") return applyMonopolyAction(roomId, action as MonopolyRoomAction);
   return applyDdzAction(roomId, action as DdzActionPayload);
+}
+function applyMonopolyAction(roomId: string, action: MonopolyRoomAction) {
+  const current = monopolyRooms.value[roomId];
+  if (!current) return false;
+  const next = applyMonopolyRoomAction(current, action);
+  if (next === current || JSON.stringify(next) === JSON.stringify(current)) return false;
+  monopolyRooms.value = { ...monopolyRooms.value, [roomId]: next };
+  updateRoomFromState(roomId, { players: next.seats, updatedAt: next.updatedAt });
+  return true;
 }
 function applyDdzAction(roomId: string, action: DdzActionPayload) {
   const current = doudizhuRooms.value[roomId];
@@ -3683,6 +3771,35 @@ async function leaveRoom() {
 async function roomPrimaryAction() {
   const room = activeGameRoom.value;
   if (!room) return;
+  if (room.gameType === "monopoly") {
+    const player = currentMonopolyPlayer();
+    const state = activeMonopolyState.value;
+    if (!state || !player) return;
+    if (!myMonopolySeat.value) {
+      await sendRoomAction({ action: "join", player });
+      return;
+    }
+    if (state.phase === "lobby") {
+      const allReady = state.seats.length >= 2 && state.seats.every((seat) => seat.ready);
+      if (isRoomHost(room) && allReady) {
+        await sendRoomAction({ action: "start", playerId: player.deviceId });
+      } else {
+        await sendRoomAction({ action: "ready", playerId: player.deviceId, ready: !myMonopolySeat.value.ready });
+      }
+      return;
+    }
+    if (state.phase === "ended" && isRoomHost(room)) {
+      const reset = createInitialMonopolyState(
+        { ...room, players: room.players.map((item) => ({ ...item, ready: false })) },
+        state.game.startingCoins,
+        state.game.maxRounds,
+      );
+      monopolyRooms.value = { ...monopolyRooms.value, [room.roomId]: reset };
+      updateRoomFromState(room.roomId, { players: reset.seats, updatedAt: reset.updatedAt });
+      await broadcastSnapshot(room.roomId);
+    }
+    return;
+  }
   if (room.gameType === "gomoku") {
     const player = currentGomokuPlayer();
     if (!activeGomokuState.value || !player) return;
@@ -3799,7 +3916,7 @@ function processGameFrame(frame: GameFrame) {
     applyLeaderboardSync(frame.payload as LeaderboardSyncPayload);
     return;
   }
-  const payload = frame.payload as { room?: GameRoomShell; state?: DdzTableState | GomokuTableState | XiangqiTableState | MinesweeperTableState; roomId?: string; action?: GameActionPayload };
+  const payload = frame.payload as { room?: GameRoomShell; state?: DdzTableState | GomokuTableState | XiangqiTableState | MinesweeperTableState | MonopolyRoomState; roomId?: string; action?: GameActionPayload };
   if (frame.kind === "room_created" && payload.room && payload.state) {
     upsertGameRoom(payload.room);
     upsertIncomingGameState(payload.room, payload.state);
@@ -3817,7 +3934,7 @@ function processGameFrame(frame: GameFrame) {
     if (changed) broadcastSnapshot(payload.roomId);
   }
 }
-function upsertIncomingGameState(room: GameRoomShell, state: DdzTableState | GomokuTableState | XiangqiTableState | MinesweeperTableState) {
+function upsertIncomingGameState(room: GameRoomShell, state: DdzTableState | GomokuTableState | XiangqiTableState | MinesweeperTableState | MonopolyRoomState) {
   if (room.gameType === "gomoku") {
     const normalized = normalizeIncomingState(state as GomokuTableState);
     gomokuRooms.value = { ...gomokuRooms.value, [room.roomId]: normalized };
@@ -3837,9 +3954,136 @@ function upsertIncomingGameState(room: GameRoomShell, state: DdzTableState | Gom
     maybeRecordGameResult(room, normalized);
     return;
   }
+  if (room.gameType === "monopoly") {
+    const normalized = normalizeIncomingMonopolyState(state as MonopolyRoomState);
+    monopolyRooms.value = { ...monopolyRooms.value, [room.roomId]: normalized };
+    maybeRecordGameResult(room, normalized);
+    return;
+  }
   const normalized = normalizeIncomingState(state as DdzTableState);
   doudizhuRooms.value = { ...doudizhuRooms.value, [room.roomId]: normalized };
   maybeRecordGameResult(room, normalized);
+}
+function monopolyTileStyle(index: number): Record<string, string> {
+  if (index <= 10) return { gridColumn: String(index + 1), gridRow: "1" };
+  if (index <= 20) return { gridColumn: "11", gridRow: String(index - 9) };
+  if (index <= 30) return { gridColumn: String(31 - index), gridRow: "11" };
+  return { gridColumn: "1", gridRow: String(41 - index) };
+}
+function monopolyTileTitle(index: number) {
+  const tile = monopolyBoardTiles.value[index];
+  if (!tile) return "地块";
+  if (tile.kind === "event") return "随机事件";
+  if (tile.kind === "corner") return { start: "起点", airport: "飞机场", price_double: "地价翻倍", jail: "监狱" }[tile.corner];
+  const property = activeMonopolyState.value?.game.properties[index];
+  if (!property || property.level === "empty") return "空地";
+  return property.level === "house" ? "小屋" : property.level === "level2" ? "二级建筑" : "三级建筑";
+}
+function monopolyTileMeta(index: number) {
+  const state = activeMonopolyState.value;
+  const tile = state?.game.board[index];
+  if (!state || !tile) return "";
+  if (tile.kind !== "property") return "";
+  const property = state.game.properties[index];
+  if (!property?.ownerDeviceId) return "350 金币";
+  const owner = state.game.players.find((player) => player.deviceId === property.ownerDeviceId);
+  return `${owner?.nickname ?? "银行"}${property.tollMultiplier > 1 ? " x2" : ""}${property.sealedTurns > 0 ? " · 查封" : ""}`;
+}
+function monopolyPlayersAt(index: number) {
+  return activeMonopolyState.value?.game.players.filter((player) => player.position === index && !player.eliminated) ?? [];
+}
+function monopolyGodAt(index: number) {
+  return activeMonopolyState.value?.game.godTokens.find((token) => token.index === index)?.god;
+}
+function monopolyGodLabel(god?: string) {
+  return god === "wealth" ? "财" : god === "poverty" ? "穷" : god === "angel" ? "天" : god === "devil" ? "魔" : "";
+}
+function monopolyCardLabel(card: MonopolyCard) {
+  return {
+    acquittal: "免罪", seize: "抢占", frame: "陷害", double: "翻倍", fixed_dice: "指定", roadblock: "路障", turtle: "乌龟", reverse: "转向", loot: "掠夺", seal: "查封",
+  }[card];
+}
+function canMonopolyBuy() {
+  const state = activeMonopolyState.value;
+  return !!state && isMyMonopolyTurn.value && state.pendingLanding?.kind === "buy" && state.pendingLanding.playerId === myDeviceId.value;
+}
+function canMonopolyUpgrade(index: number) {
+  const state = activeMonopolyState.value;
+  const property = state?.game.properties[index];
+  return !!state && isMyMonopolyTurn.value && state.turnRolled && !state.pendingLanding && property?.ownerDeviceId === myDeviceId.value && (property.level === "house" || property.level === "level2");
+}
+async function rollMonopolyDice() {
+  if (!isMyMonopolyTurn.value || !profile.value || activeMonopolyState.value?.turnRolled) return;
+  await sendRoomAction({ action: "roll", playerId: profile.value.device_id });
+}
+async function endMonopolyTurnAction() {
+  if (!isMyMonopolyTurn.value || !profile.value || !activeMonopolyState.value?.turnRolled || activeMonopolyState.value.pendingLanding) return;
+  await sendRoomAction({ action: "end_turn", playerId: profile.value.device_id });
+}
+async function buyMonopolyLanding() {
+  const pending = activeMonopolyState.value?.pendingLanding;
+  if (!profile.value || pending?.kind !== "buy") return;
+  await sendRoomAction({ action: "buy", playerId: profile.value.device_id, propertyIndex: pending.index });
+}
+async function skipMonopolyLanding() {
+  if (!profile.value || !activeMonopolyState.value?.pendingLanding) return;
+  await sendRoomAction({ action: "skip_landing", playerId: profile.value.device_id });
+}
+async function chooseMonopolyAirport(index: number) {
+  if (!profile.value || activeMonopolyState.value?.pendingLanding?.kind !== "airport") return;
+  await sendRoomAction({ action: "airport", playerId: profile.value.device_id, targetIndex: index });
+}
+async function upgradeMonopolyAt(index: number) {
+  if (!profile.value || !canMonopolyUpgrade(index)) return;
+  await sendRoomAction({ action: "upgrade", playerId: profile.value.device_id, propertyIndex: index });
+}
+async function useMonopolyCardAction(card: MonopolyCard) {
+  const player = monopolyMyPlayer.value;
+  if (!player || !isMyMonopolyTurn.value) return;
+  const state = activeMonopolyState.value;
+  const opponent = state?.game.players.find((item) => item.deviceId !== player.deviceId && !item.eliminated);
+  const target: MonopolyCardTarget = { propertyIndex: selectedMonopolyTargetIndex.value, index: selectedMonopolyTargetIndex.value };
+  if (["frame", "turtle", "reverse", "loot"].includes(card)) target.playerId = opponent?.deviceId;
+  if (card === "fixed_dice") target.dice = 6;
+  await sendRoomAction({ action: "card", playerId: player.deviceId, card, target });
+}
+async function discardMonopolyCardAction(card: MonopolyCard) {
+  const player = monopolyMyPlayer.value;
+  if (!player || !isMyMonopolyTurn.value) return;
+  await sendRoomAction({ action: "discard", playerId: player.deviceId, card });
+}
+async function handleMonopolyTurnTimeout(state: MonopolyRoomState) {
+  const room = activeGameRoom.value;
+  if (!room || !isRoomHost(room) || state.phase !== "playing" || activeMonopolyTurnRemainingSeconds.value > 0) return;
+  const playerId = state.game.currentPlayerId;
+  if (!playerId) return;
+  autoTurnRunning = true;
+  try {
+    let current = state;
+    if (!current.turnRolled) {
+      await sendRoomAction({ action: "roll", playerId });
+      current = activeMonopolyState.value ?? current;
+    }
+    if (current.pendingLanding?.playerId === playerId) {
+      if (current.pendingLanding.kind === "airport") {
+        await sendRoomAction({ action: "airport", playerId, targetIndex: 0 });
+      } else {
+        await sendRoomAction({ action: "skip_landing", playerId });
+      }
+    }
+    await sendRoomAction({ action: "end_turn", playerId });
+  } finally {
+    autoTurnRunning = false;
+  }
+}
+function normalizeIncomingMonopolyState(state: MonopolyRoomState): MonopolyRoomState {
+  return {
+    ...state,
+    seats: state.seats.map((seat) => ({ ...seat })),
+    game: structuredClone(state.game),
+    chatMessages: state.chatMessages.map((message) => ({ ...message, mine: message.senderDeviceId === profile.value?.device_id })),
+    logs: [...state.logs],
+  };
 }
 function normalizeIncomingState<T extends { chatMessages: RoomChatItem[] }>(state: T): T {
   return {
@@ -3851,7 +4095,7 @@ function openLeaderboard() {
   leaderboardOpen.value = true;
 }
 function rankedGameTypeOf(game: GameType): RankedGameType | null {
-  return game === "doudizhu" || game === "gomoku" || game === "xiangqi" ? game : null;
+  return game === "doudizhu" || game === "gomoku" || game === "xiangqi" || game === "monopoly" ? game : null;
 }
 function encodeGameInvite(room: GameRoomShell) {
   const payload: GameInvitePayload = {
@@ -3992,6 +4236,10 @@ function seedInvitedRoomState(room: GameRoomShell) {
     xiangqiRooms.value = { ...xiangqiRooms.value, [room.roomId]: createInitialGameState(room) as XiangqiTableState };
     return;
   }
+  if (room.gameType === "monopoly" && !monopolyRooms.value[room.roomId]) {
+    monopolyRooms.value = { ...monopolyRooms.value, [room.roomId]: createInitialGameState(room) as MonopolyRoomState };
+    return;
+  }
   if (room.gameType === "doudizhu" && !doudizhuRooms.value[room.roomId]) {
     doudizhuRooms.value = { ...doudizhuRooms.value, [room.roomId]: createInitialGameState(room) as DdzTableState };
   }
@@ -4027,7 +4275,7 @@ function openGameInvite(invite: GameInvitePayload | null) {
   const room = ensureRoomFromInvite(invite);
   openGameRoom(room.roomId);
 }
-function maybeRecordGameResult(room: GameRoomShell, state: DdzTableState | GomokuTableState | XiangqiTableState | MinesweeperTableState) {
+function maybeRecordGameResult(room: GameRoomShell, state: DdzTableState | GomokuTableState | XiangqiTableState | MinesweeperTableState | MonopolyRoomState) {
   if (state.phase !== "ended") return;
   if (room.gameType === "minesweeper") {
     const table = state as MinesweeperTableState;
@@ -4054,6 +4302,25 @@ function maybeRecordGameResult(room: GameRoomShell, state: DdzTableState | Gomok
   }
   const game = rankedGameTypeOf(room.gameType);
   if (!game) return;
+  if (room.gameType === "monopoly") {
+    const table = state as MonopolyRoomState;
+    const key = `${game}:${room.roomId}:${table.updatedAt}:${table.winnerDeviceId ?? "draw"}`;
+    if (recordedGameResultIds.has(key)) return;
+    recordedGameResultIds.add(key);
+    let nextRecords = gameStatsRecords.value;
+    for (const player of table.seats) {
+      nextRecords = incrementGameStats(nextRecords, {
+        game,
+        deviceId: player.deviceId,
+        nickname: player.nickname,
+        won: player.deviceId === table.winnerDeviceId,
+        updatedAt: table.updatedAt,
+      });
+    }
+    gameStatsRecords.value = upsertGameStatsRecords([], nextRecords);
+    saveGameStatsRecords();
+    return;
+  }
   const rankedState = state as DdzTableState | GomokuTableState | XiangqiTableState;
   const players = rankedState.players.map((player) => ({ deviceId: player.deviceId, nickname: player.nickname }));
   const winnerId = rankedState.winnerDeviceId;
@@ -7163,7 +7430,7 @@ async function closeWindow() {
                   <NButton v-if="!activeGameRoom" secondary @click="createRoomOpen = true">创建房间</NButton>
                   <NButton v-if="activeGameRoom && isRoomHost()" secondary type="error" @click="dissolveRoom">解散房间</NButton>
                   <NButton v-else-if="activeGameRoom && myGameSeat" secondary type="warning" @click="leaveRoom">退出房间</NButton>
-                  <NButton v-if="activeGameRoom" type="primary" :disabled="activeGameRoom?.gameType === 'doudizhu' ? activeDdzState?.phase === 'playing' || activeDdzState?.phase === 'bidding' : activeGameRoom?.gameType === 'xiangqi' ? activeXiangqiState?.phase === 'playing' : activeGameRoom?.gameType === 'minesweeper' ? activeMinesweeperState?.phase === 'playing' : activeGomokuState?.phase === 'playing'" @click="roomPrimaryAction">{{ roomPrimaryLabel }}</NButton>
+                  <NButton v-if="activeGameRoom" type="primary" :disabled="activeGameRoom?.gameType === 'doudizhu' ? activeDdzState?.phase === 'playing' || activeDdzState?.phase === 'bidding' : activeGameRoom?.gameType === 'xiangqi' ? activeXiangqiState?.phase === 'playing' : activeGameRoom?.gameType === 'minesweeper' ? activeMinesweeperState?.phase === 'playing' : activeGameRoom?.gameType === 'monopoly' ? activeMonopolyState?.phase === 'playing' : activeGomokuState?.phase === 'playing'" @click="roomPrimaryAction">{{ roomPrimaryLabel }}</NButton>
                 </div>
               </header>
               <div v-if="activeGameRoom?.gameType === 'doudizhu'" class="doudizhu-layout">
@@ -7441,6 +7708,86 @@ async function closeWindow() {
                   </div>
                 </aside>
               </div>
+              <div v-else-if="activeGameRoom?.gameType === 'monopoly'" class="monopoly-layout">
+                <main class="monopoly-table">
+                  <div class="monopoly-status-bar">
+                    <span>第 {{ (activeMonopolyState?.game.completedRounds ?? 0) + 1 }} / {{ activeMonopolyState?.game.maxRounds ?? 20 }} 回合</span>
+                    <strong>{{ monopolyCurrentPlayer?.deviceId === myDeviceId ? '轮到你行动' : `等待 ${monopolyCurrentPlayer?.nickname ?? '玩家'} 行动` }}</strong>
+                    <span v-if="activeMonopolyState?.phase === 'playing'" class="turn-countdown">{{ activeMonopolyTurnRemainingSeconds }}s</span>
+                  </div>
+                  <div class="monopoly-board" aria-label="大富翁棋盘">
+                    <button
+                      v-for="tile in monopolyBoardTiles"
+                      :key="tile.index"
+                      class="monopoly-tile"
+                      :class="[tile.kind, tile.kind === 'corner' ? tile.corner : '', { selected: selectedMonopolyTargetIndex === tile.index, airportTarget: activeMonopolyState?.pendingLanding?.kind === 'airport' && isMyMonopolyTurn }]"
+                      :style="monopolyTileStyle(tile.index)"
+                      type="button"
+                      :title="monopolyTileTitle(tile.index)"
+                      @click="activeMonopolyState?.pendingLanding?.kind === 'airport' && isMyMonopolyTurn ? chooseMonopolyAirport(tile.index) : selectedMonopolyTargetIndex = tile.index"
+                    >
+                      <strong>{{ monopolyTileTitle(tile.index) }}</strong>
+                      <small>{{ monopolyTileMeta(tile.index) }}</small>
+                      <span v-if="monopolyGodAt(tile.index)" class="monopoly-god-token">{{ monopolyGodLabel(monopolyGodAt(tile.index)) }}</span>
+                      <span v-if="activeMonopolyState?.game.roadblocks.some((item) => item.index === tile.index)" class="monopoly-roadblock">障</span>
+                      <span class="monopoly-player-tokens">
+                        <i v-for="player in monopolyPlayersAt(tile.index)" :key="player.deviceId" :class="{ mine: player.deviceId === myDeviceId }" :title="player.nickname">{{ firstLetter(player.nickname) }}</i>
+                      </span>
+                    </button>
+                    <section class="monopoly-center-panel">
+                      <div class="monopoly-center-icon">富</div>
+                      <strong>{{ activeMonopolyState?.phase === 'lobby' ? '准备开始' : activeMonopolyState?.phase === 'ended' ? '对局结算' : monopolyPendingProperty ? '发现可购买地产' : activeMonopolyState?.pendingLanding?.kind === 'airport' ? '请选择传送地点' : '地产经营中' }}</strong>
+                      <small>起点奖励 · 神明附身 · 联排收租</small>
+                    </section>
+                  </div>
+                  <div class="monopoly-action-strip">
+                    <template v-if="activeMonopolyState?.phase === 'playing' && isMyMonopolyTurn">
+                      <NButton type="primary" :disabled="activeMonopolyState.turnRolled" @click="rollMonopolyDice">掷骰子</NButton>
+                      <NButton v-if="canMonopolyBuy()" type="success" @click="buyMonopolyLanding">购买 {{ monopolyPendingProperty?.level === 'empty' ? '小屋' : monopolyTileTitle(activeMonopolyState?.pendingLanding?.index ?? 0) }}</NButton>
+                      <NButton v-if="activeMonopolyState?.pendingLanding" secondary @click="skipMonopolyLanding">放弃</NButton>
+                      <NButton v-if="canMonopolyUpgrade(selectedMonopolyTargetIndex)" secondary @click="upgradeMonopolyAt(selectedMonopolyTargetIndex)">升级所选地产</NButton>
+                      <NButton secondary :disabled="!activeMonopolyState.turnRolled || !!activeMonopolyState.pendingLanding" @click="endMonopolyTurnAction">结束回合</NButton>
+                    </template>
+                    <span v-else-if="activeMonopolyState?.phase === 'lobby'">凑齐 2 至 4 名玩家并全部准备后，由房主开始游戏。</span>
+                  </div>
+                  <div v-if="activeMonopolyState?.phase === 'ended'" class="settlement-overlay monopoly-settlement">
+                    <div class="settlement-panel">
+                      <div class="settlement-kicker">现金结算</div>
+                      <h3>{{ monopolySettlementRows[0]?.nickname ?? '玩家' }} 获胜</h3>
+                      <div class="settlement-list">
+                        <div v-for="(player, index) in monopolySettlementRows" :key="player.deviceId" class="settlement-row" :class="{ winner: index === 0 }">
+                          <span>{{ index + 1 }}</span>
+                          <div class="settlement-player"><NAvatar :size="28" :src="avatarImage(player.avatar)">{{ firstLetter(player.nickname) }}</NAvatar><span>{{ player.deviceId === myDeviceId ? `我 · ${player.nickname}` : player.nickname }}</span></div>
+                          <strong>{{ player.coins }} 金币</strong>
+                        </div>
+                      </div>
+                      <div class="settlement-actions"><NButton v-if="isRoomHost()" type="primary" @click="roomPrimaryAction">再来一局</NButton><NButton secondary @click="leaveRoom">退出房间</NButton></div>
+                    </div>
+                  </div>
+                </main>
+                <aside class="game-room-panel monopoly-room-panel">
+                  <section class="monopoly-players-panel">
+                    <div class="room-chat-head">玩家与道具</div>
+                    <div class="monopoly-player-list">
+                      <div v-for="seat in activeMonopolyState?.seats ?? []" :key="seat.deviceId" class="monopoly-player-row" :class="{ active: activeMonopolyState?.game.currentPlayerId === seat.deviceId }">
+                        <NAvatar :size="30" :src="avatarImage(seat.avatar)">{{ firstLetter(seat.nickname) }}</NAvatar>
+                        <div><strong>{{ seat.deviceId === myDeviceId ? `我 · ${seat.nickname}` : seat.nickname }}</strong><small>{{ activeMonopolyState?.game.players.find((player) => player.deviceId === seat.deviceId)?.coins ?? 0 }} 金币 · {{ seat.ready ? '已准备' : '未准备' }}</small></div>
+                      </div>
+                    </div>
+                    <div v-if="monopolyMyPlayer" class="monopoly-cards">
+                      <button v-for="card in monopolyMyPlayer.cards" :key="card" type="button" :disabled="!isMyMonopolyTurn" title="单击使用，右键弃置" @click="useMonopolyCardAction(card)" @contextmenu.prevent="discardMonopolyCardAction(card)">{{ monopolyCardLabel(card) }}</button>
+                    </div>
+                    <small class="monopoly-target-note">已选格子：{{ selectedMonopolyTargetIndex }} · 用于道具目标</small>
+                  </section>
+                  <div class="room-chat-panel">
+                    <div class="room-chat-head">房间聊天</div>
+                    <div ref="roomChatPane" class="room-chat-list">
+                      <div v-for="item in activeRoomChatMessages" :key="item.id" class="room-chat-msg" :class="{ mine: item.mine }"><div class="room-chat-name">{{ item.sender }}</div><div class="room-chat-bubble">{{ item.content }}</div></div>
+                    </div>
+                    <div class="room-chat-composer"><NInput v-model:value="roomChatDraft" placeholder="房间聊天" @keydown.enter="handleRoomChatEnter" /><NButton type="primary" @click="sendRoomChat">发</NButton></div>
+                  </div>
+                </aside>
+              </div>
               <div v-else-if="activeGameRoom?.gameType === 'xiangqi'" class="xiangqi-layout">
                 <main class="xiangqi-table">
                   <div class="xiangqi-arena">
@@ -7555,7 +7902,7 @@ async function closeWindow() {
                 </section>
                 <section class="game-catalog-leaderboard">
                   <NTabs
-                    v-if="activeGameRoom?.gameType === 'minesweeper' || selectedGameType === 'minesweeper'"
+                    v-if="activeGameDefinition.type === 'minesweeper'"
                     v-model:value="selectedMinesweeperLeaderboardKey"
                     type="segment"
                     animated
@@ -8736,6 +9083,14 @@ async function closeWindow() {
               </div>
             </div>
             <NInput v-model:value="roomNameDraft" size="medium" maxlength="24" placeholder="房间名称" />
+            <template v-if="selectedGameType === 'monopoly'">
+              <NFormItem label="开局金币" :show-feedback="false">
+                <NInputNumber v-model:value="monopolyStartingCoinsDraft" :min="5000" :max="50000" :step="1000" style="width: 100%" />
+              </NFormItem>
+              <NFormItem label="总回合数" :show-feedback="false">
+                <NInputNumber v-model:value="monopolyMaxRoundsDraft" :min="5" :max="50" :step="1" style="width: 100%" />
+              </NFormItem>
+            </template>
             <NButton block type="primary" @click="createGameRoom">创建房间</NButton>
           </div>
         </NModal>
@@ -8995,6 +9350,38 @@ async function closeWindow() {
 .admin-remote-update-result-meta, .admin-remote-update-result-status { min-width: 0; display: grid; gap: 3px; }
 .admin-remote-update-result-meta strong, .admin-remote-update-result-meta span, .admin-remote-update-result-status span, .admin-remote-update-result-status small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .admin-remote-update-result-meta span, .admin-remote-update-result-status small { color: var(--text-secondary); font-size: 12px; }
+.monopoly-layout { display: grid; grid-template-columns: minmax(620px, 1fr) 264px; min-height: 0; overflow: hidden; }
+.monopoly-table { position: relative; display: grid; min-width: 0; min-height: 0; grid-template-rows: auto minmax(420px, 1fr) auto; gap: 12px; padding: 18px 22px; background: radial-gradient(circle at 50% 35%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 48%); }
+.monopoly-status-bar { display: flex; align-items: center; justify-content: center; gap: 14px; color: var(--text-secondary); font-size: 13px; }
+.monopoly-status-bar strong { color: var(--text-primary); font-size: 15px; }
+.monopoly-board { position: relative; display: grid; width: min(100%, 760px); min-height: 480px; aspect-ratio: 1; justify-self: center; grid-template-columns: repeat(11, minmax(0, 1fr)); grid-template-rows: repeat(11, minmax(0, 1fr)); overflow: hidden; border: 3px solid color-mix(in srgb, var(--accent) 34%, var(--panel-border)); border-radius: 12px; background: linear-gradient(135deg, #f5ead6, #e7cf9c); box-shadow: 0 12px 32px color-mix(in srgb, var(--accent) 18%, transparent); }
+.monopoly-tile { position: relative; display: grid; align-content: start; min-width: 0; min-height: 0; padding: 4px; overflow: hidden; border: 1px solid rgba(125, 88, 38, .32); background: rgba(255,255,255,.70); color: #523b20; cursor: pointer; transition: transform .16s ease, background .16s ease; }
+.monopoly-tile:hover, .monopoly-tile.selected { z-index: 3; background: color-mix(in srgb, var(--accent) 18%, #fff); transform: scale(1.06); }
+.monopoly-tile.corner { justify-items: center; align-content: center; background: color-mix(in srgb, var(--accent) 20%, #fff); text-align: center; }
+.monopoly-tile.event { background: #fff1bf; }
+.monopoly-tile strong { overflow: hidden; font-size: clamp(9px, 1vw, 12px); line-height: 1.15; text-overflow: ellipsis; white-space: nowrap; }
+.monopoly-tile small { margin-top: 2px; overflow: hidden; color: #876d4f; font-size: clamp(7px, .8vw, 10px); line-height: 1.1; text-overflow: ellipsis; white-space: nowrap; }
+.monopoly-tile.airportTarget { outline: 3px solid var(--accent); outline-offset: -3px; }
+.monopoly-center-panel { display: grid; position: absolute; inset: 24%; z-index: 1; place-content: center; gap: 7px; border: 1px dashed color-mix(in srgb, var(--accent) 54%, var(--panel-border)); border-radius: 12px; background: rgba(255,255,255,.52); color: #76572d; text-align: center; backdrop-filter: blur(2px); }
+.monopoly-center-panel strong { font-size: clamp(15px, 2.1vw, 23px); }
+.monopoly-center-panel small { color: #90714a; font-size: 12px; }
+.monopoly-center-icon { margin: 0 auto; display: grid; place-items: center; width: 42px; height: 42px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 23px; font-weight: 700; box-shadow: 0 6px 14px color-mix(in srgb, var(--accent) 35%, transparent); }
+.monopoly-player-tokens { position: absolute; right: 2px; bottom: 2px; display: flex; max-width: calc(100% - 4px); gap: 1px; overflow: hidden; }
+.monopoly-player-tokens i { display: grid; flex: 0 0 auto; place-items: center; width: 14px; height: 14px; border-radius: 50%; background: #516174; color: #fff; font-size: 8px; font-style: normal; }
+.monopoly-player-tokens i.mine { background: var(--accent); }
+.monopoly-god-token, .monopoly-roadblock { position: absolute; right: 3px; top: 2px; display: grid; place-items: center; width: 15px; height: 15px; border-radius: 50%; color: #fff; font-size: 9px; font-weight: 700; }
+.monopoly-god-token { background: #e49b1e; }.monopoly-roadblock { right: 20px; background: #be4141; }
+.monopoly-action-strip { display: flex; min-height: 36px; align-items: center; justify-content: center; gap: 8px; color: var(--text-secondary); font-size: 13px; }
+.monopoly-room-panel { display: grid; min-height: 0; grid-template-rows: auto minmax(0, 1fr); border-left: 1px solid var(--panel-border); background: var(--panel-bg); }
+.monopoly-players-panel { display: grid; gap: 8px; padding: 14px; border-bottom: 1px solid var(--panel-border); }
+.monopoly-player-list { display: grid; gap: 4px; max-height: 160px; overflow: auto; }
+.monopoly-player-row { display: flex; align-items: center; min-width: 0; gap: 7px; padding: 5px; border-radius: 7px; }
+.monopoly-player-row.active { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.monopoly-player-row div { min-width: 0; }.monopoly-player-row strong, .monopoly-player-row small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.monopoly-player-row strong { font-size: 12px; }.monopoly-player-row small, .monopoly-target-note { color: var(--text-secondary); font-size: 11px; }
+.monopoly-cards { display: flex; flex-wrap: wrap; gap: 5px; }.monopoly-cards button { padding: 4px 7px; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--panel-border)); border-radius: 5px; background: var(--input-bg); color: var(--text-primary); cursor: pointer; font-size: 11px; }.monopoly-cards button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }.monopoly-cards button:disabled { opacity: .45; cursor: default; }
+.monopoly-settlement { inset: 0; }
+@media (max-width: 1060px) { .monopoly-layout { grid-template-columns: minmax(0, 1fr) 230px; }.monopoly-table { padding: 14px; }.monopoly-board { min-height: 420px; } }
+@media (max-width: 840px) { .monopoly-layout { grid-template-columns: minmax(0, 1fr); overflow: auto; }.monopoly-room-panel { min-height: 420px; border-left: 0; border-top: 1px solid var(--panel-border); }.monopoly-board { min-width: 420px; }.monopoly-table { overflow: auto; } }
 </style>
 
 

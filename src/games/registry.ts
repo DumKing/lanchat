@@ -1,4 +1,4 @@
-export type GameType = "doudizhu" | "gomoku" | "xiangqi" | "minesweeper";
+export type GameType = "doudizhu" | "gomoku" | "xiangqi" | "minesweeper" | "monopoly";
 
 export type GameDefinition = {
   type: GameType;
@@ -64,6 +64,15 @@ export const gameRegistry: GameDefinition[] = [
     minPlayers: 2,
     maxPlayers: 2,
     icon: "象",
+    status: "available",
+  },
+  {
+    type: "monopoly",
+    name: "大富翁",
+    description: "二至四人局域网地产经营对战，支持神明、道具、联排与随机事件。",
+    minPlayers: 2,
+    maxPlayers: 4,
+    icon: "富",
     status: "available",
   },
 ];

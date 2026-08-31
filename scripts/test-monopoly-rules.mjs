@@ -148,9 +148,15 @@ try {
   assert.equal(state.properties[1].tollMultiplier, 2, "price-double corner should mark an owned property once");
   assert.equal(monopolyLandingRent(state, "b", 1), 1000);
 
+  state.players[0].cards = [];
   state = sendMonopolyPlayerToJail(state, "a");
   assert.equal(state.players[0].position, 30);
   assert.equal(state.players[0].jailTurns, 3);
+  state.players[0].cards = ["acquittal"];
+  state = sendMonopolyPlayerToJail(state, "a");
+  assert.equal(state.players[0].position, 0, "acquittal should immediately return its holder to start");
+  assert.equal(state.players[0].jailTurns, 0);
+  assert.equal(state.players[0].cards.includes("acquittal"), false);
 
   state = createMonopolyState([
     { deviceId: "a", nickname: "甲" },
@@ -229,6 +235,16 @@ try {
   const coinsBeforeSubsidy = state.players.map((player) => player.coins);
   state = applyMonopolyRandomEvent(state, "subsidy", () => 0);
   assert.deepEqual(state.players.map((player, index) => player.coins - coinsBeforeSubsidy[index]), [100, 100], "subsidy event grants every active player 100 coins");
+
+  state = createMonopolyState([
+    { deviceId: "a", nickname: "甲" },
+    { deviceId: "b", nickname: "乙" },
+  ], { startingCoins: 5000, maxRounds: 20, seed: 13 });
+  state.players.forEach((player) => { player.cards = []; });
+  for (let index = 0; index < 6; index += 1) state = endMonopolyTurn(state, index, () => 0);
+  assert.equal(state.completedRounds, 3, "six player turns should complete three rounds in a two-player match");
+  assert.ok(state.players.every((player) => player.cards.length === 1), "every third complete round should issue one card when a bag has space");
+  assert.equal(state.godTokens.length, 2, "every third complete round should refresh up to two god tokens");
 
   console.log("monopoly board rules ok");
 } finally {
