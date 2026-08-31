@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "test:gomoku": "node scripts/test-gomoku-rules.mjs",
+    "test:monopoly": "node scripts/test-monopoly-rules.mjs",
     "test:xiangqi": "node scripts/test-xiangqi-rules.mjs",
     "test:minesweeper": "node scripts/test-minesweeper-rules.mjs",
     "test:minesweeper-room-ui": "node scripts/test-minesweeper-room-ui.mjs",
