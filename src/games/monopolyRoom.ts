@@ -367,6 +367,7 @@ function resolveAutomaticMonopolyJailTurn(state: MonopolyRoomState, random: () =
   if (!player || player.eliminated) return;
   if (player.stayTurns > 0) {
     player.stayTurns -= 1;
+    if (player.turtleTurns > 0) player.turtleTurns -= 1;
     state.game.logs.push(`${player.nickname} 受到停留卡影响，原地停留并自动跳过本回合`);
     state.game = endMonopolyTurn(state.game, Date.now(), random);
     state.turnRolled = false;

@@ -154,7 +154,7 @@ try {
   automaticJailRoom.turnRolled = true;
   automaticJailRoom = applyMonopolyRoomAction(automaticJailRoom, { action: "end_turn", playerId: "b" }, () => 0);
   assert.equal(automaticJailRoom.game.players[0].stayTurns, 0, "停留卡应在目标回合开始时自动消耗");
-  assert.equal(automaticJailRoom.game.players[0].turtleTurns, 3, "停留卡应优先于乌龟卡，停留回合不消耗乌龟效果");
+  assert.equal(automaticJailRoom.game.players[0].turtleTurns, 2, "停留卡应优先于乌龟卡，且停留回合仍消耗一次乌龟效果");
   assert.equal(automaticJailRoom.game.currentPlayerId, "b", "停留目标应跳过投骰并直接轮到下一位玩家");
   assert.match(automaticJailRoom.game.logs.join("\n"), /原地停留/, "停留自动跳过应写入权威游戏日志");
   console.log("monopoly room rules ok");

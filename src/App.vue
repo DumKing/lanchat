@@ -4395,7 +4395,7 @@ function monopolyCardTooltip(card: MonopolyCard): string {
     fixed_dice: "指定下一次骰子点数为 1 至 6。",
     roadblock: "在任意地块放置一次性路障。",
     turtle: "指定玩家接下来三个回合每次只能前进一格。",
-    stay: "指定任意玩家下一回合原地停留，优先于乌龟效果。",
+    stay: "指定任意玩家下一回合原地停留；若同时受乌龟影响，会消耗一次乌龟回合。",
     reverse: "永久改变指定玩家的行进方向。",
     loot: "随机夺取指定玩家背包中的一张卡。",
     seal: "查封指定地产三个所属回合。",
