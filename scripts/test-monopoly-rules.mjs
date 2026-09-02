@@ -231,6 +231,11 @@ try {
   assert.equal(result.ok, true, "乌龟卡应允许指定自己");
   state = result.state;
   assert.equal(state.players[0].turtleTurns, 3);
+  result = moveMonopolyPlayer(state, "a", 7);
+  assert.equal(result.ok, true, "使用乌龟卡后仍应允许正常投骰移动");
+  state = result.state;
+  assert.equal(state.players[0].position, 1, "乌龟卡生效时投骰后只能前进一格");
+  assert.equal(state.players[0].turtleTurns, 2, "对自己使用乌龟卡后，下一次投骰应消耗一次乌龟回合");
   state.players[0].cards = ["stay"];
   result = useMonopolyCard(state, "a", "stay", { playerId: "a" });
   assert.equal(result.ok, true, "停留卡应允许指定自己");
