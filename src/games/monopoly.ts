@@ -1,13 +1,12 @@
 export const MONOPOLY_BOARD_SIZE = 40;
 export const MONOPOLY_TURN_TIMEOUT_MS = 30_000;
+export const MONOPOLY_BUILDING_VARIANT_COUNT = 3;
 
 export const MONOPOLY_ECONOMY = {
   emptyPurchase: 350,
   houseDirectPurchase: 500,
   level2DirectPurchase: 1500,
   level3DirectPurchase: 3500,
-  houseToLevel2: 1000,
-  level2ToLevel3: 2000,
   houseRent: 500,
   level2Rent: 1000,
   level3Rent: 2000,
@@ -44,6 +43,7 @@ export type MonopolyPlayerSeed = {
   deviceId: string;
   nickname: string;
   avatar?: string | null;
+  isBot?: boolean;
 };
 
 export type MonopolyPlayer = MonopolyPlayerSeed & {
@@ -62,6 +62,8 @@ export type MonopolyPlayer = MonopolyPlayerSeed & {
 export type MonopolyPropertyState = {
   index: number;
   level: MonopolyPropertyLevel;
+  /** 由房主在购买或升级时抽取，确保所有客户端展示同一栋建筑。 */
+  buildingVariant: number | null;
   ownerDeviceId: string | null;
   sealedTurns: number;
   tollMultiplier: number;
@@ -167,6 +169,7 @@ export function createMonopolyState(players: MonopolyPlayerSeed[], options: { st
       properties[tile.index] = {
         index: tile.index,
         level: "empty",
+        buildingVariant: null,
         ownerDeviceId: null,
         sealedTurns: 0,
         tollMultiplier: 1,
@@ -215,40 +218,42 @@ export function monopolyTurnRemainingSeconds(turnStartedAt: number | undefined, 
   return Math.max(0, Math.ceil((timeoutMs - (now - turnStartedAt)) / 1000));
 }
 
-export function purchaseMonopolyProperty(state: MonopolyState, playerId: string, index: number): MonopolyActionResult {
+export function purchaseMonopolyProperty(state: MonopolyState, playerId: string, index: number, random: () => number = Math.random): MonopolyActionResult {
   const property = state.properties[index];
   const player = state.players.find((item) => item.deviceId === playerId);
   if (!property || !player || player.eliminated) return failed(state, "无法购买该地产");
   if (property.ownerDeviceId) return failed(state, "该地产已有归属");
-  const price = directPurchasePrice(property.level);
+  const price = monopolyDirectPurchasePrice(property.level);
   if (player.coins < price) return failed(state, "金币不足，无法购买地产");
   const next = cloneMonopolyState(state);
   const nextPlayer = playerOf(next, playerId)!;
   const nextProperty = next.properties[index]!;
   nextPlayer.coins -= price;
   nextProperty.ownerDeviceId = playerId;
-  if (nextProperty.level === "empty") nextProperty.level = "house";
+  if (nextProperty.level === "empty") {
+    nextProperty.level = "house";
+    nextProperty.buildingVariant = monopolyBuildingVariant(random);
+  }
   nextProperty.sealedTurns = 0;
   next.logs.push(`${nextPlayer.nickname} 购买了${propertyLabel(nextProperty.level)}地产`);
   return { ok: true, state: next };
 }
 
-export function upgradeMonopolyProperty(state: MonopolyState, playerId: string, index: number): MonopolyActionResult {
+export function upgradeMonopolyProperty(state: MonopolyState, playerId: string, index: number, random: () => number = Math.random): MonopolyActionResult {
   const property = state.properties[index];
   const player = state.players.find((item) => item.deviceId === playerId);
   if (!property || !player || player.eliminated || property.ownerDeviceId !== playerId) return failed(state, "只能升级自己的地产");
   const upgrade = property.level === "house"
-    ? { cost: MONOPOLY_ECONOMY.houseToLevel2, level: "level2" as const }
+    ? { level: "level2" as const }
     : property.level === "level2"
-      ? { cost: MONOPOLY_ECONOMY.level2ToLevel3, level: "level3" as const }
+      ? { level: "level3" as const }
       : null;
   if (!upgrade) return failed(state, "该地产不能继续升级");
-  if (player.coins < upgrade.cost) return failed(state, "金币不足，无法升级地产");
   const next = cloneMonopolyState(state);
   const nextPlayer = playerOf(next, playerId)!;
-  nextPlayer.coins -= upgrade.cost;
   next.properties[index]!.level = upgrade.level;
-  next.logs.push(`${nextPlayer.nickname} 升级了地产`);
+  next.properties[index]!.buildingVariant = monopolyBuildingVariant(random);
+  next.logs.push(`${nextPlayer.nickname} 再次踩中自己的地产，免费升级了建筑`);
   return { ok: true, state: next };
 }
 
@@ -355,7 +360,7 @@ export function moveMonopolyPlayer(state: MonopolyState, playerId: string, steps
   const requestedDistance = Math.floor(steps);
   if (!player || player.eliminated) return failed(state, "玩家无法移动");
   if (player.jailTurns > 0) return failed(state, "玩家正在监狱中");
-  if (requestedDistance < 1 || requestedDistance > 6) return failed(state, "骰子点数必须在 1 到 6 之间");
+  if (requestedDistance < 1 || requestedDistance > 12) return failed(state, "骰子点数必须在 1 到 12 之间");
   const next = cloneMonopolyState(state);
   const nextPlayer = playerOf(next, playerId)!;
   const distance = nextPlayer.turtleTurns > 0 ? 1 : requestedDistance;
@@ -390,13 +395,14 @@ export function teleportMonopolyPlayer(state: MonopolyState, playerId: string, t
 }
 
 export function applyMonopolyPriceDouble(state: MonopolyState, playerId: string, random: () => number = Math.random): MonopolyState {
-  const candidates = Object.values(state.properties).filter((property) => property.ownerDeviceId === playerId && property.tollMultiplier < 2);
+  const candidates = Object.values(state.properties).filter((property) => property.ownerDeviceId === playerId);
   if (candidates.length === 0) return state;
   const next = cloneMonopolyState(state);
   const selected = candidates[Math.min(candidates.length - 1, Math.max(0, Math.floor(random() * candidates.length)))];
   if (!selected) return state;
-  next.properties[selected.index]!.tollMultiplier = 2;
-  next.logs.push(`${playerOf(next, playerId)?.nickname ?? "玩家"} 的一块地产过路费翻倍`);
+  const property = next.properties[selected.index]!;
+  property.tollMultiplier += 1;
+  next.logs.push(`${playerOf(next, playerId)?.nickname ?? "玩家"} 的一块地产过路费提升至 ×${property.tollMultiplier}`);
   return next;
 }
 
@@ -490,16 +496,16 @@ export function useMonopolyCard(state: MonopolyState, playerId: string, card: Mo
   }
   if (card === "frame") {
     const targetPlayer = playerOf(next, target.playerId ?? "");
-    if (!targetPlayer || targetPlayer.deviceId === playerId || targetPlayer.eliminated) return failed(state, "陷害目标无效");
+    if (!targetPlayer || targetPlayer.eliminated) return failed(state, "陷害目标无效");
     consume();
     return { ok: true, state: sendMonopolyPlayerToJail(next, targetPlayer.deviceId) };
   }
   if (card === "double") {
     const property = next.properties[target.propertyIndex ?? -1];
-    if (!property || property.level === "empty" || property.tollMultiplier >= 2) return failed(state, "翻倍目标无效");
-    property.tollMultiplier = 2;
+    if (!property || property.level === "empty") return failed(state, "翻倍目标无效");
+    property.tollMultiplier += 1;
     consume();
-    next.logs.push(`${actor.nickname} 翻倍了一块地产`);
+    next.logs.push(`${actor.nickname} 将一块地产提升至 ×${property.tollMultiplier}`);
     return { ok: true, state: next };
   }
   if (card === "fixed_dice") {
@@ -512,7 +518,7 @@ export function useMonopolyCard(state: MonopolyState, playerId: string, card: Mo
   }
   if (card === "turtle") {
     const targetPlayer = playerOf(next, target.playerId ?? "");
-    if (!targetPlayer || targetPlayer.deviceId === playerId || targetPlayer.eliminated) return failed(state, "乌龟目标无效");
+    if (!targetPlayer || targetPlayer.eliminated) return failed(state, "乌龟目标无效");
     targetPlayer.turtleTurns = 3;
     consume();
     next.logs.push(`${actor.nickname} 对 ${targetPlayer.nickname} 使用了乌龟卡`);
@@ -664,11 +670,15 @@ export function applyMonopolyRandomEvent(state: MonopolyState, event: MonopolyRa
   return next;
 }
 
-function directPurchasePrice(level: MonopolyPropertyLevel): number {
+export function monopolyDirectPurchasePrice(level: MonopolyPropertyLevel): number {
   if (level === "house") return MONOPOLY_ECONOMY.houseDirectPurchase;
   if (level === "level2") return MONOPOLY_ECONOMY.level2DirectPurchase;
   if (level === "level3") return MONOPOLY_ECONOMY.level3DirectPurchase;
   return MONOPOLY_ECONOMY.emptyPurchase;
+}
+
+export function monopolyBuildingVariant(random: () => number = Math.random): number {
+  return Math.max(0, Math.min(MONOPOLY_BUILDING_VARIANT_COUNT - 1, Math.floor(random() * MONOPOLY_BUILDING_VARIANT_COUNT)));
 }
 
 function grantStartReward(state: MonopolyState, player: MonopolyPlayer, random: () => number = Math.random): void {
@@ -696,10 +706,10 @@ function propertyToll(property: MonopolyPropertyState): number {
   return base * property.tollMultiplier;
 }
 
-function cloneMonopolyState(state: MonopolyState): MonopolyState {
+export function cloneMonopolyState(state: MonopolyState): MonopolyState {
   return {
     ...state,
-    board: state.board,
+    board: state.board.map((tile) => ({ ...tile })),
     players: state.players.map((player) => ({ ...player })),
     properties: Object.fromEntries(Object.entries(state.properties).map(([index, property]) => [index, { ...property }])),
     roadblocks: state.roadblocks.map((roadblock) => ({ ...roadblock })),
@@ -726,8 +736,8 @@ function playerOf(state: MonopolyState, playerId: string): MonopolyPlayer | unde
 }
 
 function propertyLabel(level: MonopolyPropertyLevel): string {
-  if (level === "level2") return "二级";
-  if (level === "level3") return "三级";
+  if (level === "level2") return "洋房";
+  if (level === "level3") return "地标";
   if (level === "house") return "小屋";
   return "空地";
 }

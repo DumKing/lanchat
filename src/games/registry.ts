@@ -14,6 +14,7 @@ export type GameRoomPlayer = {
   deviceId: string;
   nickname: string;
   avatar?: string | null;
+  isBot?: boolean;
   online: boolean;
   ready: boolean;
 };

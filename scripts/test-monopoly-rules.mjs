@@ -79,27 +79,32 @@ try {
   assert.equal(monopolyTurnRemainingSeconds(undefined, 1000), 30);
   assert.equal(state.properties[1].level, "empty");
 
-  let result = purchaseMonopolyProperty(state, "a", 1);
+  let result = purchaseMonopolyProperty(state, "a", 1, () => 0.99);
   assert.equal(result.ok, true);
   state = result.state;
   assert.equal(state.players[0].coins, 4650, "empty land should cost 350");
   assert.equal(state.properties[1].level, "house");
+  assert.equal(state.properties[1].buildingVariant, 2, "首次购买小屋时应由房主随机固定建筑款式");
   assert.equal(state.properties[1].ownerDeviceId, "a");
   assert.equal(monopolyLandingRent(state, "b", 1), 500);
 
-  result = upgradeMonopolyProperty(state, "a", 1);
+  result = upgradeMonopolyProperty(state, "a", 1, () => 0.49);
   assert.equal(result.ok, true);
   state = result.state;
-  assert.equal(state.players[0].coins, 3650, "house to level2 should cost 1000");
+  assert.equal(state.players[0].coins, 4650, "升级地产不应扣除金币");
   assert.equal(state.properties[1].level, "level2");
+  assert.equal(state.properties[1].buildingVariant, 1, "升级洋房时应重新随机并保存建筑款式");
   assert.equal(monopolyLandingRent(state, "b", 1), 1000);
 
-  result = upgradeMonopolyProperty(state, "a", 1);
+  result = upgradeMonopolyProperty(state, "a", 1, () => 0.01);
   assert.equal(result.ok, true);
   state = result.state;
-  assert.equal(state.players[0].coins, 1650, "level2 to level3 should cost 2000");
+  assert.equal(state.players[0].coins, 4650, "连续升级也不应扣除金币");
   assert.equal(state.properties[1].level, "level3");
+  assert.equal(state.properties[1].buildingVariant, 0, "升级地标时应重新随机并保存建筑款式");
   assert.equal(monopolyLandingRent(state, "b", 1), 2000);
+  state = applyMonopolyPropertySeal(state, 1, 3);
+  assert.match(state.logs.at(-1), /地标/, "三级建筑的系统日志应使用地标名称");
 
   state = createMonopolyState([
     { deviceId: "a", nickname: "甲" },
@@ -118,10 +123,12 @@ try {
   state = endMonopolyTurn(state);
   assert.equal(state.properties[3].sealedTurns, 2, "another player's turn does not decrease the seal");
 
+  const houseVariantBeforeBankruptcy = state.properties[1].buildingVariant;
   state = declareMonopolyBankruptcy(state, "a");
   assert.equal(state.players[0].eliminated, true);
   assert.equal(state.properties[1].ownerDeviceId, null);
   assert.equal(state.properties[1].level, "house", "bankruptcy preserves building level");
+  assert.equal(state.properties[1].buildingVariant, houseVariantBeforeBankruptcy, "bankruptcy should preserve the building style and only turn it gray in the UI");
   result = purchaseMonopolyProperty(state, "b", 1);
   assert.equal(result.ok, true);
   assert.equal(result.state.players[1].coins, 49_500, "a bank-held house should cost 500 to buy directly");
@@ -147,6 +154,9 @@ try {
   state = applyMonopolyPriceDouble(state, "a", () => 0);
   assert.equal(state.properties[1].tollMultiplier, 2, "price-double corner should mark an owned property once");
   assert.equal(monopolyLandingRent(state, "b", 1), 1000);
+  state = applyMonopolyPriceDouble(state, "a", () => 0);
+  assert.equal(state.properties[1].tollMultiplier, 3, "price-double corner should stack instead of resetting at x2");
+  assert.equal(monopolyLandingRent(state, "b", 1), 1500);
 
   state.players[0].cards = [];
   state = sendMonopolyPlayerToJail(state, "a");
@@ -211,6 +221,39 @@ try {
   result = useMonopolyCard(state, "a", "seize", { propertyIndex: 1 });
   assert.equal(result.ok, true);
   assert.equal(result.state.properties[1].ownerDeviceId, "a");
+
+  state = createMonopolyState([
+    { deviceId: "a", nickname: "甲" },
+    { deviceId: "b", nickname: "乙" },
+  ], { startingCoins: 50_000, maxRounds: 20, seed: 3 });
+  state.players[0].cards = ["turtle"];
+  result = useMonopolyCard(state, "a", "turtle", { playerId: "a" });
+  assert.equal(result.ok, true, "乌龟卡应允许指定自己");
+  state = result.state;
+  assert.equal(state.players[0].turtleTurns, 3);
+  state.players[0].cards = ["reverse"];
+  result = useMonopolyCard(state, "a", "reverse", { playerId: "a" });
+  assert.equal(result.ok, true, "转向卡应允许指定自己");
+  state = result.state;
+  assert.equal(state.players[0].direction, "counterclockwise");
+  state.players[0].cards = ["frame"];
+  result = useMonopolyCard(state, "a", "frame", { playerId: "a" });
+  assert.equal(result.ok, true, "陷害卡应允许指定自己");
+  assert.equal(result.state.players[0].jailTurns, 3);
+
+  state = createMonopolyState([{ deviceId: "a", nickname: "甲" }], { startingCoins: 50_000, maxRounds: 20, seed: 3 });
+  result = purchaseMonopolyProperty(state, "a", 1);
+  assert.equal(result.ok, true);
+  state = result.state;
+  state.players[0].cards = ["double"];
+  result = useMonopolyCard(state, "a", "double", { propertyIndex: 1 });
+  assert.equal(result.ok, true);
+  state = result.state;
+  assert.equal(state.properties[1].tollMultiplier, 2, "a double card should apply the first x2 tier");
+  state.players[0].cards = ["double"];
+  result = useMonopolyCard(state, "a", "double", { propertyIndex: 1 });
+  assert.equal(result.ok, true);
+  assert.equal(result.state.properties[1].tollMultiplier, 3, "a second double card should stack to x3");
 
   state = createMonopolyState([
     { deviceId: "a", nickname: "甲" },
