@@ -1,4 +1,4 @@
-export type RankedGameType = "doudizhu" | "gomoku" | "xiangqi";
+export type RankedGameType = "doudizhu" | "gomoku" | "xiangqi" | "monopoly";
 
 export type GameStatsRecord = {
   id: string;

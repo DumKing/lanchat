@@ -185,6 +185,60 @@
   border-radius: 12px !important;
 }
 
+.game-rules-modal.n-card {
+  width: min(720px, calc(100vw - 40px)) !important;
+  max-height: min(700px, calc(100vh - 48px));
+  border-radius: 12px !important;
+}
+
+.game-rules-dialog {
+  display: grid;
+  min-height: 0;
+  gap: 14px;
+}
+
+.game-rules-intro {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.game-rules-tabs .n-tabs-nav {
+  margin-bottom: 4px;
+}
+
+.game-rules-tab-panel {
+  display: grid;
+  max-height: min(460px, calc(100vh - 270px));
+  gap: 10px;
+  overflow-y: auto;
+  padding: 4px 6px 4px 0;
+}
+
+.game-rules-tab-panel header {
+  display: grid;
+  gap: 3px;
+  padding: 11px 12px;
+  border: 1px solid var(--panel-line);
+  border-radius: 8px;
+  background: var(--soft-accent);
+}
+
+.game-rules-tab-panel header strong { color: var(--text); font-size: 14px; }
+.game-rules-tab-panel header span { color: var(--muted); font-size: 12px; }
+.game-rules-tab-panel ol { display: grid; gap: 8px; margin: 0; padding-left: 22px; }
+.game-rules-tab-panel li { padding: 9px 11px; border: 1px solid var(--panel-line); border-radius: 7px; color: var(--text); background: var(--input-bg); font-size: 13px; line-height: 1.6; }
+
+.fixed-dice-picker-modal.n-card {
+  width: min(360px, calc(100vw - 40px)) !important;
+  border-radius: 12px !important;
+}
+
+.fixed-dice-picker { display: grid; gap: 14px; }
+.fixed-dice-picker p { margin: 0; color: var(--muted); font-size: 13px; }
+.fixed-dice-options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+
 .leaderboard-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
