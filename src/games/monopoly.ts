@@ -35,7 +35,7 @@ export type MonopolyPropertyTile = {
 export type MonopolyTile = MonopolyCornerTile | MonopolyEventTile | MonopolyPropertyTile;
 
 export type MonopolyDirection = "clockwise" | "counterclockwise";
-export type MonopolyCard = "acquittal" | "seize" | "frame" | "double" | "fixed_dice" | "roadblock" | "turtle" | "reverse" | "loot" | "seal";
+export type MonopolyCard = "acquittal" | "seize" | "frame" | "double" | "fixed_dice" | "roadblock" | "turtle" | "stay" | "reverse" | "loot" | "seal";
 export type MonopolyGod = "wealth" | "poverty" | "angel" | "devil";
 export type MonopolyRandomEvent = "demolish" | "downgrade" | "takeover" | "jail" | "subsidy" | "rich_to_poor" | "upgrade" | "maintenance" | "dispute" | "rent_holiday";
 
@@ -54,6 +54,7 @@ export type MonopolyPlayer = MonopolyPlayerSeed & {
   jailTurns: number;
   cards: MonopolyCard[];
   turtleTurns: number;
+  stayTurns: number;
   forcedDice?: number;
   god?: MonopolyGod;
   godTurns: number;
@@ -116,6 +117,7 @@ const baseCardWeights: Record<MonopolyCard, number> = {
   fixed_dice: 14,
   roadblock: 17,
   turtle: 13,
+  stay: 9,
   reverse: 10,
   loot: 6,
   seal: 10,
@@ -129,6 +131,7 @@ const trailingCardWeights: Record<MonopolyCard, number> = {
   fixed_dice: 12,
   roadblock: 13,
   turtle: 10,
+  stay: 11,
   reverse: 8,
   loot: 10,
   seal: 5,
@@ -186,6 +189,7 @@ export function createMonopolyState(players: MonopolyPlayerSeed[], options: { st
     jailTurns: 0,
     cards: [],
     turtleTurns: 0,
+    stayTurns: 0,
     godTurns: 0,
   }));
   const state: MonopolyState = {
@@ -281,7 +285,7 @@ export function monopolyLandingRent(state: MonopolyState, payerId: string, index
     if (!candidate || candidate.ownerDeviceId !== property.ownerDeviceId || candidate.sealedTurns > 0) break;
     segment.push(candidate.index);
   }
-  const rent = segment.reduce((total, propertyIndex) => total + propertyToll(state.properties[propertyIndex]!), 0);
+  const rent = segment.reduce((total, propertyIndex) => total + monopolyPropertyToll(state.properties[propertyIndex]!), 0);
   return payer?.god === "poverty" ? rent * 2 : rent;
 }
 
@@ -406,7 +410,7 @@ export function applyMonopolyPriceDouble(state: MonopolyState, playerId: string,
   return next;
 }
 
-export function sendMonopolyPlayerToJail(state: MonopolyState, playerId: string): MonopolyState {
+export function sendMonopolyPlayerToJail(state: MonopolyState, playerId: string, reason?: string): MonopolyState {
   const player = state.players.find((item) => item.deviceId === playerId);
   if (!player || player.eliminated) return state;
   const next = cloneMonopolyState(state);
@@ -417,12 +421,12 @@ export function sendMonopolyPlayerToJail(state: MonopolyState, playerId: string)
     nextPlayer.position = 0;
     nextPlayer.jailTurns = 0;
     grantStartReward(next, nextPlayer);
-    next.logs.push(`${nextPlayer.nickname} 使用免罪卡回到起点`);
+    next.logs.push(`${reason ? `${reason}：` : ""}${nextPlayer.nickname} 自动使用免罪卡回到起点`);
     return next;
   }
   nextPlayer.position = 30;
   nextPlayer.jailTurns = 3;
-  next.logs.push(`${nextPlayer.nickname} 被送入监狱`);
+  next.logs.push(`${reason ? `${reason}：` : ""}${nextPlayer.nickname} 被送入监狱`);
   return next;
 }
 
@@ -524,6 +528,14 @@ export function useMonopolyCard(state: MonopolyState, playerId: string, card: Mo
     next.logs.push(`${actor.nickname} 对 ${targetPlayer.nickname} 使用了乌龟卡`);
     return { ok: true, state: next };
   }
+  if (card === "stay") {
+    const targetPlayer = playerOf(next, target.playerId ?? "");
+    if (!targetPlayer || targetPlayer.eliminated) return failed(state, "停留目标无效");
+    targetPlayer.stayTurns = 1;
+    consume();
+    next.logs.push(`${actor.nickname} 对 ${targetPlayer.nickname} 使用了停留卡，下一回合原地停留`);
+    return { ok: true, state: next };
+  }
   if (card === "loot") {
     const targetPlayer = playerOf(next, target.playerId ?? "");
     if (!targetPlayer || targetPlayer.deviceId === playerId || targetPlayer.cards.length === 0) return failed(state, "掠夺目标无道具可夺取");
@@ -616,28 +628,41 @@ export function applyMonopolyRandomEvent(state: MonopolyState, event: MonopolyRa
   const pick = <T>(items: T[]): T | undefined => items[Math.min(items.length - 1, Math.max(0, Math.floor(random() * items.length)))];
   if (event === "subsidy") {
     for (const player of activePlayers) player.coins += 100;
-    next.logs.push("随机事件：财政补贴");
+    next.logs.push(activePlayers.length ? `财政补贴：${activePlayers.map((player) => player.nickname).join("、")}各获得 100 金币` : "财政补贴未影响任何玩家");
   } else if (event === "demolish" || event === "dispute") {
     const property = pick(properties.filter((item) => item.level === "house"));
     if (property) {
+      const asset = monopolyPropertyAssetLabel(next, property);
       property.level = "empty";
       property.ownerDeviceId = null;
       property.sealedTurns = 0;
       property.tollMultiplier = 1;
+      next.logs.push(event === "demolish" ? `拆迁令：${asset}被夷为平地` : `产权纠纷：${asset}失去归属并变为空地`);
+    } else {
+      next.logs.push(event === "demolish" ? "拆迁令未找到可拆除的小屋" : "产权纠纷未找到可处理的小屋");
     }
-    next.logs.push(`随机事件：${event === "demolish" ? "拆迁令" : "产权纠纷"}`);
   } else if (event === "downgrade") {
     const property = pick(properties.filter((item) => item.level === "level2" || item.level === "level3"));
-    if (property) property.level = property.level === "level3" ? "level2" : "house";
-    next.logs.push("随机事件：楼市下调");
+    if (property) {
+      const asset = monopolyPropertyAssetLabel(next, property);
+      property.level = property.level === "level3" ? "level2" : "house";
+      next.logs.push(`楼市下调：${asset}降为${propertyLabel(property.level)}`);
+    } else {
+      next.logs.push("楼市下调未找到可降级的资产");
+    }
   } else if (event === "upgrade") {
     const property = pick(properties.filter((item) => item.level === "house" || item.level === "level2"));
-    if (property) property.level = property.level === "house" ? "level2" : "level3";
-    next.logs.push("随机事件：城市改造");
+    if (property) {
+      const asset = monopolyPropertyAssetLabel(next, property);
+      property.level = property.level === "house" ? "level2" : "level3";
+      next.logs.push(`城市改造：${asset}升级为${propertyLabel(property.level)}`);
+    } else {
+      next.logs.push("城市改造未找到可升级的资产");
+    }
   } else if (event === "jail") {
     const target = pick(activePlayers.filter((player) => player.jailTurns === 0));
-    if (target) return sendMonopolyPlayerToJail(next, target.deviceId);
-    next.logs.push("随机事件：临时拘捕未找到目标");
+    if (target) return sendMonopolyPlayerToJail(next, target.deviceId, "临时拘捕");
+    next.logs.push("临时拘捕未找到可关押的玩家");
   } else if (event === "rich_to_poor") {
     const richest = [...activePlayers].sort((a, b) => b.coins - a.coins)[0];
     const poorest = [...activePlayers].sort((a, b) => a.coins - b.coins)[0];
@@ -645,27 +670,39 @@ export function applyMonopolyRandomEvent(state: MonopolyState, event: MonopolyRa
       const amount = Math.min(200, richest.coins);
       richest.coins -= amount;
       poorest.coins += amount;
+      next.logs.push(`富者济贫：${richest.nickname} 向 ${poorest.nickname} 转移 ${amount} 金币`);
+    } else {
+      next.logs.push("富者济贫未产生资金转移");
     }
-    next.logs.push("随机事件：富者济贫");
   } else if (event === "maintenance") {
+    const bills: string[] = [];
     for (const player of activePlayers) {
       const count = properties.filter((property) => property.ownerDeviceId === player.deviceId && property.level !== "empty").length;
-      player.coins = Math.max(0, player.coins - Math.min(250, count * 50));
+      const paid = Math.min(player.coins, Math.min(250, count * 50));
+      player.coins -= paid;
+      if (paid > 0) bills.push(`${player.nickname} 支付 ${paid} 金币`);
     }
-    next.logs.push("随机事件：维护支出");
+    next.logs.push(bills.length ? `维护支出：${bills.join("，")}` : "维护支出：没有玩家持有需要维护的资产");
   } else if (event === "takeover") {
     const property = pick(properties.filter((item) => item.ownerDeviceId));
     const target = pick(activePlayers.filter((player) => player.deviceId !== property?.ownerDeviceId));
-    if (property && target) property.ownerDeviceId = target.deviceId;
-    next.logs.push("随机事件：强制征收");
+    if (property && target) {
+      const asset = monopolyPropertyAssetLabel(next, property);
+      property.ownerDeviceId = target.deviceId;
+      next.logs.push(`强制征收：${target.nickname} 接管了${asset}`);
+    } else {
+      next.logs.push("强制征收未找到可接管的地产");
+    }
   } else if (event === "rent_holiday") {
     const property = pick(properties.filter((item) => item.level !== "empty"));
     const tile = property ? next.board[property.index] : undefined;
     if (tile?.kind === "property") {
       next.rentHolidayDistrict = tile.district;
       next.rentHolidayRounds = 1;
+      next.logs.push(`租金假日：第 ${tile.district + 1} 片区暂停收租 1 回合`);
+    } else {
+      next.logs.push("租金假日未找到可暂停收租的片区");
     }
-    next.logs.push("随机事件：租金假日");
   }
   return next;
 }
@@ -695,7 +732,8 @@ function grantStartReward(state: MonopolyState, player: MonopolyPlayer, random: 
   state.logs.push(`${player.nickname} 经过起点，获得 200 金币并升级一座建筑`);
 }
 
-function propertyToll(property: MonopolyPropertyState): number {
+/** 单块地产当前基础过路费，联排收费在 monopolyLandingRent 中汇总。 */
+export function monopolyPropertyToll(property: MonopolyPropertyState): number {
   const base = property.level === "house"
     ? MONOPOLY_ECONOMY.houseRent
     : property.level === "level2"
@@ -740,6 +778,11 @@ function propertyLabel(level: MonopolyPropertyLevel): string {
   if (level === "level3") return "地标";
   if (level === "house") return "小屋";
   return "空地";
+}
+
+function monopolyPropertyAssetLabel(state: MonopolyState, property: MonopolyPropertyState): string {
+  const owner = property.ownerDeviceId ? playerOf(state, property.ownerDeviceId) : undefined;
+  return `${owner?.nickname ?? "无主"}的第${property.index + 1}号地产（${propertyLabel(property.level)}）`;
 }
 
 function godCashAmount(startingCoins: number): number {

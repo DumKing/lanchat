@@ -231,6 +231,11 @@ try {
   assert.equal(result.ok, true, "乌龟卡应允许指定自己");
   state = result.state;
   assert.equal(state.players[0].turtleTurns, 3);
+  state.players[0].cards = ["stay"];
+  result = useMonopolyCard(state, "a", "stay", { playerId: "a" });
+  assert.equal(result.ok, true, "停留卡应允许指定自己");
+  state = result.state;
+  assert.equal(state.players[0].stayTurns, 1, "停留卡应让目标下一回合原地停留一次");
   state.players[0].cards = ["reverse"];
   result = useMonopolyCard(state, "a", "reverse", { playerId: "a" });
   assert.equal(result.ok, true, "转向卡应允许指定自己");
@@ -278,6 +283,16 @@ try {
   const coinsBeforeSubsidy = state.players.map((player) => player.coins);
   state = applyMonopolyRandomEvent(state, "subsidy", () => 0);
   assert.deepEqual(state.players.map((player, index) => player.coins - coinsBeforeSubsidy[index]), [100, 100], "subsidy event grants every active player 100 coins");
+
+  state = createMonopolyState([
+    { deviceId: "a", nickname: "甲" },
+    { deviceId: "b", nickname: "乙" },
+  ], { startingCoins: 5000, maxRounds: 20, seed: 3 });
+  result = purchaseMonopolyProperty(state, "a", 1);
+  assert.equal(result.ok, true);
+  state = applyMonopolyRandomEvent(result.state, "demolish", () => 0);
+  assert.match(state.logs[state.logs.length - 1] ?? "", /拆迁令：甲的第2号地产（小屋）被夷为平地/, "随机事件横幅应明确受影响玩家、具体地产和变化结果");
+  assert.doesNotMatch(state.logs[state.logs.length - 1] ?? "", /随机事件/, "随机事件横幅不应只展示泛化事件名称");
 
   state = createMonopolyState([
     { deviceId: "a", nickname: "甲" },

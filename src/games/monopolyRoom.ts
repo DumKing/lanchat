@@ -38,13 +38,15 @@ export type MonopolyDiceRoll = {
 
 export type MonopolyRoomAnnouncement = {
   id: string;
-  kind: "event" | "card";
+  kind: "event" | "card" | "rent";
   text: string;
   createdAt: number;
 };
 
 export type MonopolyRoomState = {
   roomId: string;
+  /** 房主权限独立于游戏座位，开局随机分座后仍保持不变。 */
+  hostDeviceId: string;
   phase: "lobby" | "playing" | "ended";
   seats: MonopolyRoomSeat[];
   /** 已开局或座位已满后进入房间的成员，只同步局面与聊天，不参与骰序。 */
@@ -60,6 +62,10 @@ export type MonopolyRoomState = {
   extraRollAvailable: boolean;
   /** 最近一次需要向全房间强调的随机事件或道具操作。 */
   lastAnnouncement?: MonopolyRoomAnnouncement;
+  /** 已发生事件的有序横幅队列，客户端按顺序展示，避免同回合事件互相覆盖。 */
+  announcements: MonopolyRoomAnnouncement[];
+  /** 已转换为横幅的游戏日志数量。 */
+  announcedGameLogCount: number;
   chatMessages: Array<{ id: string; senderDeviceId: string; sender: string; content: string; mine?: boolean; createdAt: number }>;
   logs: string[];
   updatedAt: number;
@@ -68,6 +74,7 @@ export type MonopolyRoomState = {
 export type MonopolyRoomAction =
   | { action: "join"; player: MonopolyRoomSeat }
   | { action: "add_bot"; hostId: string; bot: MonopolyRoomSeat }
+  | { action: "remove_member"; hostId: string; targetId: string }
   | { action: "ready"; playerId: string; ready: boolean }
   | { action: "start"; playerId: string }
   | { action: "roll"; playerId: string }
@@ -88,14 +95,18 @@ export function createMonopolyRoomState(input: {
   maxRounds?: number;
   now?: number;
 }): MonopolyRoomState {
+  const game = createMonopolyState([input.host], { startingCoins: input.startingCoins, maxRounds: input.maxRounds, now: input.now });
   return {
     roomId: input.roomId,
+    hostDeviceId: input.host.deviceId,
     phase: "lobby",
     seats: [input.host],
     spectators: [],
-    game: createMonopolyState([input.host], { startingCoins: input.startingCoins, maxRounds: input.maxRounds, now: input.now }),
+    game,
     turnRolled: false,
     extraRollAvailable: false,
+    announcements: [],
+    announcedGameLogCount: game.logs.length,
     chatMessages: [],
     logs: [`${input.host.nickname} 创建了大富翁房间`],
     updatedAt: input.now ?? Date.now(),
@@ -105,11 +116,27 @@ export function createMonopolyRoomState(input: {
 export function applyMonopolyRoomAction(state: MonopolyRoomState, action: MonopolyRoomAction, random: () => number = Math.random): MonopolyRoomState {
   const next = cloneRoomState(state);
   if (action.action === "add_bot") {
-    if (next.phase !== "lobby" || next.seats[0]?.deviceId !== action.hostId || next.seats.length >= 4 || !action.bot.isBot || !action.bot.deviceId.startsWith("bot:")) return state;
+    if (next.phase !== "lobby" || monopolyRoomHostId(next) !== action.hostId || next.seats.length >= 4 || !action.bot.isBot || !action.bot.deviceId.startsWith("bot:")) return state;
     if (next.seats.some((seat) => seat.deviceId === action.bot.deviceId)) return state;
     next.seats.push({ ...action.bot, online: true, ready: true, isBot: true });
     next.game = createMonopolyState(next.seats, { startingCoins: next.game.startingCoins, maxRounds: next.game.maxRounds });
     next.logs.push(`${action.bot.nickname} 加入房间并自动准备`);
+    return touch(next);
+  }
+  if (action.action === "remove_member") {
+    if (next.phase !== "lobby" || monopolyRoomHostId(next) !== action.hostId || action.targetId === monopolyRoomHostId(next)) return state;
+    const seatIndex = next.seats.findIndex((seat) => seat.deviceId === action.targetId);
+    if (seatIndex >= 0) {
+      next.seats.splice(seatIndex, 1);
+      next.game = createMonopolyState(next.seats, { startingCoins: next.game.startingCoins, maxRounds: next.game.maxRounds });
+      next.announcedGameLogCount = next.game.logs.length;
+      next.logs.push("房主移除了一位玩家");
+      return touch(next);
+    }
+    const spectatorIndex = next.spectators.findIndex((spectator) => spectator.deviceId === action.targetId);
+    if (spectatorIndex < 0) return state;
+    next.spectators.splice(spectatorIndex, 1);
+    next.logs.push("房主移除了一位观众");
     return touch(next);
   }
   if (action.action === "join") {
@@ -132,7 +159,10 @@ export function applyMonopolyRoomAction(state: MonopolyRoomState, action: Monopo
     return touch(next);
   }
   if (action.action === "start") {
-    if (next.phase !== "lobby" || next.seats[0]?.deviceId !== action.playerId || next.seats.length < 2 || !next.seats.every((seat) => seat.ready)) return state;
+    if (next.phase !== "lobby" || monopolyRoomHostId(next) !== action.playerId || next.seats.length < 2 || !next.seats.every((seat) => seat.ready)) return state;
+    next.seats = shuffledMonopolySeats(next.seats, random);
+    next.game = createMonopolyState(next.seats, { startingCoins: next.game.startingCoins, maxRounds: next.game.maxRounds });
+    next.announcedGameLogCount = next.game.logs.length;
     next.phase = "playing";
     next.game.turnStartedAt = Date.now();
     next.turnRolled = false;
@@ -325,7 +355,47 @@ function advanceMonopolyTurn(state: MonopolyRoomState, random: () => number): vo
   state.game = endMonopolyTurn(state.game, Date.now(), random);
   state.turnRolled = false;
   state.extraRollAvailable = false;
-  if (state.game.completedRounds >= state.game.maxRounds || state.game.players.filter((player) => !player.eliminated).length <= 1) finishRoom(state);
+  if (state.game.completedRounds >= state.game.maxRounds || state.game.players.filter((player) => !player.eliminated).length <= 1) {
+    finishRoom(state);
+    return;
+  }
+  resolveAutomaticMonopolyJailTurn(state, random);
+}
+
+function resolveAutomaticMonopolyJailTurn(state: MonopolyRoomState, random: () => number): void {
+  const player = state.game.players.find((item) => item.deviceId === state.game.currentPlayerId);
+  if (!player || player.eliminated) return;
+  if (player.stayTurns > 0) {
+    player.stayTurns -= 1;
+    state.game.logs.push(`${player.nickname} 受到停留卡影响，原地停留并自动跳过本回合`);
+    state.game = endMonopolyTurn(state.game, Date.now(), random);
+    state.turnRolled = false;
+    state.extraRollAvailable = false;
+    if (state.game.completedRounds >= state.game.maxRounds || state.game.players.filter((item) => !item.eliminated).length <= 1) {
+      finishRoom(state);
+      return;
+    }
+    resolveAutomaticMonopolyJailTurn(state, random);
+    return;
+  }
+  if (player.jailTurns <= 0) return;
+  if (player.cards.includes("acquittal")) {
+    state.game = sendMonopolyPlayerToJail(state.game, player.deviceId, "自动免罪");
+    state.turnRolled = false;
+    state.extraRollAvailable = false;
+    resetMonopolyActionDeadline(state);
+    return;
+  }
+  player.jailTurns -= 1;
+  state.game.logs.push(`${player.nickname} 正在监狱中，自动跳过本回合，还需 ${player.jailTurns} 回合`);
+  state.game = endMonopolyTurn(state.game, Date.now(), random);
+  state.turnRolled = false;
+  state.extraRollAvailable = false;
+  if (state.game.completedRounds >= state.game.maxRounds || state.game.players.filter((item) => !item.eliminated).length <= 1) {
+    finishRoom(state);
+    return;
+  }
+  resolveAutomaticMonopolyJailTurn(state, random);
 }
 
 function settleLanding(state: MonopolyRoomState, playerId: string, random: () => number): void {
@@ -339,7 +409,6 @@ function settleLanding(state: MonopolyRoomState, playerId: string, random: () =>
   if (tile.kind === "event") {
     const events = ["demolish", "downgrade", "takeover", "jail", "subsidy", "rich_to_poor", "upgrade", "maintenance", "dispute", "rent_holiday"] as const;
     state.game = applyMonopolyRandomEvent(state.game, events[Math.floor(random() * events.length)]!, random);
-    announceLatestGameLog(state, "event");
     return;
   }
   if (tile.kind === "corner") {
@@ -366,7 +435,7 @@ function settleLanding(state: MonopolyRoomState, playerId: string, random: () =>
   const paid = Math.min(rent, payer.coins);
   payer.coins -= paid;
   if (owner) owner.coins += paid;
-  state.game.logs.push(`${payer.nickname} 支付过路费 ${paid}`);
+  state.game.logs.push(`${payer.nickname} 向 ${owner?.nickname ?? "地产主人"} 支付过路费 ${paid}`);
   if (paid < rent || payer.coins <= 0) state.game = declareMonopolyBankruptcy(state.game, playerId);
 }
 
@@ -388,20 +457,35 @@ function cloneRoomState(state: MonopolyRoomState): MonopolyRoomState {
     game: cloneMonopolyState(state.game),
     lastDice: state.lastDice ? { ...state.lastDice, values: [...state.lastDice.values] } : undefined,
     lastAnnouncement: state.lastAnnouncement ? { ...state.lastAnnouncement } : undefined,
+    announcements: (state.announcements ?? []).map((announcement) => ({ ...announcement })),
+    announcedGameLogCount: state.announcedGameLogCount ?? state.game.logs.length,
     chatMessages: state.chatMessages.map((message) => ({ ...message })),
     logs: [...state.logs],
   };
 }
 
-function announceLatestGameLog(state: MonopolyRoomState, kind: MonopolyRoomAnnouncement["kind"]): void {
-  const text = state.game.logs[state.game.logs.length - 1];
-  if (!text) return;
-  state.lastAnnouncement = {
+function monopolyRoomHostId(state: MonopolyRoomState): string | undefined {
+  return state.hostDeviceId ?? state.seats[0]?.deviceId;
+}
+
+function shuffledMonopolySeats(seats: MonopolyRoomSeat[], random: () => number): MonopolyRoomSeat[] {
+  const shuffled = seats.map((seat) => ({ ...seat }));
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const target = Math.floor(Math.max(0, Math.min(.999999, random())) * (index + 1));
+    [shuffled[index], shuffled[target]] = [shuffled[target]!, shuffled[index]!];
+  }
+  return shuffled;
+}
+
+function pushAnnouncement(state: MonopolyRoomState, kind: MonopolyRoomAnnouncement["kind"], text: string): void {
+  const announcement: MonopolyRoomAnnouncement = {
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
     kind,
     text,
     createdAt: Date.now(),
   };
+  state.lastAnnouncement = announcement;
+  state.announcements = [...(state.announcements ?? []), announcement].slice(-80);
 }
 
 function announceCardUse(state: MonopolyRoomState, action: Extract<MonopolyRoomAction, { action: "card" }>): void {
@@ -415,6 +499,7 @@ function announceCardUse(state: MonopolyRoomState, action: Extract<MonopolyRoomA
     fixed_dice: "指定卡",
     roadblock: "路障卡",
     turtle: "乌龟卡",
+    stay: "停留卡",
     reverse: "转向卡",
     loot: "掠夺卡",
     seal: "查封卡",
@@ -428,15 +513,25 @@ function announceCardUse(state: MonopolyRoomState, action: Extract<MonopolyRoomA
     : Number.isInteger(targetTile)
       ? `在 ${Number(targetTile) + 1} 号地块`
       : "";
-  state.lastAnnouncement = {
-    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    kind: "card",
-    text: `${actor.nickname}${target} 使用了${cardName[action.card]}`,
-    createdAt: Date.now(),
-  };
+  pushAnnouncement(state, "card", `${actor.nickname}${target} 使用了${cardName[action.card]}`);
 }
 
 function touch(state: MonopolyRoomState): MonopolyRoomState {
+  flushMonopolyGameAnnouncements(state);
   state.updatedAt = Date.now();
   return state;
+}
+
+function flushMonopolyGameAnnouncements(state: MonopolyRoomState): void {
+  const start = Math.min(Math.max(0, state.announcedGameLogCount ?? state.game.logs.length), state.game.logs.length);
+  for (const text of state.game.logs.slice(start)) {
+    pushAnnouncement(state, monopolyGameLogAnnouncementKind(text), text);
+  }
+  state.announcedGameLogCount = state.game.logs.length;
+}
+
+function monopolyGameLogAnnouncementKind(text: string): MonopolyRoomAnnouncement["kind"] {
+  if (text.includes("过路费")) return "rent";
+  if (text.includes("卡")) return "card";
+  return "event";
 }
