@@ -247,6 +247,13 @@ export function applyMonopolyRoomAction(state: MonopolyRoomState, action: Monopo
   if (action.action === "airport") {
     const pending = next.pendingLanding;
     if (!pending || pending.playerId !== action.playerId || pending.kind !== "airport") return state;
+    if (action.targetIndex === pending.index) {
+      next.pendingLanding = undefined;
+      next.game.logs.push(`${next.game.players.find((item) => item.deviceId === action.playerId)?.nickname ?? "玩家"} 选择留在飞机场`);
+      finishResolvedLanding(next, action.playerId, random);
+      resetMonopolyActionDeadline(next);
+      return touch(next);
+    }
     const result = teleportMonopolyPlayer(next.game, action.playerId, action.targetIndex, random);
     if (!result.ok) return state;
     next.game = result.state;

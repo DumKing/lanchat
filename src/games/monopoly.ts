@@ -529,7 +529,7 @@ export function useMonopolyCard(state: MonopolyState, playerId: string, card: Mo
   }
   if (card === "double") {
     const property = next.properties[target.propertyIndex ?? -1];
-    if (!property || property.level === "empty") return failed(state, "翻倍目标无效");
+    if (!property || property.ownerDeviceId !== playerId || property.level === "empty") return failed(state, "翻倍目标无效");
     property.tollMultiplier += 1;
     consume();
     next.logs.push(`${actor.nickname} 将一块地产提升至 ×${property.tollMultiplier}`);

@@ -49,7 +49,7 @@ assert.match(app, /\/games\/monopoly\/avatars\/player-portraits\.png/, "大富�
 assert.match(app, /class="monopoly-player-tokens"[\s\S]*?monopolyVirtualAvatarTone\(player\)/, "棋盘内移动棋子也应使用同一套虚拟头像配色");
 assert.match(app, /\.monopoly-player-tokens i\s*\{[^}]*background-image:\s*url\('\/games\/monopoly\/avatars\/player-portraits\.png'\)/, "棋盘内移动棋子应从虚拟头像图集取图");
 assert.match(app, /\.monopoly-player-tokens\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*repeat\(3,\s*calc\(16 \* var\(--monopoly-u, 1px\)\)\)/, "同格棋子应按每行三个排列并随棋盘等比缩放");
-assert.match(app, /if \(card === "roadblock"\) return !monopolyPlayersAt\(index\)\.length && !monopolyGodAt\(index\);/, "路障选点应排除已有玩家或神明的地块");
+assert.match(app, /if \(card === "roadblock"\) \{[\s\S]*?state\.game\.roadblocks\.some[\s\S]*?!state\.game\.players\.some[\s\S]*?!state\.game\.godTokens\.some/s, "路障选点应排除已有路障、玩家或神明的地块");
 assert.match(app, /function monopolyAnnouncementParts\(announcement: MonopolyRoomAnnouncement\)/, "落点横幅应按文案拆分玩家与文字片段");
 assert.match(app, /v-for="\(part, partIndex\) in monopolyAnnouncementParts\(announcement\)"/, "双方相关的落点横幅应在名字位置逐段渲染");
 assert.match(app, /v-if="part\.player"/, "公告中的头像应只在对应玩家名字前以内联方式展示");
@@ -117,10 +117,14 @@ assert.match(app, /class="monopoly-card"/, "背包道具应以卡片形式展示
 assert.match(app, /const selectedMonopolyCard = ref<MonopolyCard \| null>\(null\)/, "道具卡应先进入选中态，而不是点击即使用");
 assert.match(app, /monopolyCardTargetPickerOpen/, "需要指定玩家的道具卡应弹出玩家选择器");
 assert.match(app, /class="monopoly-card-target-picker-modal"/, "指定玩家道具卡应使用独立的紧凑目标选择弹窗");
-assert.match(app, /\.monopoly-card-target-picker-modal \.n-card\s*\{[^}]*width:\s*min\(320px, calc\(100vw - 36px\)\)/, "道具卡目标选择弹窗应限制为紧凑宽度");
+assert.match(app, /\.monopoly-card-target-picker-modal \.n-card\s*\{[^}]*width:\s*min\(300px, calc\(100vw - 32px\)\)/, "道具卡目标选择弹窗应限制为紧凑宽度");
 assert.match(app, /\.monopoly-card-target-player:hover[^}]*box-shadow:[^}]*transform:\s*translateY\(-2px\)/, "鼠标悬停候选玩家时应提供明显抬起和高亮反馈");
 assert.match(app, /\.monopoly-card-target-player:focus-visible[^}]*outline:\s*3px solid var\(--accent\)/, "键盘聚焦候选玩家时也应有清晰选中提示");
 assert.match(app, /monopolyCardTargeting/, "需要指定地块的道具卡应进入棋盘选点状态");
+assert.match(app, /function canMonopolyAirportTarget\(index: number\): boolean/, "机场传送应通过独立的目标校验覆盖全部棋盘格");
+assert.match(app, /airportTarget: canMonopolyAirportTarget\(tile\.index\)/, "机场传送时应只按目标校验高亮棋盘格");
+assert.match(app, /card === "seize"[\s\S]*?property\.ownerDeviceId !== myDeviceId\.value/, "抢占卡只应高亮其他玩家的已购地产");
+assert.match(app, /card === "double"[\s\S]*?property\.ownerDeviceId === myDeviceId\.value[\s\S]*?property\.level !== "empty"/, "翻倍卡只应高亮自己的已购地产");
 assert.match(app, /<template v-if="selectedMonopolyCard">[\s\S]*?@click="prepareMonopolyCardUse"[\s\S]*?@click="cancelMonopolyCardSelection"[\s\S]*?@click="discardMonopolyCardAction\(selectedMonopolyCard\)"/, "选中道具卡后仍应在底部按钮区提供使用、取消和删除操作");
 assert.match(app, /class="monopoly-city-name"/, "城名应作为棋盘内侧的独立城市标签渲染");
 assert.match(app, /class="monopoly-city-ring"/, "城名应置于棋盘内圈，而非挤在地块格内");

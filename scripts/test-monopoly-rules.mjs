@@ -305,6 +305,19 @@ try {
   state = createMonopolyState([
     { deviceId: "a", nickname: "甲" },
     { deviceId: "b", nickname: "乙" },
+  ], { startingCoins: 50_000, maxRounds: 20, seed: 3 });
+  result = purchaseMonopolyProperty(state, "b", 1);
+  assert.equal(result.ok, true);
+  state = result.state;
+  state.players[0].cards = ["double"];
+  result = useMonopolyCard(state, "a", "double", { propertyIndex: 1 });
+  assert.equal(result.ok, false, "翻倍卡不能作用于其他玩家的地产");
+  assert.equal(result.state.properties[1].tollMultiplier, 1, "无效翻倍不能改变对方地产的倍率");
+  assert.deepEqual(result.state.players[0].cards, ["double"], "无效翻倍不能消耗道具卡");
+
+  state = createMonopolyState([
+    { deviceId: "a", nickname: "甲" },
+    { deviceId: "b", nickname: "乙" },
   ], { startingCoins: 5000, maxRounds: 20, seed: 9 });
   result = purchaseMonopolyProperty(state, "a", 1);
   assert.equal(result.ok, true);
