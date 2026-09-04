@@ -37,7 +37,7 @@ export type MonopolyTile = MonopolyCornerTile | MonopolyEventTile | MonopolyProp
 export type MonopolyDirection = "clockwise" | "counterclockwise";
 export type MonopolyCard = "acquittal" | "seize" | "frame" | "double" | "fixed_dice" | "roadblock" | "turtle" | "stay" | "reverse" | "loot" | "seal";
 export type MonopolyGod = "wealth" | "poverty" | "angel" | "devil";
-export type MonopolyRandomEvent = "demolish" | "downgrade" | "takeover" | "jail" | "subsidy" | "rich_to_poor" | "upgrade" | "maintenance" | "dispute" | "rent_holiday";
+export type MonopolyRandomEvent = "demolish" | "downgrade" | "takeover" | "jail" | "subsidy" | "rich_to_poor" | "upgrade" | "maintenance" | "dispute" | "rent_holiday" | "godsend";
 
 export type MonopolyPlayerSeed = {
   deviceId: string;
@@ -92,6 +92,9 @@ export type MonopolyState = {
   rentHolidayRounds: number;
   startingCoins: number;
   maxRounds: number;
+  /** true 时每次购买/升级随机外观；false 时整局固定为开局抽取的一种外观。 */
+  randomBuildingVariants: boolean;
+  fixedBuildingVariant: number;
   completedRounds: number;
   currentPlayerId: string;
   turnStartedAt: number;
@@ -148,6 +151,13 @@ const corners: Record<number, MonopolyCorner> = {
 
 const eventIndices = new Set([5, 15, 25, 35]);
 
+const monopolyCityNames = [
+  "晴川城", "云港城", "星湖城", "青禾城", "海棠城", "银杏城", "望舒城", "松风城",
+  "锦澜城", "北辰城", "秋水城", "栖霞城", "鹭岛城", "琥珀城", "长乐城", "临川城",
+  "镜海城", "雾凇城", "白沙城", "南风城", "霁月城", "澄湾城", "鹿鸣城", "扶光城",
+  "丹枫城", "青岚城", "流萤城", "云栖城", "千帆城", "玉衡城", "春晖城", "星野城",
+] as const;
+
 export function createMonopolyBoard(): MonopolyTile[] {
   return Array.from({ length: MONOPOLY_BOARD_SIZE }, (_, index) => {
     const corner = corners[index];
@@ -162,9 +172,18 @@ export function propertyDistrictOf(board: MonopolyTile[], index: number): number
   return tile?.kind === "property" ? tile.district : null;
 }
 
-export function createMonopolyState(players: MonopolyPlayerSeed[], options: { startingCoins?: number; maxRounds?: number; now?: number; seed?: number } = {}): MonopolyState {
+/** 与棋盘显示共用的 32 座虚拟城市名，避免房主日志和客户端地块名称不一致。 */
+export function monopolyPropertyCityName(index: number): string {
+  const propertyIndexes = createMonopolyBoard().filter((tile) => tile.kind === "property").map((tile) => tile.index);
+  const cityIndex = propertyIndexes.indexOf(index);
+  return monopolyCityNames[cityIndex] ?? `第${index + 1}号地块`;
+}
+
+export function createMonopolyState(players: MonopolyPlayerSeed[], options: { startingCoins?: number; maxRounds?: number; randomBuildingVariants?: boolean; now?: number; seed?: number } = {}): MonopolyState {
   const startingCoins = normalizeStartingCoins(options.startingCoins ?? 5000);
   const maxRounds = normalizeMaxRounds(options.maxRounds ?? 20);
+  const randomBuildingVariants = options.randomBuildingVariants !== false;
+  const random = seededRandom(options.seed ?? Date.now());
   const board = createMonopolyBoard();
   const properties: Record<number, MonopolyPropertyState> = {};
   for (const tile of board) {
@@ -201,12 +220,13 @@ export function createMonopolyState(players: MonopolyPlayerSeed[], options: { st
     rentHolidayRounds: 0,
     startingCoins,
     maxRounds,
+    randomBuildingVariants,
+    fixedBuildingVariant: randomBuildingVariants ? 0 : monopolyBuildingVariant(random),
     completedRounds: 0,
     currentPlayerId: seats[0]?.deviceId ?? "",
     turnStartedAt: options.now ?? Date.now(),
     logs: [],
   };
-  const random = seededRandom(options.seed ?? Date.now());
   for (const player of state.players) {
     while (player.cards.length < 3) {
       const card = selectMonopolyCard(state, player.deviceId, random, true);
@@ -236,10 +256,10 @@ export function purchaseMonopolyProperty(state: MonopolyState, playerId: string,
   nextProperty.ownerDeviceId = playerId;
   if (nextProperty.level === "empty") {
     nextProperty.level = "house";
-    nextProperty.buildingVariant = monopolyBuildingVariant(random);
+    nextProperty.buildingVariant = monopolyBuildingVariantFor(next, random);
   }
   nextProperty.sealedTurns = 0;
-  next.logs.push(`${nextPlayer.nickname} 购买了${propertyLabel(nextProperty.level)}地产`);
+  next.logs.push(`${nextPlayer.nickname}购买了${monopolyPropertyCityName(index)}`);
   return { ok: true, state: next };
 }
 
@@ -256,15 +276,16 @@ export function upgradeMonopolyProperty(state: MonopolyState, playerId: string, 
   const next = cloneMonopolyState(state);
   const nextPlayer = playerOf(next, playerId)!;
   next.properties[index]!.level = upgrade.level;
-  next.properties[index]!.buildingVariant = monopolyBuildingVariant(random);
-  next.logs.push(`${nextPlayer.nickname} 再次踩中自己的地产，免费升级了建筑`);
+  next.properties[index]!.buildingVariant = monopolyBuildingVariantFor(next, random);
+  next.logs.push(`${nextPlayer.nickname}将${monopolyPropertyCityName(index)}升级为${propertyLabel(upgrade.level)}`);
   return { ok: true, state: next };
 }
 
 export function monopolyLandingRent(state: MonopolyState, payerId: string, index: number): number {
   const property = state.properties[index];
   const payer = state.players.find((player) => player.deviceId === payerId);
-  if (!property || !property.ownerDeviceId || property.ownerDeviceId === payerId || property.sealedTurns > 0 || payer?.god === "wealth") return 0;
+  const owner = property?.ownerDeviceId ? state.players.find((player) => player.deviceId === property.ownerDeviceId) : undefined;
+  if (!property || !property.ownerDeviceId || property.ownerDeviceId === payerId || property.sealedTurns > 0 || payer?.god === "wealth" || owner?.jailTurns) return 0;
   const tile = state.board[index];
   if (tile?.kind !== "property") return 0;
   if (state.rentHolidayRounds > 0 && state.rentHolidayDistrict === tile.district) return 0;
@@ -481,8 +502,10 @@ export function useMonopolyCard(state: MonopolyState, playerId: string, card: Mo
   }
   if (card === "roadblock") {
     const index = target.index;
-    if (!Number.isInteger(index) || index! < 0 || index! >= MONOPOLY_BOARD_SIZE || next.roadblocks.some((item) => item.index === index)) {
-      return failed(state, "路障位置无效或已存在路障");
+    const occupiedByPlayer = next.players.some((item) => !item.eliminated && item.position === index);
+    const occupiedByGod = next.godTokens.some((item) => item.index === index);
+    if (!Number.isInteger(index) || index! < 0 || index! >= MONOPOLY_BOARD_SIZE || next.roadblocks.some((item) => item.index === index) || occupiedByPlayer || occupiedByGod) {
+      return failed(state, "路障位置无效、已有路障或被玩家/神明占据");
     }
     consume();
     next.roadblocks.push({ index: index!, placedByDeviceId: playerId });
@@ -604,19 +627,19 @@ export function resolveMonopolyLanding(state: MonopolyState, playerId: string, i
   if (player.god === "angel") {
     if (target.level === "house") target.level = "level2";
     else if (target.level === "level2") target.level = "level3";
-    next.logs.push(`${player.nickname} 的天使升级了一块地产`);
+    next.logs.push(`${player.nickname} 的天使将${monopolyPropertyCityName(index)}升级为${propertyLabel(target.level)}`);
   } else if (target.level === "level3") {
     target.level = "level2";
-    next.logs.push(`${player.nickname} 的恶魔降低了一块地产`);
+    next.logs.push(`${player.nickname} 的恶魔将${monopolyPropertyCityName(index)}降为${propertyLabel(target.level)}`);
   } else if (target.level === "level2") {
     target.level = "house";
-    next.logs.push(`${player.nickname} 的恶魔降低了一块地产`);
+    next.logs.push(`${player.nickname} 的恶魔将${monopolyPropertyCityName(index)}降为${propertyLabel(target.level)}`);
   } else {
     target.level = "empty";
     target.ownerDeviceId = null;
     target.sealedTurns = 0;
     target.tollMultiplier = 1;
-    next.logs.push(`${player.nickname} 的恶魔拆除了一座小屋`);
+    next.logs.push(`${player.nickname} 的恶魔拆除了${monopolyPropertyCityName(index)}`);
   }
   return next;
 }
@@ -629,6 +652,16 @@ export function applyMonopolyRandomEvent(state: MonopolyState, event: MonopolyRa
   if (event === "subsidy") {
     for (const player of activePlayers) player.coins += 100;
     next.logs.push(activePlayers.length ? `财政补贴：${activePlayers.map((player) => player.nickname).join("、")}各获得 100 金币` : "财政补贴未影响任何玩家");
+  } else if (event === "godsend") {
+    const target = pick(activePlayers.filter((player) => player.cards.length < 3));
+    const card = target ? selectMonopolyCard(next, target.deviceId, random, false) : null;
+    if (target && card) {
+      target.cards.push(card);
+      // 道具本身只保存在目标玩家的权威状态中，公共事件不泄露卡面。
+      next.logs.push(`天赐神物：${target.nickname}获得了一张道具卡`);
+    } else {
+      next.logs.push("天赐神物未找到背包空位的玩家");
+    }
   } else if (event === "demolish" || event === "dispute") {
     const property = pick(properties.filter((item) => item.level === "house"));
     if (property) {
@@ -718,6 +751,10 @@ export function monopolyBuildingVariant(random: () => number = Math.random): num
   return Math.max(0, Math.min(MONOPOLY_BUILDING_VARIANT_COUNT - 1, Math.floor(random() * MONOPOLY_BUILDING_VARIANT_COUNT)));
 }
 
+function monopolyBuildingVariantFor(state: MonopolyState, random: () => number): number {
+  return state.randomBuildingVariants === false ? state.fixedBuildingVariant ?? 0 : monopolyBuildingVariant(random);
+}
+
 function grantStartReward(state: MonopolyState, player: MonopolyPlayer, random: () => number = Math.random): void {
   player.coins += 200;
   const candidates = Object.values(state.properties).filter((property) =>
@@ -765,7 +802,7 @@ function refreshMonopolyGodTokens(state: MonopolyState, random: () => number): v
     if (tileIndex === undefined || state.godTokens.some((token) => token.index === tileIndex)) continue;
     const god = gods[Math.max(0, Math.min(gods.length - 1, Math.floor(random() * gods.length)))]!;
     state.godTokens.push({ index: tileIndex, god, expiresAtRound: state.completedRounds + 2 });
-    state.logs.push(`${godLabel(god)} 出现在棋盘上`);
+    state.logs.push(`${godLabel(god)}刷新在${monopolyPropertyCityName(tileIndex)}`);
   }
 }
 

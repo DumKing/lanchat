@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { reactive } from "vue";
 
 const root = process.cwd();
+const roomSource = await readFile(path.join(root, "src/games/monopolyRoom.ts"), "utf8");
 const tempRoot = path.join(root, ".tmp");
 await mkdir(tempRoot, { recursive: true });
 const tempDir = await mkdtemp(path.join(tempRoot, "monopoly-room-"));
@@ -13,7 +14,7 @@ const outfile = path.join(tempDir, "monopoly-room.mjs");
 
 try {
   await build({ entryPoints: [path.join(root, "src/games/monopolyRoom.ts")], outfile, bundle: true, format: "esm", platform: "node", logLevel: "silent" });
-  const { applyMonopolyRoomAction, createMonopolyRoomState, planMonopolyBotAction } = await import(`${pathToFileURL(outfile).href}?t=${Date.now()}`);
+  const { applyMonopolyRoomAction, createMonopolyRoomState, planMonopolyBotAction, restartMonopolyRoomState } = await import(`${pathToFileURL(outfile).href}?t=${Date.now()}`);
   const host = { deviceId: "a", nickname: "甲", online: true, ready: false };
   let botRoom = createMonopolyRoomState({ roomId: "monopoly-bot", host, startingCoins: 5000, maxRounds: 20, now: 1 });
   botRoom = applyMonopolyRoomAction(botRoom, { action: "add_bot", hostId: "a", bot: { deviceId: "bot:monopoly-bot:1", nickname: "机器人 1", online: true, ready: false, isBot: true } });
@@ -32,6 +33,19 @@ try {
   botRoom = applyMonopolyRoomAction(botRoom, { action: "start", playerId: "a" }, () => 0);
   assert.equal(botRoom.hostDeviceId, "a", "房主身份应独立于投骰座位保存");
   assert.notEqual(botRoom.game.players[0]?.deviceId, "a", "开局时投骰座位应随机分配，房主不固定在 1 号位");
+
+  let botRematchRoom = createMonopolyRoomState({ roomId: "monopoly-bot-rematch", host, startingCoins: 5000, maxRounds: 20, randomBuildingVariants: false, now: 1 });
+  for (const index of [1, 2, 3]) {
+    botRematchRoom = applyMonopolyRoomAction(botRematchRoom, { action: "add_bot", hostId: "a", bot: { deviceId: `bot:monopoly-rematch:${index}`, nickname: `机器人 ${index}`, online: true, ready: false, isBot: true } });
+  }
+  botRematchRoom = applyMonopolyRoomAction(botRematchRoom, { action: "ready", playerId: "a", ready: true });
+  botRematchRoom = applyMonopolyRoomAction(botRematchRoom, { action: "start", playerId: "a" }, () => .999);
+  botRematchRoom = { ...botRematchRoom, phase: "ended" };
+  botRematchRoom = restartMonopolyRoomState(botRematchRoom);
+  assert.equal(botRematchRoom.game.randomBuildingVariants, false, "再来一局应保留本局的建筑外观配置");
+  assert.ok(botRematchRoom.seats.every((seat) => seat.ready), "房主与三个机器人重开后应自动全部准备");
+  botRematchRoom = applyMonopolyRoomAction(botRematchRoom, { action: "start", playerId: "a" }, () => .999);
+  assert.equal(botRematchRoom.phase, "playing", "三机器人重开后房主点击开始应正常进入新对局");
   botRoom.game.currentPlayerId = "bot:monopoly-bot:1";
   const botRoll = planMonopolyBotAction(botRoom, "bot:monopoly-bot:1", () => .9);
   assert.deepEqual(botRoll, { action: "roll", playerId: "bot:monopoly-bot:1" }, "机器人在投骰阶段应自动投骰");
@@ -89,6 +103,7 @@ try {
   announcementRoom.game.players[0].position = 39;
   announcementRoom = applyMonopolyRoomAction(announcementRoom, { action: "roll", playerId: "a" }, () => .4);
   assert.equal(announcementRoom.lastAnnouncement?.kind, "event", "随机事件应同步为全房间可见的横幅公告");
+  assert.match(roomSource, /"rent_holiday", "godsend"/, "随机事件池应包含天赐神物");
   announcementRoom.game.currentPlayerId = "a";
   announcementRoom.game.players[1].position = 7;
   announcementRoom.game.players[1].cards = [];
@@ -104,6 +119,18 @@ try {
   announcementRoom.game.turnStartedAt = 1;
   announcementRoom = applyMonopolyRoomAction(announcementRoom, { action: "roll", playerId: "a" }, () => 0);
   assert.ok(announcementRoom.game.turnStartedAt > 1, "玩家投骰后应重新开始 60 秒操作倒计时");
+  let buyPromptRoom = createMonopolyRoomState({ roomId: "monopoly-buy-prompt", host, startingCoins: 5000, maxRounds: 20, now: 1 });
+  buyPromptRoom = applyMonopolyRoomAction(buyPromptRoom, { action: "join", player: { deviceId: "b", nickname: "乙", online: true, ready: false } });
+  buyPromptRoom = applyMonopolyRoomAction(buyPromptRoom, { action: "ready", playerId: "a", ready: true });
+  buyPromptRoom = applyMonopolyRoomAction(buyPromptRoom, { action: "ready", playerId: "b", ready: true });
+  buyPromptRoom = applyMonopolyRoomAction(buyPromptRoom, { action: "start", playerId: "a" }, () => .999);
+  buyPromptRoom.game.players.find((player) => player.deviceId === "a").position = 39;
+  buyPromptRoom = applyMonopolyRoomAction(buyPromptRoom, { action: "roll", playerId: "a" }, () => 0);
+  assert.ok(buyPromptRoom.game.logs.some((log) => /甲踩中了晴川城，可购买/.test(log)), "可购买落点仍应保留在完整事件日志中");
+  assert.ok(!buyPromptRoom.announcements.some((announcement) => /前进了/.test(announcement.text)), "前进过程不应刷入横幅公告");
+  assert.ok(!buyPromptRoom.announcements.some((announcement) => /可购买/.test(announcement.text)), "可购买提示不应刷入横幅公告");
+  buyPromptRoom = applyMonopolyRoomAction(buyPromptRoom, { action: "buy", playerId: "a", propertyIndex: 1 }, () => 0);
+  assert.ok(buyPromptRoom.announcements.some((announcement) => /甲购买了晴川城/.test(announcement.text)), "实际购买地产仍应进入横幅公告");
   let rentRoom = createMonopolyRoomState({ roomId: "monopoly-rent", host, startingCoins: 5000, maxRounds: 20, now: 1 });
   rentRoom = applyMonopolyRoomAction(rentRoom, { action: "join", player: { deviceId: "b", nickname: "乙", online: true, ready: false } });
   rentRoom = applyMonopolyRoomAction(rentRoom, { action: "ready", playerId: "a", ready: true });
@@ -115,6 +142,33 @@ try {
   assert.equal(rentRoom.lastAnnouncement?.kind, "rent", "踩中敌方地产并支付过路费应广播收费横幅");
   assert.match(rentRoom.lastAnnouncement?.text ?? "", /甲.*乙.*过路费 500/, "收费横幅应明确付款方、收款方和金额");
   assert.ok(rentRoom.announcements.some((announcement) => announcement.kind === "rent"), "房间状态应保留公告序列，避免同次结算事件被覆盖");
+  assert.ok(rentRoom.announcements.some((announcement) => /甲踩中了晴川城/.test(announcement.text)), "踩中地产时应先广播具体落点城市");
+
+  let wealthRentRoom = createMonopolyRoomState({ roomId: "monopoly-wealth-rent", host, startingCoins: 5000, maxRounds: 20, now: 1 });
+  wealthRentRoom = applyMonopolyRoomAction(wealthRentRoom, { action: "join", player: { deviceId: "b", nickname: "乙", online: true, ready: false } });
+  wealthRentRoom = applyMonopolyRoomAction(wealthRentRoom, { action: "ready", playerId: "a", ready: true });
+  wealthRentRoom = applyMonopolyRoomAction(wealthRentRoom, { action: "ready", playerId: "b", ready: true });
+  wealthRentRoom = applyMonopolyRoomAction(wealthRentRoom, { action: "start", playerId: "a" }, () => .999);
+  wealthRentRoom.game.players.find((player) => player.deviceId === "a").position = 39;
+  wealthRentRoom.game.players.find((player) => player.deviceId === "a").god = "wealth";
+  wealthRentRoom.game.players.find((player) => player.deviceId === "a").godTurns = 3;
+  wealthRentRoom.game.properties[1] = { ...wealthRentRoom.game.properties[1], ownerDeviceId: "b", level: "house", buildingVariant: 0 };
+  wealthRentRoom = applyMonopolyRoomAction(wealthRentRoom, { action: "roll", playerId: "a" }, () => 0);
+  assert.ok(wealthRentRoom.announcements.some((announcement) => /甲踩中了晴川城，财神免过路费/.test(announcement.text)), "财神踩中敌方地产时应展示免租落点横幅");
+  assert.equal(wealthRentRoom.game.players.find((player) => player.deviceId === "b").coins, 5000, "财神免过路费时地产主人不能收款");
+
+  let jailedOwnerRoom = createMonopolyRoomState({ roomId: "monopoly-jailed-owner-rent", host, startingCoins: 5000, maxRounds: 20, now: 1 });
+  jailedOwnerRoom = applyMonopolyRoomAction(jailedOwnerRoom, { action: "join", player: { deviceId: "b", nickname: "乙", online: true, ready: false } });
+  jailedOwnerRoom = applyMonopolyRoomAction(jailedOwnerRoom, { action: "ready", playerId: "a", ready: true });
+  jailedOwnerRoom = applyMonopolyRoomAction(jailedOwnerRoom, { action: "ready", playerId: "b", ready: true });
+  jailedOwnerRoom = applyMonopolyRoomAction(jailedOwnerRoom, { action: "start", playerId: "a" }, () => .999);
+  jailedOwnerRoom.game.players.find((player) => player.deviceId === "a").position = 39;
+  jailedOwnerRoom.game.players.find((player) => player.deviceId === "b").jailTurns = 2;
+  jailedOwnerRoom.game.players.find((player) => player.deviceId === "b").cards = [];
+  jailedOwnerRoom.game.properties[1] = { ...jailedOwnerRoom.game.properties[1], ownerDeviceId: "b", level: "house", buildingVariant: 0 };
+  jailedOwnerRoom = applyMonopolyRoomAction(jailedOwnerRoom, { action: "roll", playerId: "a" }, () => 0);
+  assert.ok(jailedOwnerRoom.announcements.some((announcement) => /甲踩中了晴川城，乙已收押，免过路费/.test(announcement.text)), "踩中已收押玩家的地产时应展示双方与免租原因");
+  assert.equal(jailedOwnerRoom.game.players.find((player) => player.deviceId === "b").coins, 5000, "已收押地产主人不能收租");
   let jailRoom = createMonopolyRoomState({ roomId: "monopoly-jail", host, startingCoins: 5000, maxRounds: 20, now: 1 });
   jailRoom = applyMonopolyRoomAction(jailRoom, { action: "join", player: { deviceId: "b", nickname: "乙", online: true, ready: false } });
   jailRoom = applyMonopolyRoomAction(jailRoom, { action: "ready", playerId: "a", ready: true });
@@ -154,9 +208,39 @@ try {
   automaticJailRoom.turnRolled = true;
   automaticJailRoom = applyMonopolyRoomAction(automaticJailRoom, { action: "end_turn", playerId: "b" }, () => 0);
   assert.equal(automaticJailRoom.game.players[0].stayTurns, 0, "停留卡应在目标回合开始时自动消耗");
-  assert.equal(automaticJailRoom.game.players[0].turtleTurns, 3, "停留卡应优先于乌龟卡，停留回合不消耗乌龟效果");
+  assert.equal(automaticJailRoom.game.players[0].turtleTurns, 2, "停留卡优先执行时，乌龟卡也应同步消耗一次回合");
   assert.equal(automaticJailRoom.game.currentPlayerId, "b", "停留目标应跳过投骰并直接轮到下一位玩家");
   assert.match(automaticJailRoom.game.logs.join("\n"), /原地停留/, "停留自动跳过应写入权威游戏日志");
+
+  automaticJailRoom.game.players[0].cards = [];
+  automaticJailRoom.game.players[0].jailTurns = 2;
+  automaticJailRoom.game.players[0].stayTurns = 1;
+  automaticJailRoom.game.players[0].turtleTurns = 3;
+  automaticJailRoom.game.players[0].god = "devil";
+  automaticJailRoom.game.players[0].godTurns = 3;
+  automaticJailRoom.game.currentPlayerId = "b";
+  automaticJailRoom.turnRolled = true;
+  const logsBeforeRoadPriority = automaticJailRoom.game.logs.length;
+  automaticJailRoom = applyMonopolyRoomAction(automaticJailRoom, { action: "end_turn", playerId: "b" }, () => 0);
+  assert.equal(automaticJailRoom.game.players[0].jailTurns, 1, "监狱状态应在本人的回合消耗一次");
+  assert.equal(automaticJailRoom.game.players[0].stayTurns, 0, "被监狱覆盖的停留效果也应在本人回合消耗一次");
+  assert.equal(automaticJailRoom.game.players[0].turtleTurns, 2, "被监狱覆盖的乌龟效果也应在本人回合消耗一次");
+  assert.equal(automaticJailRoom.game.players[0].godTurns, 2, "神明附身应独立于道路效果照常消耗一次");
+  assert.match(automaticJailRoom.game.logs.slice(logsBeforeRoadPriority).join("\n"), /正在监狱中/, "道路控制应优先执行监狱跳过");
+  assert.doesNotMatch(automaticJailRoom.game.logs.slice(logsBeforeRoadPriority).join("\n"), /原地停留/, "低优先级停留不应在监狱回合重复执行");
+
+  automaticJailRoom.game.players[0].position = 30;
+  automaticJailRoom.game.players[0].cards = ["acquittal"];
+  automaticJailRoom.game.players[0].jailTurns = 2;
+  automaticJailRoom.game.players[0].stayTurns = 0;
+  automaticJailRoom.game.players[0].turtleTurns = 3;
+  automaticJailRoom.game.currentPlayerId = "b";
+  automaticJailRoom.turnRolled = true;
+  automaticJailRoom = applyMonopolyRoomAction(automaticJailRoom, { action: "end_turn", playerId: "b" }, () => 0);
+  assert.equal(automaticJailRoom.game.players[0].position, 0, "免罪卡应优先释放监狱玩家回到起点");
+  assert.equal(automaticJailRoom.game.players[0].turtleTurns, 3, "自动出狱后尚未经过本人的正常回合，不应提前消耗乌龟效果");
+  automaticJailRoom = applyMonopolyRoomAction(automaticJailRoom, { action: "roll", playerId: "a" }, () => 0);
+  assert.equal(automaticJailRoom.game.players[0].turtleTurns, 2, "自动出狱后的乌龟道路效果应在本回合实际生效并消耗一次");
   console.log("monopoly room rules ok");
 } finally {
   await rm(tempDir, { recursive: true, force: true });
