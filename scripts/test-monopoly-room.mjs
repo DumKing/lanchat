@@ -241,6 +241,19 @@ try {
   assert.equal(automaticJailRoom.game.players[0].turtleTurns, 3, "自动出狱后尚未经过本人的正常回合，不应提前消耗乌龟效果");
   automaticJailRoom = applyMonopolyRoomAction(automaticJailRoom, { action: "roll", playerId: "a" }, () => 0);
   assert.equal(automaticJailRoom.game.players[0].turtleTurns, 2, "自动出狱后的乌龟道路效果应在本回合实际生效并消耗一次");
+
+  let airportRoom = createMonopolyRoomState({ roomId: "monopoly-airport", host, startingCoins: 5000, maxRounds: 20, now: 1 });
+  airportRoom = applyMonopolyRoomAction(airportRoom, { action: "join", player: { deviceId: "b", nickname: "乙", online: true, ready: false } });
+  airportRoom = applyMonopolyRoomAction(airportRoom, { action: "ready", playerId: "a", ready: true });
+  airportRoom = applyMonopolyRoomAction(airportRoom, { action: "ready", playerId: "b", ready: true });
+  airportRoom = applyMonopolyRoomAction(airportRoom, { action: "start", playerId: "a" }, () => .999);
+  airportRoom.game.currentPlayerId = "a";
+  airportRoom.game.players.find((player) => player.deviceId === "a").position = 10;
+  airportRoom.turnRolled = true;
+  airportRoom.pendingLanding = { playerId: "a", kind: "airport", index: 10 };
+  airportRoom = applyMonopolyRoomAction(airportRoom, { action: "airport", playerId: "a", targetIndex: 10 }, () => 0);
+  assert.equal(airportRoom.pendingLanding, undefined, "机场应允许选择当前机场格以结束本次传送选择");
+  assert.equal(airportRoom.game.players.find((player) => player.deviceId === "a").position, 10, "选择当前机场格不应改变玩家位置");
   console.log("monopoly room rules ok");
 } finally {
   await rm(tempDir, { recursive: true, force: true });
