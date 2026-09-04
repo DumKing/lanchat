@@ -125,6 +125,8 @@ assert.match(app, /function canMonopolyAirportTarget\(index: number\): boolean/,
 assert.match(app, /airportTarget: canMonopolyAirportTarget\(tile\.index\)/, "机场传送时应只按目标校验高亮棋盘格");
 assert.match(app, /card === "seize"[\s\S]*?property\.ownerDeviceId !== myDeviceId\.value/, "抢占卡只应高亮其他玩家的已购地产");
 assert.match(app, /card === "double"[\s\S]*?property\.ownerDeviceId === myDeviceId\.value[\s\S]*?property\.level !== "empty"/, "翻倍卡只应高亮自己的已购地产");
+assert.match(app, /\.monopoly-center-column\s*\{[^}]*pointer-events:\s*none/, "棋盘中心透明区域不得拦截左右两侧地块的点击");
+assert.match(app, /\.monopoly-center-panel, \.monopoly-announcement-stack\s*\{[^}]*pointer-events:\s*auto/, "棋盘中心的真实操作区与横幅仍应可交互");
 assert.match(app, /<template v-if="selectedMonopolyCard">[\s\S]*?@click="prepareMonopolyCardUse"[\s\S]*?@click="cancelMonopolyCardSelection"[\s\S]*?@click="discardMonopolyCardAction\(selectedMonopolyCard\)"/, "选中道具卡后仍应在底部按钮区提供使用、取消和删除操作");
 assert.match(app, /class="monopoly-city-name"/, "城名应作为棋盘内侧的独立城市标签渲染");
 assert.match(app, /class="monopoly-city-ring"/, "城名应置于棋盘内圈，而非挤在地块格内");
