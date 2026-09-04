@@ -9,6 +9,7 @@ import {
   endMonopolyTurn,
   monopolyDirectPurchasePrice,
   monopolyLandingRent,
+  monopolyPropertyCityName,
   moveMonopolyPlayer,
   purchaseMonopolyProperty,
   resolveMonopolyLanding,
@@ -93,9 +94,10 @@ export function createMonopolyRoomState(input: {
   host: MonopolyRoomSeat;
   startingCoins?: number;
   maxRounds?: number;
+  randomBuildingVariants?: boolean;
   now?: number;
 }): MonopolyRoomState {
-  const game = createMonopolyState([input.host], { startingCoins: input.startingCoins, maxRounds: input.maxRounds, now: input.now });
+  const game = createMonopolyState([input.host], { startingCoins: input.startingCoins, maxRounds: input.maxRounds, randomBuildingVariants: input.randomBuildingVariants, now: input.now });
   return {
     roomId: input.roomId,
     hostDeviceId: input.host.deviceId,
@@ -113,13 +115,41 @@ export function createMonopolyRoomState(input: {
   };
 }
 
+/** 重新开局时由房主权威状态机重建座位，避免前端手工拼装导致机器人准备状态丢失。 */
+export function restartMonopolyRoomState(state: MonopolyRoomState): MonopolyRoomState {
+  const host = state.seats.find((seat) => seat.deviceId === state.hostDeviceId);
+  if (!host) return state;
+  const opponents = state.seats.filter((seat) => seat.deviceId !== host.deviceId);
+  const allOpponentsAreBots = opponents.length > 0 && opponents.every((seat) => seat.isBot === true);
+  const resetSeats = state.seats.map((seat) => ({
+    ...seat,
+    ready: seat.isBot === true || (seat.deviceId === host.deviceId && allOpponentsAreBots),
+  }));
+  const resetHost = resetSeats.find((seat) => seat.deviceId === host.deviceId)!;
+  let next = createMonopolyRoomState({
+    roomId: state.roomId,
+    host: resetHost,
+    startingCoins: state.game.startingCoins,
+    maxRounds: state.game.maxRounds,
+    randomBuildingVariants: state.game.randomBuildingVariants,
+  });
+  for (const seat of resetSeats) {
+    if (seat.deviceId === resetHost.deviceId) continue;
+    next = applyMonopolyRoomAction(next, seat.isBot
+      ? { action: "add_bot", hostId: resetHost.deviceId, bot: { ...seat, online: true, ready: true, isBot: true } }
+      : { action: "join", player: seat });
+  }
+  next.logs.push("房主开启了新一局大富翁");
+  return touch(next);
+}
+
 export function applyMonopolyRoomAction(state: MonopolyRoomState, action: MonopolyRoomAction, random: () => number = Math.random): MonopolyRoomState {
   const next = cloneRoomState(state);
   if (action.action === "add_bot") {
     if (next.phase !== "lobby" || monopolyRoomHostId(next) !== action.hostId || next.seats.length >= 4 || !action.bot.isBot || !action.bot.deviceId.startsWith("bot:")) return state;
     if (next.seats.some((seat) => seat.deviceId === action.bot.deviceId)) return state;
     next.seats.push({ ...action.bot, online: true, ready: true, isBot: true });
-    next.game = createMonopolyState(next.seats, { startingCoins: next.game.startingCoins, maxRounds: next.game.maxRounds });
+    next.game = createMonopolyState(next.seats, { startingCoins: next.game.startingCoins, maxRounds: next.game.maxRounds, randomBuildingVariants: next.game.randomBuildingVariants });
     next.logs.push(`${action.bot.nickname} 加入房间并自动准备`);
     return touch(next);
   }
@@ -128,7 +158,7 @@ export function applyMonopolyRoomAction(state: MonopolyRoomState, action: Monopo
     const seatIndex = next.seats.findIndex((seat) => seat.deviceId === action.targetId);
     if (seatIndex >= 0) {
       next.seats.splice(seatIndex, 1);
-      next.game = createMonopolyState(next.seats, { startingCoins: next.game.startingCoins, maxRounds: next.game.maxRounds });
+      next.game = createMonopolyState(next.seats, { startingCoins: next.game.startingCoins, maxRounds: next.game.maxRounds, randomBuildingVariants: next.game.randomBuildingVariants });
       next.announcedGameLogCount = next.game.logs.length;
       next.logs.push("房主移除了一位玩家");
       return touch(next);
@@ -143,7 +173,7 @@ export function applyMonopolyRoomAction(state: MonopolyRoomState, action: Monopo
     if (next.seats.some((seat) => seat.deviceId === action.player.deviceId) || next.spectators.some((spectator) => spectator.deviceId === action.player.deviceId)) return state;
     if (next.phase === "lobby" && next.seats.length < 4) {
       next.seats.push(action.player);
-      next.game = createMonopolyState(next.seats, { startingCoins: next.game.startingCoins, maxRounds: next.game.maxRounds });
+      next.game = createMonopolyState(next.seats, { startingCoins: next.game.startingCoins, maxRounds: next.game.maxRounds, randomBuildingVariants: next.game.randomBuildingVariants });
       next.logs.push(`${action.player.nickname} 加入房间`);
     } else {
       next.spectators.push(action.player);
@@ -161,7 +191,7 @@ export function applyMonopolyRoomAction(state: MonopolyRoomState, action: Monopo
   if (action.action === "start") {
     if (next.phase !== "lobby" || monopolyRoomHostId(next) !== action.playerId || next.seats.length < 2 || !next.seats.every((seat) => seat.ready)) return state;
     next.seats = shuffledMonopolySeats(next.seats, random);
-    next.game = createMonopolyState(next.seats, { startingCoins: next.game.startingCoins, maxRounds: next.game.maxRounds });
+    next.game = createMonopolyState(next.seats, { startingCoins: next.game.startingCoins, maxRounds: next.game.maxRounds, randomBuildingVariants: next.game.randomBuildingVariants });
     next.announcedGameLogCount = next.game.logs.length;
     next.phase = "playing";
     next.game.turnStartedAt = Date.now();
@@ -192,22 +222,10 @@ export function applyMonopolyRoomAction(state: MonopolyRoomState, action: Monopo
   }
   if (next.phase !== "playing" || next.game.currentPlayerId !== action.playerId) return state;
   if (action.action === "roll") {
+    if (next.turnRolled || next.pendingLanding) return state;
+    if (resolveAutomaticMonopolyJailTurn(next, random)) return touch(next);
     const player = next.game.players.find((item) => item.deviceId === action.playerId);
-    if (!player || next.turnRolled || next.pendingLanding) return state;
-    if (player.jailTurns > 0) {
-      player.jailTurns -= 1;
-      next.turnRolled = true;
-      next.extraRollAvailable = false;
-      if (player.jailTurns === 0) {
-        const release = teleportMonopolyPlayer(next.game, action.playerId, 0, random);
-        if (release.ok) next.game = release.state;
-        next.logs.push(`${player.nickname} 刑满回到起点`);
-      } else {
-        next.logs.push(`${player.nickname} 正在监狱中，还需 ${player.jailTurns} 回合`);
-      }
-      finishResolvedLanding(next, action.playerId, random);
-      return touch(next);
-    }
+    if (!player) return state;
     const fixedDice = player.forcedDice;
     const diceValues = fixedDice === undefined
       ? [Math.floor(random() * 6) + 1, Math.floor(random() * 6) + 1]
@@ -362,41 +380,54 @@ function advanceMonopolyTurn(state: MonopolyRoomState, random: () => number): vo
   resolveAutomaticMonopolyJailTurn(state, random);
 }
 
-function resolveAutomaticMonopolyJailTurn(state: MonopolyRoomState, random: () => number): void {
+/**
+ * 道路控制只执行优先级最高的一项：监狱 > 停留 > 乌龟。
+ * 但每次轮到玩家时，所有已生效的道路类倒计时都会消耗一次。
+ */
+function resolveAutomaticMonopolyJailTurn(state: MonopolyRoomState, random: () => number): boolean {
   const player = state.game.players.find((item) => item.deviceId === state.game.currentPlayerId);
-  if (!player || player.eliminated) return;
-  if (player.stayTurns > 0) {
-    player.stayTurns -= 1;
-    if (player.turtleTurns > 0) player.turtleTurns -= 1;
-    state.game.logs.push(`${player.nickname} 受到停留卡影响，原地停留并自动跳过本回合`);
+  if (!player || player.eliminated) return false;
+  if (player.jailTurns > 0 && player.cards.includes("acquittal")) {
+    state.game = sendMonopolyPlayerToJail(state.game, player.deviceId, "自动免罪");
+    return resolveAutomaticMonopolyJailTurn(state, random);
+  }
+  if (player.jailTurns > 0) {
+    const consumed = consumeMonopolyRoadEffectTurns(player);
+    state.game.logs.push(`${player.nickname} 正在监狱中，自动跳过本回合，还需 ${player.jailTurns} 回合${consumed.stay ? "；停留效果同步消耗" : ""}${consumed.turtle ? "；乌龟效果同步消耗" : ""}`);
     state.game = endMonopolyTurn(state.game, Date.now(), random);
     state.turnRolled = false;
     state.extraRollAvailable = false;
     if (state.game.completedRounds >= state.game.maxRounds || state.game.players.filter((item) => !item.eliminated).length <= 1) {
       finishRoom(state);
-      return;
+      return true;
     }
     resolveAutomaticMonopolyJailTurn(state, random);
-    return;
+    return true;
   }
-  if (player.jailTurns <= 0) return;
-  if (player.cards.includes("acquittal")) {
-    state.game = sendMonopolyPlayerToJail(state.game, player.deviceId, "自动免罪");
+  if (player.stayTurns > 0) {
+    const consumed = consumeMonopolyRoadEffectTurns(player);
+    state.game.logs.push(`${player.nickname} 受到停留卡影响，原地停留并自动跳过本回合${consumed.turtle ? "；乌龟效果同步消耗" : ""}`);
+    state.game = endMonopolyTurn(state.game, Date.now(), random);
     state.turnRolled = false;
     state.extraRollAvailable = false;
-    resetMonopolyActionDeadline(state);
-    return;
+    if (state.game.completedRounds >= state.game.maxRounds || state.game.players.filter((item) => !item.eliminated).length <= 1) {
+      finishRoom(state);
+      return true;
+    }
+    resolveAutomaticMonopolyJailTurn(state, random);
+    return true;
   }
-  player.jailTurns -= 1;
-  state.game.logs.push(`${player.nickname} 正在监狱中，自动跳过本回合，还需 ${player.jailTurns} 回合`);
-  state.game = endMonopolyTurn(state.game, Date.now(), random);
-  state.turnRolled = false;
-  state.extraRollAvailable = false;
-  if (state.game.completedRounds >= state.game.maxRounds || state.game.players.filter((item) => !item.eliminated).length <= 1) {
-    finishRoom(state);
-    return;
-  }
-  resolveAutomaticMonopolyJailTurn(state, random);
+  return false;
+}
+
+function consumeMonopolyRoadEffectTurns(player: { jailTurns: number; stayTurns: number; turtleTurns: number }): { jail: boolean; stay: boolean; turtle: boolean } {
+  const jail = player.jailTurns > 0;
+  const stay = player.stayTurns > 0;
+  const turtle = player.turtleTurns > 0;
+  if (jail) player.jailTurns -= 1;
+  if (stay) player.stayTurns -= 1;
+  if (turtle) player.turtleTurns -= 1;
+  return { jail, stay, turtle };
 }
 
 function settleLanding(state: MonopolyRoomState, playerId: string, random: () => number): void {
@@ -408,7 +439,7 @@ function settleLanding(state: MonopolyRoomState, playerId: string, random: () =>
   const tile = state.game.board[index];
   if (!tile) return;
   if (tile.kind === "event") {
-    const events = ["demolish", "downgrade", "takeover", "jail", "subsidy", "rich_to_poor", "upgrade", "maintenance", "dispute", "rent_holiday"] as const;
+    const events = ["demolish", "downgrade", "takeover", "jail", "subsidy", "rich_to_poor", "upgrade", "maintenance", "dispute", "rent_holiday", "godsend"] as const;
     state.game = applyMonopolyRandomEvent(state.game, events[Math.floor(random() * events.length)]!, random);
     return;
   }
@@ -424,19 +455,38 @@ function settleLanding(state: MonopolyRoomState, playerId: string, random: () =>
   }
   const property = state.game.properties[index];
   if (!property) return;
+  const landedPlayer = state.game.players.find((item) => item.deviceId === playerId);
+  if (!landedPlayer) return;
+  const landingText = `${landedPlayer.nickname}踩中了${monopolyPropertyCityName(index)}`;
   if (!property.ownerDeviceId) {
+    state.game.logs.push(`${landingText}，可购买`);
     state.pendingLanding = { playerId, kind: "buy", index };
     return;
   }
-  if (property.ownerDeviceId === playerId) return;
-  const rent = monopolyLandingRent(state.game, playerId, index);
-  if (rent <= 0) return;
-  const payer = state.game.players.find((item) => item.deviceId === playerId)!;
+  if (property.ownerDeviceId === playerId) {
+    state.game.logs.push(`${landingText}，这是自己的地产`);
+    return;
+  }
   const owner = state.game.players.find((item) => item.deviceId === property.ownerDeviceId);
+  if (owner?.jailTurns) {
+    state.game.logs.push(`${landingText}，${owner.nickname}已收押，免过路费`);
+    return;
+  }
+  if (landedPlayer.god === "wealth") {
+    state.game.logs.push(`${landingText}，财神免过路费`);
+    return;
+  }
+  const rent = monopolyLandingRent(state.game, playerId, index);
+  if (rent <= 0) {
+    state.game.logs.push(`${landingText}，当前地块免过路费`);
+    return;
+  }
+  const payer = landedPlayer;
   const paid = Math.min(rent, payer.coins);
   payer.coins -= paid;
   if (owner) owner.coins += paid;
-  state.game.logs.push(`${payer.nickname} 向 ${owner?.nickname ?? "地产主人"} 支付过路费 ${paid}`);
+  const godEffect = payer.god === "poverty" ? "，穷鬼使过路费翻倍" : "";
+  state.game.logs.push(`${landingText}，向${owner?.nickname ?? "地产主人"}支付过路费 ${paid}${godEffect}`);
   if (paid < rent || payer.coins <= 0) state.game = declareMonopolyBankruptcy(state.game, playerId);
 }
 
@@ -526,9 +576,15 @@ function touch(state: MonopolyRoomState): MonopolyRoomState {
 function flushMonopolyGameAnnouncements(state: MonopolyRoomState): void {
   const start = Math.min(Math.max(0, state.announcedGameLogCount ?? state.game.logs.length), state.game.logs.length);
   for (const text of state.game.logs.slice(start)) {
+    if (!shouldAnnounceMonopolyGameLog(text)) continue;
     pushAnnouncement(state, monopolyGameLogAnnouncementKind(text), text);
   }
   state.announcedGameLogCount = state.game.logs.length;
+}
+
+/** 移动与待购买提示只保留在事件日志，避免横幅淹没实际结算。 */
+function shouldAnnounceMonopolyGameLog(text: string): boolean {
+  return !text.includes("前进了") && !text.endsWith("，可购买");
 }
 
 function monopolyGameLogAnnouncementKind(text: string): MonopolyRoomAnnouncement["kind"] {

@@ -716,9 +716,13 @@ fn should_restore_disco_origin(was_disco: bool, disco_active: bool) -> bool {
     was_disco && !disco_active
 }
 
+fn should_apply_detail_position_transition(restoring_disco_origin: bool) -> bool {
+    !restoring_disco_origin
+}
+
 #[cfg(test)]
 mod disco_position_tests {
-    use super::should_restore_disco_origin;
+    use super::{should_apply_detail_position_transition, should_restore_disco_origin};
 
     #[test]
     fn restores_origin_only_when_disco_stops() {
@@ -726,6 +730,12 @@ mod disco_position_tests {
         assert!(!should_restore_disco_origin(false, true));
         assert!(!should_restore_disco_origin(true, true));
         assert!(should_restore_disco_origin(true, false));
+    }
+
+    #[test]
+    fn restoring_disco_origin_owns_the_window_position_for_that_frame() {
+        assert!(!should_apply_detail_position_transition(true));
+        assert!(should_apply_detail_position_transition(false));
     }
 }
 
@@ -1518,11 +1528,13 @@ impl eframe::App for DesktopPetApp {
             .map(|value| value.clone())
             .unwrap_or_default();
         let package = self.package.lock().ok().and_then(|value| value.clone());
+        let mut restoring_disco_origin = false;
         if state.disco && !self.was_disco {
             self.disco_origin = ctx.input(|input| input.viewport().outer_rect.map(|rect| rect.min));
         } else if should_restore_disco_origin(self.was_disco, state.disco) {
             if let Some(origin) = self.disco_origin.take() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(origin));
+                restoring_disco_origin = true;
             }
         }
         self.was_disco = state.disco;
@@ -1552,24 +1564,26 @@ impl eframe::App for DesktopPetApp {
         let detail_transition_space = DETAIL_WIDTH + DETAIL_GAP;
         let desired_size = Vec2::new(self.last_size.x + detail_space, self.last_size.y);
         if detail_is_open != self.detail_last_open {
-            if let Some(outer_rect) = ctx.input(|input| input.viewport().outer_rect) {
-                if detail_is_open {
-                    self.detail_side = if outer_rect.min.x >= detail_transition_space {
-                        -1
-                    } else {
-                        1
-                    };
-                    if self.detail_side < 0 {
+            if should_apply_detail_position_transition(restoring_disco_origin) {
+                if let Some(outer_rect) = ctx.input(|input| input.viewport().outer_rect) {
+                    if detail_is_open {
+                        self.detail_side = if outer_rect.min.x >= detail_transition_space {
+                            -1
+                        } else {
+                            1
+                        };
+                        if self.detail_side < 0 {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(Pos2::new(
+                                outer_rect.min.x - detail_transition_space,
+                                outer_rect.min.y,
+                            )));
+                        }
+                    } else if self.detail_side < 0 {
                         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(Pos2::new(
-                            outer_rect.min.x - detail_transition_space,
+                            outer_rect.min.x + detail_transition_space,
                             outer_rect.min.y,
                         )));
                     }
-                } else if self.detail_side < 0 {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(Pos2::new(
-                        outer_rect.min.x + detail_transition_space,
-                        outer_rect.min.y,
-                    )));
                 }
             }
             self.detail_last_open = detail_is_open;
