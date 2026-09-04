@@ -36,6 +36,7 @@ try {
     endMonopolyTurn,
     moveMonopolyPlayer,
     monopolyLandingRent,
+    monopolyPropertyCityName,
     monopolyCardWeights,
     monopolyTurnRemainingSeconds,
     propertyDistrictOf,
@@ -86,6 +87,8 @@ try {
   assert.equal(state.properties[1].level, "house");
   assert.equal(state.properties[1].buildingVariant, 2, "首次购买小屋时应由房主随机固定建筑款式");
   assert.equal(state.properties[1].ownerDeviceId, "a");
+  assert.equal(monopolyPropertyCityName(1), "晴川城", "规则层应提供与棋盘一致的城市名");
+  assert.match(state.logs[state.logs.length - 1] ?? "", /甲购买了晴川城/, "购买地产的横幅应使用城市名");
   assert.equal(monopolyLandingRent(state, "b", 1), 500);
 
   result = upgradeMonopolyProperty(state, "a", 1, () => 0.49);
@@ -93,6 +96,7 @@ try {
   state = result.state;
   assert.equal(state.players[0].coins, 4650, "升级地产不应扣除金币");
   assert.equal(state.properties[1].level, "level2");
+  assert.match(state.logs[state.logs.length - 1] ?? "", /甲将晴川城升级为洋房/, "升级地产的横幅应使用城市名与目标建筑");
   assert.equal(state.properties[1].buildingVariant, 1, "升级洋房时应重新随机并保存建筑款式");
   assert.equal(monopolyLandingRent(state, "b", 1), 1000);
 
@@ -105,6 +109,17 @@ try {
   assert.equal(monopolyLandingRent(state, "b", 1), 2000);
   state = applyMonopolyPropertySeal(state, 1, 3);
   assert.match(state.logs.at(-1), /地标/, "三级建筑的系统日志应使用地标名称");
+
+  state = createMonopolyState([{ deviceId: "a", nickname: "甲" }], { startingCoins: 5000, maxRounds: 20, randomBuildingVariants: false, seed: 7 });
+  const fixedBuildingVariant = state.fixedBuildingVariant;
+  assert.equal(state.randomBuildingVariants, false, "固定外观房间应保存配置");
+  result = purchaseMonopolyProperty(state, "a", 1, () => .99);
+  assert.equal(result.ok, true);
+  state = result.state;
+  assert.equal(state.properties[1].buildingVariant, fixedBuildingVariant, "固定外观模式购买建筑应使用开局抽取的样式");
+  result = upgradeMonopolyProperty(state, "a", 1, () => 0);
+  assert.equal(result.ok, true);
+  assert.equal(result.state.properties[1].buildingVariant, fixedBuildingVariant, "固定外观模式升级建筑也必须保持同一种样式");
 
   state = createMonopolyState([
     { deviceId: "a", nickname: "甲" },
@@ -195,6 +210,18 @@ try {
     { deviceId: "a", nickname: "甲" },
     { deviceId: "b", nickname: "乙" },
   ], { startingCoins: 50_000, maxRounds: 20, seed: 3 });
+  state.players[0].cards = ["roadblock"];
+  result = useMonopolyCard(state, "a", "roadblock", { index: 0 });
+  assert.equal(result.ok, false, "路障不能放置在已有玩家的地块");
+  assert.equal(result.state.roadblocks.length, 0);
+  assert.deepEqual(result.state.players[0].cards, ["roadblock"], "无效路障不能消耗道具卡");
+
+  state.godTokens = [{ index: 2, god: "wealth", expiresAtRound: 3 }];
+  result = useMonopolyCard(state, "a", "roadblock", { index: 2 });
+  assert.equal(result.ok, false, "路障不能放置在已有神明的地块");
+  assert.equal(result.state.roadblocks.length, 0);
+  assert.deepEqual(result.state.players[0].cards, ["roadblock"], "神明占据地块时路障卡也不能被消耗");
+
   state.players[0].cards = ["reverse", "roadblock", "seize"];
   state.players[1].cards = ["turtle", "loot", "seal"];
   result = useMonopolyCard(state, "a", "reverse", { playerId: "b" });
@@ -209,6 +236,16 @@ try {
   assert.equal(result.ok, true);
   assert.equal(result.state.players[0].position, 39, "roadblocks should stop their owner too");
   assert.equal(result.state.roadblocks.length, 0, "a triggered roadblock disappears");
+
+  state = createMonopolyState([
+    { deviceId: "a", nickname: "甲" },
+    { deviceId: "b", nickname: "乙" },
+  ], { startingCoins: 50_000, maxRounds: 20, seed: 3 });
+  result = purchaseMonopolyProperty(state, "b", 1);
+  assert.equal(result.ok, true);
+  state = result.state;
+  state.players[1].jailTurns = 2;
+  assert.equal(monopolyLandingRent(state, "a", 1), 0, "已收押的地产主人在监狱中不能收取过路费");
 
   state = createMonopolyState([
     { deviceId: "a", nickname: "甲" },
@@ -288,6 +325,14 @@ try {
   const coinsBeforeSubsidy = state.players.map((player) => player.coins);
   state = applyMonopolyRandomEvent(state, "subsidy", () => 0);
   assert.deepEqual(state.players.map((player, index) => player.coins - coinsBeforeSubsidy[index]), [100, 100], "subsidy event grants every active player 100 coins");
+  state.players[0].cards = [];
+  state.players[1].cards = ["acquittal", "seize", "frame"];
+  state = applyMonopolyRandomEvent(state, "godsend", () => 0);
+  assert.equal(state.players[0].cards.length, 1, "天赐神物应只向背包未满的玩家发放一张道具卡");
+  assert.equal(state.logs[state.logs.length - 1], "天赐神物：甲获得了一张道具卡", "天赐神物横幅只公开获赠玩家，不泄露具体道具卡");
+  state.players[0].cards = ["acquittal", "seize", "frame"];
+  state = applyMonopolyRandomEvent(state, "godsend", () => 0);
+  assert.match(state.logs[state.logs.length - 1] ?? "", /天赐神物未找到背包空位的玩家/, "全员背包已满时天赐神物不应强行覆盖道具");
 
   state = createMonopolyState([
     { deviceId: "a", nickname: "甲" },
@@ -308,6 +353,8 @@ try {
   assert.equal(state.completedRounds, 3, "six player turns should complete three rounds in a two-player match");
   assert.ok(state.players.every((player) => player.cards.length === 1), "every third complete round should issue one card when a bag has space");
   assert.equal(state.godTokens.length, 2, "every third complete round should refresh up to two god tokens");
+  assert.ok(state.logs.some((log) => log === "财神刷新在晴川城"), "神明刷新日志应使用实际城市名");
+  assert.ok(state.logs.every((log) => !/刷新在第\d+格/.test(log)), "神明刷新日志不应再使用编号地块");
 
   console.log("monopoly board rules ok");
 } finally {
