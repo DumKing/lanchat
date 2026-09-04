@@ -117,8 +117,10 @@ assert.match(app, /class="monopoly-card"/, "背包道具应以卡片形式展示
 assert.match(app, /const selectedMonopolyCard = ref<MonopolyCard \| null>\(null\)/, "道具卡应先进入选中态，而不是点击即使用");
 assert.match(app, /monopolyCardTargetPickerOpen/, "需要指定玩家的道具卡应弹出玩家选择器");
 assert.match(app, /class="monopoly-card-target-picker-modal"/, "指定玩家道具卡应使用独立的紧凑目标选择弹窗");
+assert.match(app, /<NModal v-model:show="monopolyCardTargetPickerOpen"[\s\S]*?:style="\{ width: 'min\(300px, calc\(100vw - 32px\)\)' \}"/, "道具卡目标选择弹窗应通过内联宽度约束适配 Teleport 容器");
 assert.match(app, /\.monopoly-card-target-picker-modal \.n-card\s*\{[^}]*width:\s*min\(300px, calc\(100vw - 32px\)\)/, "道具卡目标选择弹窗应限制为紧凑宽度");
 assert.match(app, /\.monopoly-card-target-player:hover[^}]*box-shadow:[^}]*transform:\s*translateY\(-2px\)/, "鼠标悬停候选玩家时应提供明显抬起和高亮反馈");
+assert.match(app, /\.monopoly-card-target-player:hover strong\s*\{[^}]*color:\s*var\(--monopoly-player-color/, "鼠标悬停候选玩家时应以该玩家主题色强化昵称");
 assert.match(app, /\.monopoly-card-target-player:focus-visible[^}]*outline:\s*3px solid var\(--accent\)/, "键盘聚焦候选玩家时也应有清晰选中提示");
 assert.match(app, /monopolyCardTargeting/, "需要指定地块的道具卡应进入棋盘选点状态");
 assert.match(app, /function canMonopolyAirportTarget\(index: number\): boolean/, "机场传送应通过独立的目标校验覆盖全部棋盘格");
