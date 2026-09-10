@@ -98,7 +98,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
           const previous = peers.value.find((item) => sameDeviceId(item.device_id, peer.device_id));
           upsertPeer(peer);
           if (!previous || !previous.online) {
-            void addSystemNotice(DEFAULT_GROUP_ID, `${peer.nickname} 上线了`);
+            addTransientSystemNotice(DEFAULT_GROUP_ID, `${peer.nickname} 上线了`);
           }
           refreshConversations();
         },
@@ -114,7 +114,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
             sameDeviceId(peer.device_id, deviceId) ? { ...peer, online: false } : peer,
           ));
           if (previous?.online) {
-            void addSystemNotice(DEFAULT_GROUP_ID, `${previous.nickname} 下线了`);
+            addTransientSystemNotice(DEFAULT_GROUP_ID, `${previous.nickname} 下线了`);
           }
         },
         onMessageReceived(message) {
@@ -650,13 +650,50 @@ export const useLanChatStore = defineStore("lanchat", () => {
     }
   }
 
-  async function sendGameFrame(targetDeviceId: string | null, frame: GameFrame) {
+  async function sendGameFrame(targetDeviceId: string | null, frame: GameFrame, silentWhenUnavailable = false) {
     error.value = "";
     try {
       await api.sendGameFrame(targetDeviceId, frame);
     } catch (err) {
-      error.value = stringifyError(err);
+      const message = stringifyError(err);
+      if (!silentWhenUnavailable || !message.includes("没有可用连接，游戏消息未送达")) {
+        error.value = message;
+      }
     }
+  }
+
+  async function deleteDirectConversation(conversationId: string) {
+    const deleted = await api.deleteDirectConversation(conversationId);
+    if (!deleted) return false;
+    conversations.value = conversations.value.filter((item) => item.id !== conversationId);
+    const nextMessages = { ...messagesByConversation.value };
+    delete nextMessages[conversationId];
+    messagesByConversation.value = nextMessages;
+    const nextUnread = { ...unreadByConversation.value };
+    delete nextUnread[conversationId];
+    unreadByConversation.value = nextUnread;
+    messageCacheTouchedAt.delete(conversationId);
+    if (activeConversationId.value === conversationId) {
+      await selectConversation(DEFAULT_GROUP_ID);
+    }
+    return true;
+  }
+
+  function addTransientSystemNotice(conversationId: string, content: string) {
+    const createdAt = Date.now();
+    const message: Message = {
+      id: `transient-system:${createdAt}:${Math.random().toString(36).slice(2)}`,
+      conversation_id: conversationId,
+      sender_device_id: "system",
+      content,
+      message_type: "system",
+      file_meta: null,
+      status: "delivered",
+      simulation: null,
+      created_at: createdAt,
+    };
+    appendOrUpdateMessage(message);
+    return message;
   }
 
   async function sendCallSignal(targetDeviceId: string, frame: CallSignal) {
@@ -960,6 +997,7 @@ export const useLanChatStore = defineStore("lanchat", () => {
     loadChannelMembers,
     refreshChannelMute,
     selectConversation,
+    deleteDirectConversation,
     createPrivateChannel,
     invitePrivateChannelMembers,
     removePrivateChannelMember,

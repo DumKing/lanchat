@@ -1297,6 +1297,17 @@
 .group-inspector {
   position: relative;
 }
+.list-pane > .n-layout-sider-scroll-container {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+.list-pane .list-scroll {
+  height: 100%;
+  min-height: 0;
+}
 .pane-resize-handle {
   position: absolute;
   top: 0;
@@ -1833,3 +1844,26 @@
   .vision-workspace-grid { grid-template-columns: 1fr; }
   .vision-people-workspace-card { grid-column: auto; }
 }
+
+.conversation-delete-button {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  font-size: 17px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity .15s ease, color .15s ease, background .15s ease;
+}
+.conversation-item:hover .conversation-delete-button,
+.conversation-delete-button:focus-visible { opacity: 1; }
+.conversation-delete-button:hover { color: #d03050; background: #fff0f2; }
+.delete-conversation-modal.n-card { width: min(420px, calc(100vw - 40px)); }
+.delete-conversation-modal .n-card__content { display: grid; gap: 20px; }
+.delete-conversation-modal p { color: var(--muted); line-height: 1.7; }

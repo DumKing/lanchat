@@ -179,6 +179,20 @@ export function monopolyPropertyCityName(index: number): string {
   return monopolyCityNames[cityIndex] ?? `第${index + 1}号地块`;
 }
 
+/** 用于日志和公告的完整地块名称，特殊格不会回退成编号。 */
+export function monopolyTileName(index: number, board: MonopolyTile[] = createMonopolyBoard()): string {
+  const tile = board[index];
+  if (!tile) return `第${index + 1}号地块`;
+  if (tile.kind === "property") return monopolyPropertyCityName(index);
+  if (tile.kind === "event") return "随机事件";
+  return {
+    start: "起点",
+    airport: "飞机场",
+    price_double: "地价翻倍",
+    jail: "监狱",
+  }[tile.corner];
+}
+
 export function createMonopolyState(players: MonopolyPlayerSeed[], options: { startingCoins?: number; maxRounds?: number; randomBuildingVariants?: boolean; now?: number; seed?: number } = {}): MonopolyState {
   const startingCoins = normalizeStartingCoins(options.startingCoins ?? 5000);
   const maxRounds = normalizeMaxRounds(options.maxRounds ?? 20);
@@ -802,7 +816,7 @@ function refreshMonopolyGodTokens(state: MonopolyState, random: () => number): v
     if (tileIndex === undefined || state.godTokens.some((token) => token.index === tileIndex)) continue;
     const god = gods[Math.max(0, Math.min(gods.length - 1, Math.floor(random() * gods.length)))]!;
     state.godTokens.push({ index: tileIndex, god, expiresAtRound: state.completedRounds + 2 });
-    state.logs.push(`${godLabel(god)}刷新在${monopolyPropertyCityName(tileIndex)}`);
+    state.logs.push(`${godLabel(god)}刷新在${monopolyTileName(tileIndex, state.board)}`);
   }
 }
 

@@ -7,6 +7,15 @@ const store = readFileSync(resolve(process.cwd(), "src/stores/lanchat.ts"), "utf
 if (!store.includes("appendOrUpdateMessage(message);")) {
   throw new Error("发送后必须立即写入当前会话消息缓存");
 }
+if (!store.includes("function addTransientSystemNotice(conversationId: string, content: string)")) {
+  throw new Error("上下线通知需要使用仅驻留内存的系统消息入口");
+}
+if (!/onPeerOnline\([\s\S]*?addTransientSystemNotice\(DEFAULT_GROUP_ID, `\$\{peer\.nickname\} 上线了`\)/.test(store)) {
+  throw new Error("上线通知不得调用持久化系统消息 API");
+}
+if (!/onPeerOffline\([\s\S]*?addTransientSystemNotice\(DEFAULT_GROUP_ID, `\$\{previous\.nickname\} 下线了`\)/.test(store)) {
+  throw new Error("下线通知不得调用持久化系统消息 API");
+}
 if (!app.includes("const messagePaneFollowingLatest = ref(true);")) {
   throw new Error("消息视图需要明确记录是否正在跟随最新消息");
 }

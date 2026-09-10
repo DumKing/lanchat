@@ -1,0 +1,124 @@
+/* Independent 3D room layout; the flat board keeps its original arrangement. */
+.monopoly-card-target-player:hover,.monopoly-card-target-player:focus-visible{background:color-mix(in srgb,var(--monopoly-player-color,var(--accent)) 25%,var(--panel-bg));border-color:var(--monopoly-player-color,var(--accent))}
+.game-header-actions .monopoly-view-switch{display:inline-flex;gap:2px;padding:3px;border:1px solid var(--line);border-radius:7px;background:var(--app-bg)}
+.game-header-actions .monopoly-view-switch button{padding:4px 10px;border:0;border-radius:4px;background:transparent;color:var(--text);font:inherit;font-size:12px;cursor:pointer}
+.game-header-actions .monopoly-view-switch button[aria-pressed=true]{background:var(--panel-bg);box-shadow:0 1px 5px #00000012;color:var(--accent)}
+.monopoly-layout{grid-template-rows:minmax(0,1fr)}
+.monopoly-layout.monopoly-view-3d{--rail-width:clamp(240px,25cqw,300px);container-type:size;overflow:hidden}
+.monopoly-layout.monopoly-view-3d .monopoly-table{min-width:0;padding:12px;background:linear-gradient(150deg,var(--soft-accent),var(--app-bg) 45%)}
+.monopoly-layout.monopoly-view-3d .monopoly-stage{position:relative;display:grid;grid-template-columns:repeat(4,minmax(0,1fr)) var(--rail-width);grid-template-rows:minmax(140px,1fr) 100px 100px;gap:10px;width:100%;height:100%;min-height:0;overflow:hidden;--monopoly-u:1px}
+.monopoly-layout.monopoly-view-3d .monopoly-player-side,.monopoly-layout.monopoly-view-3d .monopoly-board-3d,.monopoly-layout.monopoly-view-3d .monopoly-center-column{display:contents}
+.monopoly-layout.monopoly-view-3d .monopoly-player-seat{grid-row:1;position:relative;width:100%;max-width:none;min-width:0;height:100%;margin:0;padding:9px;border:1px solid color-mix(in srgb,var(--monopoly-player-color) 28%,var(--line));border-radius:10px;background:var(--panel-bg);box-shadow:0 3px 12px #00000005;overflow:hidden;cursor:pointer}
+.monopoly-layout.monopoly-view-3d .left .monopoly-player-seat:nth-of-type(1){grid-column:1;grid-row:2}
+.monopoly-layout.monopoly-view-3d .left .monopoly-player-seat:nth-of-type(2){grid-column:2;grid-row:2}
+.monopoly-layout.monopoly-view-3d .right .monopoly-player-seat:nth-of-type(1){grid-column:1;grid-row:3}
+.monopoly-layout.monopoly-view-3d .right .monopoly-player-seat:nth-of-type(2){grid-column:2;grid-row:3}
+.monopoly-layout.monopoly-view-3d .monopoly-player-seat.active{border:2px solid var(--monopoly-player-color);background:color-mix(in srgb,var(--monopoly-player-color) 8%,var(--panel-bg))}
+.monopoly-layout.monopoly-view-3d .monopoly-player-seat-top{position:absolute;top:5px;right:6px;left:auto;gap:5px}
+.monopoly-layout.monopoly-view-3d .monopoly-player-seat-main{display:flex;gap:7px;margin:0;padding-right:12px;text-align:left}
+.monopoly-layout.monopoly-view-3d .monopoly-player-seat-main>div{min-width:0}
+.monopoly-layout.monopoly-view-3d .monopoly-player-seat-main strong{display:block;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+.monopoly-layout.monopoly-view-3d .monopoly-player-seat-main small{font-size:9px;color:var(--muted)}
+.monopoly-layout.monopoly-view-3d .monopoly-player-seat .monopoly-virtual-avatar{width:30px;height:30px}
+.monopoly-layout.monopoly-view-3d .monopoly-player-seat-coins{display:block;margin-top:7px;font-size:14px;line-height:16px;text-align:left;font-weight:800;color:var(--monopoly-player-color)}
+.monopoly-layout.monopoly-view-3d .monopoly-player-effects{position:absolute;right:6px;bottom:6px;max-width:62%;max-height:22px;overflow:auto;flex-wrap:nowrap}
+.monopoly-layout.monopoly-view-3d .board3d-scene{grid-column:1/4;grid-row:1;min-height:0;border-radius:12px;box-shadow:0 5px 20px #00000005}
+.monopoly-layout.monopoly-view-3d .monopoly-announcement-log{grid-column:4;grid-row:1;display:grid;grid-template-rows:36px minmax(0,1fr);height:100%;min-height:0;pointer-events:auto;border:1px solid var(--line);border-radius:10px;background:var(--panel-bg);overflow:hidden}
+.monopoly-layout.monopoly-view-3d .monopoly-announcement-log-heading{height:auto;padding:10px 12px;background:var(--top-bg);border-bottom:1px solid var(--line);color:var(--text);font-size:12px}
+.monopoly-layout.monopoly-view-3d .monopoly-announcement-log-list{display:flex;flex-direction:column;gap:7px;padding:8px;overflow:auto;min-height:0;border:0;border-radius:0}
+.monopoly-layout.monopoly-view-3d .monopoly-announcement-log-list article{display:flex;align-items:center;flex-shrink:0;height:auto;min-height:36px;box-sizing:border-box;padding:8px;margin:0;overflow:visible;border-radius:7px;border-left:3px solid var(--monopoly-announcement-color,var(--accent));background:color-mix(in srgb,var(--monopoly-announcement-color,var(--accent)) 5%,var(--panel-bg))}
+.monopoly-layout.monopoly-view-3d .monopoly-announcement-log-list strong{width:100%;font-size:12px;line-height:1.6;white-space:normal;overflow-wrap:anywhere;overflow:visible;color:color-mix(in srgb,var(--monopoly-announcement-color,var(--accent)) 82%,var(--text))}
+.monopoly-layout.monopoly-view-3d .monopoly-room-panel{grid-column:4;grid-row:2/4;position:relative;inset:auto;margin:0;align-self:stretch;justify-self:stretch;display:flex;width:100%;height:100%;min-height:0;max-height:none;padding:0;border:1px solid var(--line);border-radius:10px;background:var(--panel-bg);overflow:hidden}
+.monopoly-layout.monopoly-view-3d .room-chat-panel{width:100%;height:100%;min-height:0;display:flex;flex-direction:column;border:0}
+.monopoly-layout.monopoly-view-3d .room-chat-head{padding:8px 12px;font-size:12px;background:var(--top-bg);border-bottom:1px solid var(--line)}
+.monopoly-layout.monopoly-view-3d .room-chat-body{display:flex;flex:1;min-height:0;flex-direction:column}
+.monopoly-layout.monopoly-view-3d .room-chat-list{flex:1;min-height:0;overflow:auto;padding:8px}
+.monopoly-layout.monopoly-view-3d .room-chat-composer{flex-shrink:0;padding:6px;gap:5px}
+.monopoly-layout.monopoly-view-3d .monopoly-center-panel{grid-column:3;grid-row:2/4;display:flex;flex-direction:column;align-self:stretch;width:100%;height:100%;min-height:0;max-height:none;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:var(--panel-bg);color:var(--text);backdrop-filter:none;overflow:hidden;gap:6px}
+.monopoly-layout.monopoly-view-3d .monopoly-center-overview{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:repeat(5,auto);gap:5px 12px;flex:1;min-height:0;overflow:auto;align-content:start}
+.monopoly-layout.monopoly-view-3d .monopoly-turn-summary{grid-column:1;grid-row:1;display:flex;flex-wrap:wrap;gap:5px;padding:0;justify-content:space-between;color:var(--text)}
+.monopoly-layout.monopoly-view-3d .monopoly-current-action{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.monopoly-layout.monopoly-view-3d .monopoly-current-action small{display:none}
+.monopoly-layout.monopoly-view-3d .monopoly-center-player{grid-column:1;grid-row:2;display:flex;gap:8px;padding:0;border:0;min-width:0}
+.monopoly-layout.monopoly-view-3d .monopoly-center-player .monopoly-virtual-avatar{width:26px;height:26px}
+.monopoly-layout.monopoly-view-3d .monopoly-center-player-copy small{display:none}
+.monopoly-layout.monopoly-view-3d .monopoly-center-inventory{grid-column:1;grid-row:3;display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px;min-width:0}
+.monopoly-layout.monopoly-view-3d .monopoly-center-assets{border:0;justify-content:flex-start}
+.monopoly-layout.monopoly-view-3d .monopoly-center-cards{overflow-x:auto;min-height:40px}
+.monopoly-layout.monopoly-view-3d .monopoly-dice-result,.monopoly-layout.monopoly-view-3d .monopoly-dice-placeholder{grid-column:1;grid-row:5;min-height:0;margin:0}
+.monopoly-layout.monopoly-view-3d .monopoly-center-status{grid-column:1;grid-row:4;text-align:left;align-self:center;font-size:11px;color:var(--accent)}
+.monopoly-layout.monopoly-view-3d .monopoly-center-actions{display:flex;justify-content:flex-end;gap:7px;flex-shrink:0;position:static;padding:6px 0 0;border-top:1px solid var(--line);background:transparent}
+.monopoly-layout.monopoly-view-3d .monopoly-center-cash strong,.monopoly-layout.monopoly-view-3d .monopoly-center-assets strong,.monopoly-layout.monopoly-view-3d .monopoly-center-player-copy strong,.monopoly-layout.monopoly-view-3d .monopoly-current-action strong{color:var(--text)}
+.monopoly-layout.monopoly-view-3d .monopoly-center-assets small,.monopoly-layout.monopoly-view-3d .monopoly-center-cash span{color:var(--muted)}
+.monopoly-layout.monopoly-view-3d .monopoly-center-panel.settlement{grid-column:1/4;grid-row:1;z-index:6;justify-self:center;align-self:center;width:min(92%,480px);height:min(92%,430px);padding:24px;border:1px solid var(--accent);border-radius:18px;box-shadow:0 20px 80px #00000035;background:color-mix(in srgb,var(--panel-bg) 96%,var(--soft-accent))}
+.monopoly-layout.monopoly-view-3d .monopoly-center-settlement{min-height:0;height:100%;width:100%;gap:12px;grid-template-rows:auto auto minmax(0,1fr) auto}
+.monopoly-layout.monopoly-view-3d .monopoly-center-settlement h3{font-size:22px;color:var(--text)}
+.monopoly-layout.monopoly-view-3d .monopoly-center-settlement-list{overflow:auto;padding:5px;gap:8px}
+.monopoly-layout.monopoly-view-3d .monopoly-center-settlement-list>div{padding:10px;border-radius:9px;background:var(--app-bg)}
+.monopoly-layout.monopoly-view-3d .monopoly-center-settlement-list>div.winner{background:var(--soft-accent);border:1px solid var(--accent)}
+.monopoly-layout.monopoly-view-3d .monopoly-center-settlement-list strong{color:var(--text)}
+.monopoly-layout.monopoly-view-3d .monopoly-stage :is(.monopoly-player-seat,.monopoly-center-panel,.monopoly-room-panel,.monopoly-announcement-log){box-sizing:border-box;min-width:0}
+.monopoly-layout.monopoly-view-3d .room-chat-body{min-width:0;border:0;border-radius:0}
+.monopoly-layout.monopoly-view-3d .room-chat-composer{grid-template-columns:minmax(0,1fr) 52px;box-sizing:border-box}
+.monopoly-layout.monopoly-view-3d .room-chat-composer>input{min-width:0;width:100%;box-sizing:border-box}
+.monopoly-layout.monopoly-view-3d .monopoly-center-actions{flex-wrap:wrap;justify-content:center}
+.monopoly-layout.monopoly-view-3d .monopoly-center-overview{text-align:center}
+.monopoly-layout.monopoly-view-3d .monopoly-turn-summary,.monopoly-layout.monopoly-view-3d .monopoly-center-player,.monopoly-layout.monopoly-view-3d .monopoly-center-inventory,.monopoly-layout.monopoly-view-3d .monopoly-center-assets{justify-content:center}
+.monopoly-layout.monopoly-view-3d .monopoly-center-status{text-align:center}
+.monopoly-layout.monopoly-view-3d .board3d-scene,.monopoly-layout.monopoly-view-3d .monopoly-center-panel.settlement{grid-column:1/5}
+.monopoly-layout.monopoly-view-3d .monopoly-center-panel:not(.settlement){grid-column:3/5}
+.monopoly-layout.monopoly-view-3d .monopoly-announcement-log,.monopoly-layout.monopoly-view-3d .monopoly-room-panel{grid-column:5}
+.monopoly-layout.monopoly-view-3d .monopoly-player-seat:hover{background:color-mix(in srgb,var(--monopoly-player-color) 12%,var(--panel-bg))}
+.monopoly-layout.monopoly-view-3d .monopoly-announcement-log-list article{min-height:34px;height:34px;overflow:hidden}
+.monopoly-layout.monopoly-view-3d .monopoly-announcement-log-list strong{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:18px}
+.monopoly-layout.monopoly-view-3d .monopoly-stage{grid-template-rows:minmax(120px,1fr) 145px 145px}
+.monopoly-layout.monopoly-view-3d .monopoly-center-overview{flex:0 0 auto;overflow:visible;gap:5px;grid-template-rows:repeat(5,auto);font-size:11px}
+.monopoly-layout.monopoly-view-3d .monopoly-center-panel:not(.settlement){justify-content:center;overflow:visible;gap:5px}
+.monopoly-layout.monopoly-view-3d .monopoly-turn-summary{font-size:11px;gap:3px 6px;line-height:16px}
+.monopoly-layout.monopoly-view-3d .monopoly-current-action{gap:3px;justify-content:center;line-height:15px}
+.monopoly-layout.monopoly-view-3d .monopoly-current-action small{display:block;font-size:9px;line-height:13px}
+.monopoly-layout.monopoly-view-3d .monopoly-center-player{gap:5px;flex-wrap:wrap}
+.monopoly-layout.monopoly-view-3d .monopoly-center-player-copy{min-width:0}
+.monopoly-layout.monopoly-view-3d .monopoly-center-player-copy strong{font-size:12px;white-space:normal;overflow-wrap:anywhere}
+.monopoly-layout.monopoly-view-3d .monopoly-center-player-copy small{display:block;font-size:9px;line-height:14px;white-space:normal}
+.monopoly-layout.monopoly-view-3d .monopoly-center-cash{display:flex;align-items:center;gap:4px}
+.monopoly-layout.monopoly-view-3d .monopoly-center-cash strong{font-size:14px}
+.monopoly-layout.monopoly-view-3d .monopoly-center-inventory{gap:4px}
+.monopoly-layout.monopoly-view-3d .monopoly-center-assets{gap:10px;padding:0}
+.monopoly-layout.monopoly-view-3d .monopoly-center-assets strong{font-size:12px;line-height:16px}
+.monopoly-layout.monopoly-view-3d .monopoly-center-assets small{font-size:9px;line-height:13px}
+.monopoly-layout.monopoly-view-3d .monopoly-center-cards{min-height:0;overflow:visible;gap:4px;justify-content:center}
+.monopoly-layout.monopoly-view-3d .monopoly-card{width:42px;height:38px;padding:2px;flex-shrink:0}
+.monopoly-layout.monopoly-view-3d .monopoly-card b{font-size:14px;line-height:17px}
+.monopoly-layout.monopoly-view-3d .monopoly-card span{font-size:9px;line-height:12px}
+.monopoly-layout.monopoly-view-3d .monopoly-dice-result{padding:3px 6px;gap:4px;flex-wrap:wrap;font-size:10px}
+.monopoly-layout.monopoly-view-3d .monopoly-dice-cube{width:20px;height:20px;font-size:16px;line-height:20px}
+.monopoly-layout.monopoly-view-3d .monopoly-center-status{line-height:15px;font-size:10px}
+.monopoly-layout.monopoly-view-3d .monopoly-center-actions{padding-top:5px;gap:4px}
+.monopoly-layout.monopoly-view-3d .monopoly-center-actions .n-button{height:28px;padding:0 8px;font-size:11px}
+.monopoly-layout.monopoly-view-3d .monopoly-room-panel{pointer-events:auto;box-shadow:0 4px 16px #00000008}
+.monopoly-layout.monopoly-view-3d .room-chat-head{height:36px;box-sizing:border-box;align-items:center;flex-shrink:0;font-size:12px;font-weight:700;background:var(--soft-accent)}
+.monopoly-layout.monopoly-view-3d .room-chat-list{background:var(--chat-bg);padding:10px}
+.monopoly-layout.monopoly-view-3d .room-chat-msg{margin-bottom:10px}
+.monopoly-layout.monopoly-view-3d .room-chat-name{font-size:10px;line-height:16px;margin-bottom:3px;color:var(--muted)}
+.monopoly-layout.monopoly-view-3d .room-chat-bubble{max-width:90%;box-sizing:border-box;border:1px solid var(--line);border-radius:2px 10px 10px;padding:6px 9px;line-height:1.5;font-size:12px;background:var(--panel-bg);color:var(--text)}
+.monopoly-layout.monopoly-view-3d .room-chat-msg.mine .room-chat-bubble{border-radius:10px 2px 10px 10px;background:var(--soft-accent);color:var(--text)}
+.monopoly-layout.monopoly-view-3d .room-chat-composer{padding:9px;gap:7px;background:var(--panel-bg);border-top:1px solid var(--line);align-items:center}
+@container (max-width:900px){
+ .monopoly-layout.monopoly-view-3d .monopoly-stage{grid-template-columns:repeat(4,minmax(0,1fr)) 230px;gap:7px;grid-template-rows:minmax(80px,1fr) auto auto}
+ .monopoly-layout.monopoly-view-3d .monopoly-player-seat{padding:6px}
+ .monopoly-layout.monopoly-view-3d .monopoly-player-seat-main{gap:4px;padding:0;flex-wrap:wrap}
+ .monopoly-layout.monopoly-view-3d .monopoly-player-seat .monopoly-virtual-avatar{width:22px;height:22px}
+ .monopoly-layout.monopoly-view-3d .monopoly-player-seat-top{display:none}
+ .monopoly-layout.monopoly-view-3d .monopoly-player-seat-coins{font-size:12px}
+ .monopoly-layout.monopoly-view-3d .monopoly-center-panel{padding:7px}
+}
+.monopoly-layout.monopoly-view-3d .monopoly-stage{grid-template-rows:minmax(80px,1fr) auto auto}
+.monopoly-layout.monopoly-view-3d .monopoly-center-panel:not(.settlement){height:auto;min-height:0;align-self:stretch}
+.monopoly-layout.monopoly-view-3d .monopoly-player-seat{height:auto;min-height:0;align-self:stretch}
+.monopoly-layout.monopoly-view-3d .monopoly-announcement-log-list{gap:0;padding:7px}
+.monopoly-layout.monopoly-view-3d .monopoly-announcement-log-list article{height:20px;min-height:20px;padding:0 4px;margin:0;border:0;background:transparent;border-radius:0;font-size:10px;line-height:20px}
+.monopoly-layout.monopoly-view-3d .monopoly-announcement-log-list strong{font-size:10px;line-height:20px;color:color-mix(in srgb,var(--monopoly-announcement-color,var(--accent)) 82%,var(--text))}
+.monopoly-layout.monopoly-view-3d .monopoly-announcement{--monopoly-u:1.5px;width:100%;pointer-events:none}
+.monopoly-layout.monopoly-view-3d .monopoly-announcement strong{min-width:0;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:calc(20 * var(--monopoly-u,1px))}
+.monopoly-layout.monopoly-view-3d .monopoly-announcement .monopoly-announcement-inline-avatar{display:inline-block;width:calc(17 * var(--monopoly-u,1px));height:calc(17 * var(--monopoly-u,1px));box-sizing:border-box;vertical-align:middle;flex-shrink:0}
+.monopoly-layout.monopoly-view-3d .monopoly-announcement .monopoly-announcement-entity{display:inline-flex;align-items:center;vertical-align:middle;flex-wrap:nowrap}

@@ -10,6 +10,17 @@ export type GameStatsRecord = {
   updatedAt: number;
 };
 
+export type RankedParticipant = {
+  deviceId: string;
+  nickname: string;
+  isBot?: boolean;
+};
+
+export function qualifyingRankedPlayers(players: RankedParticipant[]) {
+  const humans = players.filter((player) => !player.isBot);
+  return humans.length > 2 ? humans : [];
+}
+
 export function createGameStatsRecord(input: {
   game: RankedGameType;
   deviceId: string;
