@@ -3,6 +3,10 @@
   "private": true,
   "version": "0.7.2",
   "type": "module",
+  "workspaces": [
+    "packages/*",
+    "plugins/*"
+  ],
   "scripts": {
     "dev": "vite",
     "test:gomoku": "node scripts/test-gomoku-rules.mjs",
@@ -37,6 +41,9 @@
     "test:i18n": "node scripts/test-i18n.mjs",
     "test:tauri-main-binary": "node scripts/test-tauri-main-binary.mjs",
     "test:vision-model-ui": "node scripts/test-vision-model-ui.mjs",
+    "test:plugin-contracts": "node scripts/test-plugin-contracts.mjs",
+    "test:plugin": "vitest run tests/plugin",
+    "build:plugin-sdk": "npm run build --workspace @lanchat/plugin-sdk",
     "vision:package": "powershell -ExecutionPolicy Bypass -File scripts/package-vision-models.ps1",
     "build": "node scripts/write-build-timestamp.mjs && vue-tsc --noEmit && vite build",
     "preview": "vite preview",
@@ -57,8 +64,11 @@
     "@tauri-apps/cli": "^2",
     "@types/crypto-js": "^4.2.2",
     "@vitejs/plugin-vue": "^5.2.1",
+    "@vue/test-utils": "^2.4.6",
+    "jsdom": "^26.1.0",
     "typescript": "~5.6.2",
     "vite": "^6.0.3",
+    "vitest": "^3.2.4",
     "vue-tsc": "^2.1.10"
   }
 }

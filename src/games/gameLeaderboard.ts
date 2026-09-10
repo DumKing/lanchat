@@ -1,3 +1,5 @@
+import { eligibleLeaderboardParticipants } from "../features/games/leaderboardService";
+
 export type RankedGameType = "doudizhu" | "gomoku" | "xiangqi" | "monopoly";
 
 export type GameStatsRecord = {
@@ -17,8 +19,7 @@ export type RankedParticipant = {
 };
 
 export function qualifyingRankedPlayers(players: RankedParticipant[]) {
-  const humans = players.filter((player) => !player.isBot);
-  return humans.length > 2 ? humans : [];
+  return eligibleLeaderboardParticipants(undefined, players);
 }
 
 export function createGameStatsRecord(input: {

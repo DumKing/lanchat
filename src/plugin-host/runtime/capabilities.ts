@@ -1,0 +1,26 @@
+import type { PluginCapability } from "../contracts/manifest";
+
+export const PLUGIN_METHOD_CAPABILITIES: Readonly<Record<string, PluginCapability | null>> = Object.freeze({
+  "app.getVersion": null,
+  "app.getInstance": null,
+  "app.close": null,
+  "devices.list": "devices.read",
+  "chat.send": "chat.send",
+  "rooms.list": "rooms.read",
+  "rooms.create": "rooms.write",
+  "rooms.join": "rooms.write",
+  "rooms.leave": "rooms.write",
+  "rooms.send": "rooms.write",
+  "rooms.snapshot": "rooms.read",
+  "leaderboard.list": "leaderboard.read",
+  "leaderboard.submit": "leaderboard.write",
+  "storage.get": "storage.private",
+  "storage.set": "storage.private",
+  "storage.delete": "storage.private",
+  "storage.keys": "storage.private",
+  "theme.current": "theme.read",
+  "ui.notify": "ui.notify",
+  "ui.confirm": null,
+  "ui.pickFile": "ui.filePicker",
+  "logger.write": "logger.write",
+});

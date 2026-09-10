@@ -57,7 +57,7 @@ try {
     { deviceId: "a", nickname: "A" },
     { deviceId: "b", nickname: "B" },
     { deviceId: "bot", nickname: "机器人", isBot: true },
-  ]), []);
+  ]).map((player) => player.deviceId), ["a", "b"]);
 
   console.log("game leaderboard ok");
 } finally {

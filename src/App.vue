@@ -62,6 +62,7 @@ import { MINESWEEPER_DEFAULT_HEIGHT, MINESWEEPER_DEFAULT_MINES, MINESWEEPER_DEFA
 import { MINESWEEPER_DIFFICULTIES, createMinesweeperLeaderboardRecord, difficultyByKey, formatMinesweeperElapsed, minesweeperDifficultyLabel, recordsForDifficulty, upsertMinesweeperLeaderboardRecords, type MinesweeperLeaderboardRecord } from "./games/minesweeperLeaderboard";
 import { formatWinRate, incrementGameStats, qualifyingRankedPlayers, recordsForGame, upsertGameStatsRecords, type GameStatsRecord, type RankedGameType } from "./games/gameLeaderboard";
 import { createGameRoomShell, gameDefinitionOf, gameRegistry, type GameRoomShell, type GameType } from "./games/registry";
+import { isGameRoomHost, removeGameRoomShell, upsertGameRoomShell } from "./features/games/roomHostService";
 import { gameRuleBookOf } from "./games/rules";
 import { MONOPOLY_TURN_TIMEOUT_MS, cloneMonopolyState, monopolyPropertyCityName as monopolyCityNameOf, monopolyPropertyToll, monopolyTurnRemainingSeconds, type MonopolyCard, type MonopolyCardTarget, type MonopolyGod, type MonopolyPlayer } from "./games/monopoly";
 import { applyMonopolyRoomAction, createMonopolyRoomState, planMonopolyBotAction, restartMonopolyRoomState, type MonopolyRoomAction, type MonopolyRoomAnnouncement, type MonopolyRoomSeat, type MonopolyRoomState } from "./games/monopolyRoom";
@@ -2963,15 +2964,14 @@ function otherDdzSeats() {
   return state.players.filter((player) => player.deviceId !== myDeviceId.value);
 }
 function isRoomHost(room = activeGameRoom.value) {
-  return !!room && room.hostDeviceId === myDeviceId.value;
+  return isGameRoomHost(room, myDeviceId.value);
 }
 function upsertGameRoom(room: GameRoomShell) {
-  const next = gameRoomsState.value.filter((item) => item.roomId !== room.roomId);
-  next.unshift(room);
-  gameRoomsState.value = next.sort((a, b) => b.updatedAt - a.updatedAt);
+  gameRoomsState.value = upsertGameRoomShell(gameRoomsState.value, room);
 }
 function removeGameRoom(roomId: string) {
-  gameRoomsState.value = gameRoomsState.value.filter((room) => room.roomId !== roomId);
+  const removal = removeGameRoomShell(gameRoomsState.value, roomId, activeGameRoomId.value);
+  gameRoomsState.value = removal.rooms;
   const { [roomId]: _removed, ...rest } = doudizhuRooms.value;
   doudizhuRooms.value = rest;
   const { [roomId]: _removedGomoku, ...gomokuRest } = gomokuRooms.value;
@@ -2983,7 +2983,7 @@ function removeGameRoom(roomId: string) {
   const { [roomId]: _removedMonopoly, ...monopolyRest } = monopolyRooms.value;
   monopolyRooms.value = monopolyRest;
   if (activeGameRoomId.value === roomId) {
-    activeGameRoomId.value = gameRoomsState.value[0]?.roomId ?? "";
+    activeGameRoomId.value = removal.activeRoomId;
     selectedCardIds.value = [];
     selectedXiangqiPoint.value = null;
     roomChatDraft.value = "";
