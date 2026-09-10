@@ -1,14 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 
 const root = process.cwd();
-const tempRoot = path.join(root, ".tmp");
-await mkdir(tempRoot, { recursive: true });
-const tempDir = await mkdtemp(path.join(tempRoot, "game-leaderboard-"));
-const outfile = path.join(tempDir, "game-leaderboard.mjs");
+const outfile = path.join(root, ".game-leaderboard-test.mjs");
 
 try {
   await build({
@@ -23,6 +20,7 @@ try {
     createGameStatsRecord,
     formatWinRate,
     incrementGameStats,
+    qualifyingRankedPlayers,
     recordsForGame,
     upsertGameStatsRecords,
   } = mod;
@@ -47,7 +45,21 @@ try {
   assert.equal(nextA.totalGames, 3);
   assert.equal(nextA.wins, 2);
 
+  assert.deepEqual(
+    qualifyingRankedPlayers([
+      { deviceId: "a", nickname: "A" },
+      { deviceId: "b", nickname: "B" },
+      { deviceId: "c", nickname: "C" },
+    ]).map((player) => player.deviceId),
+    ["a", "b", "c"],
+  );
+  assert.deepEqual(qualifyingRankedPlayers([
+    { deviceId: "a", nickname: "A" },
+    { deviceId: "b", nickname: "B" },
+    { deviceId: "bot", nickname: "机器人", isBot: true },
+  ]), []);
+
   console.log("game leaderboard ok");
 } finally {
-  await rm(tempDir, { recursive: true, force: true });
+  await rm(outfile, { force: true });
 }

@@ -1,14 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 
 const root = process.cwd();
-const tempRoot = path.join(root, ".tmp");
-await mkdir(tempRoot, { recursive: true });
-const tempDir = await mkdtemp(path.join(tempRoot, "monopoly-"));
-const outfile = path.join(tempDir, "monopoly.mjs");
+const outfile = path.join(root, ".monopoly-rules-test.mjs");
 
 try {
   await build({
@@ -37,6 +34,7 @@ try {
     moveMonopolyPlayer,
     monopolyLandingRent,
     monopolyPropertyCityName,
+    monopolyTileName,
     monopolyCardWeights,
     monopolyTurnRemainingSeconds,
     propertyDistrictOf,
@@ -57,6 +55,8 @@ try {
   );
   assert.equal(board.filter((tile) => tile.kind === "property").length, 32);
   assert.equal(board.filter((tile) => tile.kind === "event").length, 4);
+  assert.equal(monopolyTileName(1), "晴川城", "地产格名称应使用对应城市名");
+  assert.equal(monopolyTileName(5), "随机事件", "神明刷新到随机事件格时应显示地块名而不是编号");
 
   for (const eventIndex of [5, 15, 25, 35]) {
     assert.equal(board[eventIndex].kind, "event", `tile ${eventIndex} should be a random event`);
@@ -371,5 +371,5 @@ try {
 
   console.log("monopoly board rules ok");
 } finally {
-  await rm(tempDir, { recursive: true, force: true });
+  await rm(outfile, { force: true });
 }

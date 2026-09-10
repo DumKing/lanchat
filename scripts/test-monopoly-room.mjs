@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
@@ -7,10 +7,7 @@ import { reactive } from "vue";
 
 const root = process.cwd();
 const roomSource = await readFile(path.join(root, "src/games/monopolyRoom.ts"), "utf8");
-const tempRoot = path.join(root, ".tmp");
-await mkdir(tempRoot, { recursive: true });
-const tempDir = await mkdtemp(path.join(tempRoot, "monopoly-room-"));
-const outfile = path.join(tempDir, "monopoly-room.mjs");
+const outfile = path.join(root, ".monopoly-room-test.mjs");
 
 try {
   await build({ entryPoints: [path.join(root, "src/games/monopolyRoom.ts")], outfile, bundle: true, format: "esm", platform: "node", logLevel: "silent" });
@@ -202,6 +199,8 @@ try {
   assert.equal(automaticJailRoom.game.currentPlayerId, "a", "自动免罪后应轮到该玩家正常投骰");
   assert.equal(automaticJailRoom.turnRolled, false, "自动免罪后应保留本回合掷骰资格");
   automaticJailRoom.game.players[0].cards = [];
+  automaticJailRoom.game.players[0].position = 12;
+  automaticJailRoom.game.properties[12] = { ...automaticJailRoom.game.properties[12], ownerDeviceId: "a", level: "house", buildingVariant: 0 };
   automaticJailRoom.game.players[0].stayTurns = 1;
   automaticJailRoom.game.players[0].turtleTurns = 3;
   automaticJailRoom.game.currentPlayerId = "b";
@@ -210,6 +209,7 @@ try {
   assert.equal(automaticJailRoom.game.players[0].stayTurns, 0, "停留卡应在目标回合开始时自动消耗");
   assert.equal(automaticJailRoom.game.players[0].turtleTurns, 2, "停留卡应优先于乌龟卡，且停留回合仍消耗一次乌龟效果");
   assert.equal(automaticJailRoom.game.currentPlayerId, "b", "停留目标应跳过投骰并直接轮到下一位玩家");
+  assert.equal(automaticJailRoom.game.properties[12].level, "level2", "停留卡让玩家原地停留时，自己的建筑也应正常升级");
   assert.match(automaticJailRoom.game.logs.join("\n"), /原地停留/, "停留自动跳过应写入权威游戏日志");
 
   automaticJailRoom.game.players[0].cards = [];
@@ -256,5 +256,5 @@ try {
   assert.equal(airportRoom.game.players.find((player) => player.deviceId === "a").position, 10, "选择当前机场格不应改变玩家位置");
   console.log("monopoly room rules ok");
 } finally {
-  await rm(tempDir, { recursive: true, force: true });
+  await rm(outfile, { force: true });
 }

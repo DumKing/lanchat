@@ -4,6 +4,8 @@ import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings,
 import type { CameraFaceAlert, CameraMonitorSettings, FaceMonitorPolicy, FaceMonitorRuntimeStatus, FacePersonPolicy, ReferencePhotoCandidateAnalysis } from "../types/face-monitor";
 import type { VisionFrameSample, VisionProfileSummary, VisionRuntimeDiagnostics, VisionRuntimeSnapshot } from "../types/vision";
 import { encodeVisionFrameEnvelope } from "./visionFrameTransport";
+import type { GameStatsRecord } from "../games/gameLeaderboard";
+import type { MinesweeperLeaderboardRecord } from "../games/minesweeperLeaderboard";
 
 export const api = {
   getPlatformInfo: () => invoke<PlatformInfo>("get_platform_info"),
@@ -70,6 +72,15 @@ export const api = {
   connectPeer: (address: string, port: number) =>
     invoke<Peer>("connect_peer", { address, port }),
   listConversations: () => invoke<Conversation[]>("list_conversations"),
+  deleteDirectConversation: (conversationId: string) =>
+    invoke<boolean>("delete_direct_conversation", { conversationId }),
+  listGameStats: () => invoke<GameStatsRecord[]>("list_game_stats"),
+  upsertGameStats: (records: GameStatsRecord[]) =>
+    invoke<GameStatsRecord[]>("upsert_game_stats", { records }),
+  listMinesweeperLeaderboard: () =>
+    invoke<MinesweeperLeaderboardRecord[]>("list_minesweeper_leaderboard"),
+  upsertMinesweeperLeaderboard: (records: MinesweeperLeaderboardRecord[]) =>
+    invoke<MinesweeperLeaderboardRecord[]>("upsert_minesweeper_leaderboard", { records }),
   listChannelMembers: (conversationId: string) =>
     invoke<ChannelMember[]>("list_channel_members", { conversationId }),
   isChannelMuted: (conversationId: string) =>

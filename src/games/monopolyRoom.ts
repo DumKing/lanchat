@@ -352,12 +352,7 @@ function finishResolvedLanding(state: MonopolyRoomState, playerId: string, rando
     }
     return;
   }
-  const property = state.game.properties[player.position];
-  const canUpgradeCurrentProperty = property?.ownerDeviceId === playerId && (property.level === "house" || property.level === "level2");
-  if (canUpgradeCurrentProperty) {
-    const result = upgradeMonopolyProperty(state.game, playerId, player.position, random);
-    if (result.ok) state.game = result.state;
-  }
+  upgradeCurrentOwnedMonopolyProperty(state, playerId, random);
   if (state.extraRollAvailable) {
     openExtraRoll(state, playerId);
     return;
@@ -414,6 +409,7 @@ function resolveAutomaticMonopolyJailTurn(state: MonopolyRoomState, random: () =
   if (player.stayTurns > 0) {
     const consumed = consumeMonopolyRoadEffectTurns(player);
     state.game.logs.push(`${player.nickname} 受到停留卡影响，原地停留并自动跳过本回合${consumed.turtle ? "；乌龟效果同步消耗" : ""}`);
+    upgradeCurrentOwnedMonopolyProperty(state, player.deviceId, random);
     state.game = endMonopolyTurn(state.game, Date.now(), random);
     state.turnRolled = false;
     state.extraRollAvailable = false;
@@ -425,6 +421,17 @@ function resolveAutomaticMonopolyJailTurn(state: MonopolyRoomState, random: () =
     return true;
   }
   return false;
+}
+
+function upgradeCurrentOwnedMonopolyProperty(state: MonopolyRoomState, playerId: string, random: () => number): boolean {
+  const player = state.game.players.find((item) => item.deviceId === playerId);
+  if (!player) return false;
+  const property = state.game.properties[player.position];
+  if (property?.ownerDeviceId !== playerId || (property.level !== "house" && property.level !== "level2")) return false;
+  const result = upgradeMonopolyProperty(state.game, playerId, player.position, random);
+  if (!result.ok) return false;
+  state.game = result.state;
+  return true;
 }
 
 function consumeMonopolyRoadEffectTurns(player: { jailTurns: number; stayTurns: number; turtleTurns: number }): { jail: boolean; stay: boolean; turtle: boolean } {

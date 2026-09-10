@@ -3,12 +3,15 @@ import fs from "node:fs";
 import postcss from "postcss";
 
 const app = fs.readFileSync(new URL("../src/App.vue", import.meta.url), "utf8");
+const board3d = fs.readFileSync(new URL("../src/components/MonopolyBoard3D.vue", import.meta.url), "utf8");
 const styles = fs.readFileSync(new URL("../src/styles/global.css", import.meta.url), "utf8");
 const rules = fs.readFileSync(new URL("../src/games/monopoly.ts", import.meta.url), "utf8");
 const gameRules = fs.readFileSync(new URL("../src/games/rules.ts", import.meta.url), "utf8");
 const roomRules = fs.readFileSync(new URL("../src/games/monopolyRoom.ts", import.meta.url), "utf8");
 const appStyle = app.match(/<style scoped>([\s\S]*?)<\/style>/)?.[1] ?? "";
+const room3dStyle = fs.readFileSync(new URL("../src/styles/monopoly3d-room.css", import.meta.url), "utf8");
 
+assert.match(app, /const monopolyViewMode = ref<'flat' \| '3d'>\('3d'\)/, "大富翁房间默认应进入 3D 棋盘，同时保留平面切换入口");
 assert.match(app, /class="monopoly-center-player"/, "棋盘中心应展示自己的玩家资料");
 assert.match(app, /@click="openGameRules"/, "游戏房间顶部应提供玩法规则入口");
 assert.match(app, /v-model:show="gameRulesOpen"/, "玩法规则应使用独立弹窗展示");
@@ -60,6 +63,8 @@ assert.match(app, /flushDelayedMonopolyAnnouncements\(\);/, "棋子完成移动�
 assert.match(app, /const monopolyRandomBuildingVariantsDraft = ref\(true\)/, "创建房间应默认启用每次随机建筑外观");
 assert.match(app, /<NSwitch v-model:value="monopolyRandomBuildingVariantsDraft"/, "创建房间应提供建筑外观随机开关");
 assert.match(app, /restartMonopolyRoomState\(state\)/, "再来一局应复用房主状态机的重开逻辑");
+assert.match(app, /const restartedInSameRoom = state\.phase === "lobby"[\s\S]*?monopolyKnownPositions\.values\(\)/, "同一房间再来一局时应识别起点重置，避免从旧位置逐格移动");
+assert.match(app, /monopolyPlaybackRoomId !== state\.roomId \|\| restartedInSameRoom/, "新房间与同房间重开都应直接重置棋子播放状态");
 assert.match(app, /class="monopoly-player-ready"/, "玩家卡片应展示准备状态标识");
 assert.match(app, /isMonopolyPlayerReady\(player\.deviceId\)/, "玩家卡片的准备状态应读取当前房间座位状态");
 assert.match(app, /:title="announcement\.text"/, "事件日志的超长文案应支持悬停查看全文");
@@ -68,6 +73,8 @@ assert.match(app, /\.monopoly-announcement-inline-avatar\s*\{[^}]*display:\s*inl
 assert.match(app, /class="monopoly-announcement-entity"/, "公告中的头像和名称应绑定为不可拆分的同一行实体");
 assert.match(app, /\.monopoly-announcement-entity\s*\{[^}]*display:\s*inline-flex[^}]*white-space:\s*nowrap/, "公告实体应保持头像和文字永远同行");
 assert.match(app, /class="[^"]*monopoly-god-avatar[^"]*"/, "财神、穷鬼、天使和恶魔应使用独立神明头像");
+assert.match(app, /const MONOPOLY_RULE_GODS:[\s\S]*?wealth[\s\S]*?poverty[\s\S]*?angel[\s\S]*?devil/, "玩法规则应配置四种神明的同款资源图与说明");
+assert.match(app, /tab\.key === 'gods'[\s\S]*?monopoly-rule-god-preview[\s\S]*?monopolyGodAvatarTone\(ruleGod\.god\)/, "神明规则页签应展示棋盘同款神明图片");
 assert.match(app, /function monopolyGodAvatarGlyph\(/, "神明头像应通过统一映射生成");
 assert.match(app, /marker\.god[\s\S]*?monopoly-god-avatar/, "棋盘地块上的神明标记也应使用同一套神明头像");
 assert.doesNotMatch(app, /已选中\$\{monopolyCardLabel\(selectedMonopolyCard\)\}卡/, "选中道具后不应重复展示已选中说明");
@@ -144,8 +151,10 @@ assert.match(app, /class="monopoly-announcement"/, "棋盘中心上方应提供�
 assert.match(app, /const monopolyDiceResultVisible = ref\(false\)/, "骰子点数应在动画结算后再显示");
 assert.match(app, /<template v-if="!monopolyDiceRolling && activeMonopolyState\?\.lastDice">/, "骰子滚动阶段不应提前显示最终点数");
 assert.match(app, /class="monopoly-player-bankrupt"/, "破产玩家卡片应覆盖明显的破产标识");
-assert.match(app, /class="monopoly-player-jail-chains"/, "入狱玩家卡片应覆盖四角交叉铁链效果");
-assert.match(app, /class="monopoly-player-jail-lock"/, "监狱锁链应在四角交汇处呈现十字锁定效果");
+assert.match(app, /class="monopoly-player-seat"\s*:class="\{[^}]*jailed:\s*player\.jailTurns\s*>\s*0/, "入狱玩家卡片应带独立的 jailed 状态");
+assert.match(app, /class="monopoly-player-jail-chains"[\s\S]*?<svg[^>]*preserveAspectRatio="none"[\s\S]*?<line[^>]*x1="0"[^>]*y1="0"[^>]*x2="100"[^>]*y2="100"[\s\S]*?<line[^>]*x1="100"[^>]*y1="0"[^>]*x2="0"[^>]*y2="100"/, "入狱玩家卡片的两组对角应由完整锁链连接");
+assert.match(app, /class="monopoly-player-jail-lock"/, "两条监狱锁链应在对角交汇处显示锁扣");
+assert.match(app, /\.monopoly-player-jail-chain-links\s*\{[^}]*stroke-dasharray:/, "对角锁链应绘制连续链节纹理");
 assert.match(app, /font-family:\s*KaiTi/, "破产标识应使用灰色楷书风格");
 assert.match(app, /@click="focusMonopolyPlayer\(player\)"/, "点击玩家卡片应定位对应棋子");
 assert.match(app, /monopoly-token-focused/, "被定位的棋子应使用独立的闪烁状态");
@@ -172,6 +181,13 @@ assert.match(app, /class="monopoly-tile-statuses"/, "地块状态标记应使用
 assert.match(app, /class="monopoly-tile-toll"/, "已购地产应在地块上标注当前过路费");
 assert.match(app, /monopolyPropertyTollAmount\(tile\.index\)/, "地块过路费应由统一的地产计费函数计算");
 assert.match(app, /class="monopoly-building-level-signal"/, "地块左下角应使用信号条展示建筑等级");
+assert.match(board3d, /function cityEdgeLevelSegments\(index: number,d: number\[\]\[\],x: number,y: number\)/, "3D 等级信号应沿城池名对应的地块顶面边缘生成");
+assert.match(board3d, /class="city-edge-level-signal"[\s\S]*?segmentIndex < propertyLevelCount\(tile\.level\)/, "3D 城名侧边应按小屋一格、洋房两格、地标三格点亮玩家色");
+assert.match(board3d, /\.city-edge-level-signal polygon\.active\{fill:var\(--owner-color\)/, "3D 已升级信号格必须使用对应玩家颜色");
+assert.doesNotMatch(board3d, /class="owner-level-segments"/, "3D 等级信号不应继续画在立体底座正面");
+assert.match(board3d, /marker\.kind!==['"]double['"]&&marker\.kind!==['"]god['"]/, "3D 神明已有图片时不应再在地块状态条重复显示财、穷、天、魔文字");
+assert.match(app, /\.monopoly-tile-toll\s*\{[^}]*right:\s*2px[^}]*bottom:\s*2px/, "平面版过路费价格应保留在地块右下角");
+assert.match(app, /\.monopoly-building-level-signal\s*\{[^}]*bottom:\s*2px[^}]*left:\s*2px[^}]*flex-direction:\s*column-reverse/, "平面版建筑等级应保留在地块左下角的信号格");
 assert.match(app, /monopolyPropertyLevelBars\(tile\.index\)/, "建筑等级信号条应随小屋、洋房和地标变化");
 assert.match(app, /--monopoly-signal-color/, "建筑等级信号条应按等级使用明确颜色");
 assert.match(app, /background:\s*var\(--monopoly-signal-color\)/, "建筑等级信号条应读取等级颜色变量");
@@ -213,9 +229,10 @@ assert.doesNotMatch(app, /<div class="monopoly-status-bar">/, "回合、行动�
 assert.match(app, /class="monopoly-turn-summary"/, "回合、当前行动与倒计时应融合在棋盘中央信息区");
 assert.match(app, /class="monopoly-turn-round"/, "中央信息区应展示当前回合数");
 assert.match(app, /\.monopoly-center-panel\s*\{[^}]*width:\s*min\(62%, calc\(400 \* var\(--monopoly-u, 1px\)\)\)[^}]*aspect-ratio:\s*auto/, "棋盘中心操作与结算容器应使用紧凑的矩形高度并随棋盘缩放");
-assert.match(app, /<section class="monopoly-center-panel"[^>]*>[\s\S]*?v-if="activeMonopolyState\?\.phase === 'ended'"[\s\S]*?class="monopoly-center-settlement"/s, "对局结束后应在棋盘中心面板内展示结算信息");
+assert.match(app, /v-if="activeMonopolyState\?\.phase === 'ended' && monopolyViewMode === 'flat'"[\s\S]*?class="monopoly-center-settlement"/s, "平面对局结束后应在棋盘中心面板内展示结算信息");
+assert.match(app, /v-if="activeMonopolyState\?\.phase === 'ended' && monopolyViewMode === '3d'" class="monopoly-center-panel settlement monopoly-settlement-overlay-3d"/, "3D 对局结束后应额外展示结算面板并保留普通对局中心");
 assert.match(app, /\.monopoly-center-settlement\s*\{[^}]*min-height:\s*100%[^}]*place-items:\s*center/, "结算内容应在中心正方形面板内完整居中");
-assert.match(app, /<section class="monopoly-center-panel"\s*:class="\{ settlement: activeMonopolyState\?\.phase === 'ended' \}"/, "结算时棋盘中心应切换为独立的结算状态");
+assert.match(app, /<section class="monopoly-center-panel"\s*:class="\{ settlement: activeMonopolyState\?\.phase === 'ended' && monopolyViewMode === 'flat' \}"/, "平面结算时棋盘中心应切换为独立的结算状态");
 assert.match(app, /\.monopoly-center-column\.settlement \.monopoly-announcement-stack\s*\{[^}]*display:\s*none/, "结算态中心列应隐藏对局横幅");
 assert.match(app, /\.monopoly-center-panel\.settlement\s*\{[^}]*height:\s*min\(56%, calc\(292 \* var\(--monopoly-u, 1px\)\)\)/, "结算中心应回到棋盘几何正中央");
 assert.doesNotMatch(app, /class="settlement-overlay monopoly-settlement"/, "大富翁结算不应再额外铺满整个棋盘");
@@ -251,6 +268,7 @@ assert.match(app, /\.monopoly-announcement-log-list\s*\{[^}]*scrollbar-color:\s*
 assert.match(app, /\.monopoly-announcement-log-list\s*\{[^}]*grid-auto-rows:\s*calc\(20 \* var\(--monopoly-u, 1px\)\)[^}]*align-content:\s*start/, "事件日志应从顶部开始以随棋盘缩放的固定行距顺序排列");
 assert.match(app, /\.monopoly-announcement-log-list article\s*\{[^}]*height:\s*calc\(20 \* var\(--monopoly-u, 1px\)\)[^}]*line-height:\s*calc\(20 \* var\(--monopoly-u, 1px\)\)/, "事件日志每一行应保持随棋盘缩放的固定高度，避免内容跳动");
 assert.match(app, /\.monopoly-announcement-log-list article strong\s*\{[^}]*color:\s*color-mix\(in srgb, var\(--monopoly-announcement-color\)/, "事件日志文字应使用与对应横幅一致的玩家主题色");
+assert.match(room3dStyle, /\.monopoly-layout\.monopoly-view-3d \.monopoly-announcement-log-list strong\s*\{[^}]*color:\s*color-mix\(in srgb,var\(--monopoly-announcement-color,var\(--accent\)\)/, "3D 布局不应把事件日志的玩家颜色覆盖为普通文本色");
 assert.match(app, /monopolyAnnouncementLogPane\.value\.scrollTop = monopolyAnnouncementLogPane\.value\.scrollHeight/, "事件日志新增内容后应自动滚动到最新一行");
 assert.match(app, /\.monopoly-room-panel\s*\{[^}]*overflow:\s*hidden/, "房间聊天不得从五格高度区域溢出并覆盖玩家卡片");
 assert.match(app, /\{\{ monopolyPropertyTollAmount\(tile\.index\) \}\}<\/span>/, "地产过路费应仅展示价格数字");

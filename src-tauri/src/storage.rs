@@ -68,6 +68,34 @@ pub struct Conversation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameStatsRecord {
+    pub id: String,
+    pub game: String,
+    pub device_id: String,
+    pub nickname: String,
+    pub total_games: u32,
+    pub wins: u32,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MinesweeperLeaderboardRecord {
+    pub id: String,
+    pub device_id: String,
+    pub nickname: String,
+    pub difficulty_key: String,
+    pub difficulty_label: String,
+    pub width: u32,
+    pub height: u32,
+    pub mines: u32,
+    pub elapsed_ms: i64,
+    pub moves: u32,
+    pub finished_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConversationKind {
     Direct,
@@ -387,6 +415,28 @@ impl Storage {
                 simulation_created_at INTEGER,
                 created_at INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS game_stats (
+                id TEXT PRIMARY KEY,
+                game TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                nickname TEXT NOT NULL,
+                total_games INTEGER NOT NULL,
+                wins INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS minesweeper_leaderboard (
+                id TEXT PRIMARY KEY,
+                device_id TEXT NOT NULL,
+                nickname TEXT NOT NULL,
+                difficulty_key TEXT NOT NULL,
+                difficulty_label TEXT NOT NULL,
+                width INTEGER NOT NULL,
+                height INTEGER NOT NULL,
+                mines INTEGER NOT NULL,
+                elapsed_ms INTEGER NOT NULL,
+                moves INTEGER NOT NULL,
+                finished_at INTEGER NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS simulation_audits (
                 id TEXT PRIMARY KEY,
                 operator_device_id TEXT NOT NULL,
@@ -508,6 +558,10 @@ impl Storage {
             );
             CREATE INDEX IF NOT EXISTS idx_messages_conversation_created
                 ON messages(conversation_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_game_stats_game
+                ON game_stats(game, wins DESC, total_games DESC);
+            CREATE INDEX IF NOT EXISTS idx_minesweeper_leaderboard_difficulty
+                ON minesweeper_leaderboard(difficulty_key, elapsed_ms ASC);
             CREATE INDEX IF NOT EXISTS idx_face_people_active
                 ON face_people(enabled, expires_at, deleted_at);
             CREATE INDEX IF NOT EXISTS idx_face_person_samples_person
@@ -523,6 +577,14 @@ impl Storage {
             "message_type",
             "TEXT NOT NULL DEFAULT 'text'",
         )?;
+        conn.execute(
+            "DELETE FROM messages
+             WHERE conversation_id = ?1
+               AND message_type = 'system'
+               AND (content LIKE '% 上线了' OR content LIKE '% 下线了')",
+            params![DEFAULT_GROUP_ID],
+        )
+        .map_err(|err| format!("清理历史上下线通知失败：{err}"))?;
         ensure_column(&conn, "messages", "file_name", "TEXT")?;
         ensure_column(&conn, "messages", "file_size", "INTEGER")?;
         ensure_column(&conn, "messages", "file_url", "TEXT")?;
@@ -2299,6 +2361,166 @@ impl Storage {
             .map_err(|err| format!("解析会话失败：{err}"))
     }
 
+    pub fn delete_direct_conversation(&self, conversation_id: &str) -> Result<bool, String> {
+        let conversation_id = conversation_id.trim();
+        if conversation_id.is_empty() {
+            return Err("会话标识不能为空".to_string());
+        }
+        let mut conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let transaction = conn
+            .transaction()
+            .map_err(|err| format!("开始删除单聊失败：{err}"))?;
+        let kind = transaction
+            .query_row(
+                "SELECT kind FROM conversations WHERE id = ?1",
+                params![conversation_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|err| format!("读取会话类型失败：{err}"))?;
+        let Some(kind) = kind else {
+            return Ok(false);
+        };
+        if kind != "direct" {
+            return Err("只能删除单聊会话".to_string());
+        }
+        transaction
+            .execute(
+                "DELETE FROM messages WHERE conversation_id = ?1",
+                params![conversation_id],
+            )
+            .map_err(|err| format!("删除单聊消息失败：{err}"))?;
+        transaction
+            .execute(
+                "DELETE FROM conversations WHERE id = ?1",
+                params![conversation_id],
+            )
+            .map_err(|err| format!("删除单聊会话失败：{err}"))?;
+        transaction
+            .commit()
+            .map_err(|err| format!("提交删除单聊失败：{err}"))?;
+        Ok(true)
+    }
+
+    pub fn list_game_stats(&self) -> Result<Vec<GameStatsRecord>, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT id, game, device_id, nickname, total_games, wins, updated_at FROM game_stats ORDER BY game, updated_at DESC")
+            .map_err(|err| format!("读取游戏排行榜失败：{err}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(GameStatsRecord {
+                    id: row.get(0)?,
+                    game: row.get(1)?,
+                    device_id: row.get(2)?,
+                    nickname: row.get(3)?,
+                    total_games: row.get(4)?,
+                    wins: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            })
+            .map_err(|err| format!("读取游戏排行榜失败：{err}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("解析游戏排行榜失败：{err}"))
+    }
+
+    pub fn upsert_game_stats(
+        &self,
+        records: &[GameStatsRecord],
+    ) -> Result<Vec<GameStatsRecord>, String> {
+        let mut conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let transaction = conn
+            .transaction()
+            .map_err(|err| format!("开始保存游戏排行榜失败：{err}"))?;
+        for record in records {
+            if record.id.trim().is_empty()
+                || record.device_id.trim().is_empty()
+                || record.wins > record.total_games
+            {
+                continue;
+            }
+            transaction.execute(
+                "INSERT INTO game_stats (id, game, device_id, nickname, total_games, wins, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(id) DO UPDATE SET game=excluded.game, device_id=excluded.device_id,
+                   nickname=excluded.nickname, total_games=excluded.total_games, wins=excluded.wins, updated_at=excluded.updated_at
+                 WHERE excluded.total_games > game_stats.total_games
+                    OR (excluded.total_games = game_stats.total_games AND excluded.wins > game_stats.wins)
+                    OR (excluded.total_games = game_stats.total_games AND excluded.wins = game_stats.wins AND excluded.updated_at > game_stats.updated_at)",
+                params![record.id, record.game, record.device_id, record.nickname, record.total_games, record.wins, record.updated_at],
+            ).map_err(|err| format!("保存游戏排行榜失败：{err}"))?;
+        }
+        transaction
+            .commit()
+            .map_err(|err| format!("提交游戏排行榜失败：{err}"))?;
+        drop(conn);
+        self.list_game_stats()
+    }
+
+    pub fn list_minesweeper_leaderboard(
+        &self,
+    ) -> Result<Vec<MinesweeperLeaderboardRecord>, String> {
+        let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT id, device_id, nickname, difficulty_key, difficulty_label, width, height, mines, elapsed_ms, moves, finished_at
+             FROM minesweeper_leaderboard ORDER BY difficulty_key, elapsed_ms, finished_at"
+        ).map_err(|err| format!("读取扫雷排行榜失败：{err}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(MinesweeperLeaderboardRecord {
+                    id: row.get(0)?,
+                    device_id: row.get(1)?,
+                    nickname: row.get(2)?,
+                    difficulty_key: row.get(3)?,
+                    difficulty_label: row.get(4)?,
+                    width: row.get(5)?,
+                    height: row.get(6)?,
+                    mines: row.get(7)?,
+                    elapsed_ms: row.get(8)?,
+                    moves: row.get(9)?,
+                    finished_at: row.get(10)?,
+                })
+            })
+            .map_err(|err| format!("读取扫雷排行榜失败：{err}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|err| format!("解析扫雷排行榜失败：{err}"))
+    }
+
+    pub fn upsert_minesweeper_leaderboard(
+        &self,
+        records: &[MinesweeperLeaderboardRecord],
+    ) -> Result<Vec<MinesweeperLeaderboardRecord>, String> {
+        let mut conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
+        let transaction = conn
+            .transaction()
+            .map_err(|err| format!("开始保存扫雷排行榜失败：{err}"))?;
+        for record in records {
+            if record.id.trim().is_empty()
+                || record.device_id.trim().is_empty()
+                || record.elapsed_ms == 0
+            {
+                continue;
+            }
+            transaction.execute(
+                "INSERT INTO minesweeper_leaderboard (id, device_id, nickname, difficulty_key, difficulty_label, width, height, mines, elapsed_ms, moves, finished_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 ON CONFLICT(id) DO UPDATE SET device_id=excluded.device_id, nickname=excluded.nickname,
+                   difficulty_key=excluded.difficulty_key, difficulty_label=excluded.difficulty_label,
+                   width=excluded.width, height=excluded.height, mines=excluded.mines, elapsed_ms=excluded.elapsed_ms,
+                   moves=excluded.moves, finished_at=excluded.finished_at
+                 WHERE excluded.elapsed_ms < minesweeper_leaderboard.elapsed_ms
+                    OR (excluded.elapsed_ms = minesweeper_leaderboard.elapsed_ms AND excluded.finished_at > minesweeper_leaderboard.finished_at)",
+                params![record.id, record.device_id, record.nickname, record.difficulty_key, record.difficulty_label,
+                    record.width, record.height, record.mines, record.elapsed_ms, record.moves, record.finished_at],
+            ).map_err(|err| format!("保存扫雷排行榜失败：{err}"))?;
+        }
+        transaction
+            .commit()
+            .map_err(|err| format!("提交扫雷排行榜失败：{err}"))?;
+        drop(conn);
+        self.list_minesweeper_leaderboard()
+    }
+
     pub fn save_message(&self, message: &Message) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|_| "数据库锁已损坏".to_string())?;
         conn.execute(
@@ -3649,6 +3871,157 @@ mod tests {
                 .as_ref()
                 .map(|item| item.operator_device_id.as_str())
         );
+    }
+
+    #[test]
+    fn deletes_only_local_direct_conversation_and_keeps_peer() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage = Storage::open(temp.path().join("lanchat.sqlite3")).expect("storage opens");
+        let peer = Peer {
+            device_id: "peer-delete".to_string(),
+            nickname: "可删除同事".to_string(),
+            note: None,
+            avatar: None,
+            address: "192.168.1.18".to_string(),
+            port: 18145,
+            online: true,
+            last_seen_at: 10,
+            client_kind: "full".to_string(),
+            supports_chat: true,
+            nickname_locked: false,
+            build_version: "0.7.1".to_string(),
+            build_timestamp: 10,
+            platform_os: "windows".to_string(),
+        };
+        storage.upsert_peer(&peer).expect("peer saved");
+        storage
+            .save_message(&Message {
+                id: "delete-message".to_string(),
+                conversation_id: peer.device_id.clone(),
+                sender_device_id: peer.device_id.clone(),
+                content: "稍后再聊".to_string(),
+                message_type: MessageType::Text,
+                file_meta: None,
+                status: MessageStatus::Delivered,
+                simulation: None,
+                created_at: 11,
+            })
+            .expect("message saved");
+
+        assert!(storage
+            .delete_direct_conversation(&peer.device_id)
+            .expect("direct deleted"));
+        assert!(!storage
+            .list_conversations()
+            .expect("conversations")
+            .iter()
+            .any(|item| item.id == peer.device_id));
+        assert!(storage
+            .list_messages(&peer.device_id)
+            .expect("messages")
+            .is_empty());
+        assert!(storage
+            .list_peers()
+            .expect("peers")
+            .iter()
+            .any(|item| item.device_id == peer.device_id));
+        assert!(!storage
+            .delete_direct_conversation(&peer.device_id)
+            .expect("idempotent delete"));
+        assert!(storage
+            .delete_direct_conversation(DEFAULT_GROUP_ID)
+            .is_err());
+    }
+
+    #[test]
+    fn reopening_storage_removes_legacy_presence_notices_only() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db_path = temp.path().join("lanchat.sqlite3");
+        {
+            let storage = Storage::open(&db_path).expect("storage opens");
+            for (id, content, message_type) in [
+                ("online", "同事 上线了", MessageType::System),
+                ("offline", "同事 下线了", MessageType::System),
+                ("notice", "管理员 更新了群公告", MessageType::System),
+                ("chat", "同事 上线了", MessageType::Text),
+            ] {
+                storage
+                    .save_message(&Message {
+                        id: id.to_string(),
+                        conversation_id: DEFAULT_GROUP_ID.to_string(),
+                        sender_device_id: "system".to_string(),
+                        content: content.to_string(),
+                        message_type,
+                        file_meta: None,
+                        status: MessageStatus::Delivered,
+                        simulation: None,
+                        created_at: 10,
+                    })
+                    .expect("message saved");
+            }
+        }
+
+        let reopened = Storage::open(&db_path).expect("storage reopens");
+        let messages = reopened.list_messages(DEFAULT_GROUP_ID).expect("messages");
+        assert_eq!(2, messages.len());
+        assert!(messages.iter().any(|message| message.id == "notice"));
+        assert!(messages.iter().any(|message| message.id == "chat"));
+    }
+
+    #[test]
+    fn leaderboard_records_persist_and_keep_the_best_values() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db_path = temp.path().join("lanchat.sqlite3");
+        {
+            let storage = Storage::open(&db_path).expect("storage opens");
+            storage
+                .upsert_game_stats(&[GameStatsRecord {
+                    id: "monopoly:player-1".to_string(),
+                    game: "monopoly".to_string(),
+                    device_id: "player-1".to_string(),
+                    nickname: "玩家一".to_string(),
+                    total_games: 4,
+                    wins: 2,
+                    updated_at: 20,
+                }])
+                .expect("game stats saved");
+            storage
+                .upsert_game_stats(&[GameStatsRecord {
+                    id: "monopoly:player-1".to_string(),
+                    game: "monopoly".to_string(),
+                    device_id: "player-1".to_string(),
+                    nickname: "旧数据".to_string(),
+                    total_games: 3,
+                    wins: 3,
+                    updated_at: 30,
+                }])
+                .expect("older game stats ignored");
+            storage
+                .upsert_minesweeper_leaderboard(&[MinesweeperLeaderboardRecord {
+                    id: "9x9-10:player-1".to_string(),
+                    device_id: "player-1".to_string(),
+                    nickname: "玩家一".to_string(),
+                    difficulty_key: "9x9-10".to_string(),
+                    difficulty_label: "9 x 9".to_string(),
+                    width: 9,
+                    height: 9,
+                    mines: 10,
+                    elapsed_ms: 12_000,
+                    moves: 32,
+                    finished_at: 20,
+                }])
+                .expect("minesweeper record saved");
+        }
+        let reopened = Storage::open(&db_path).expect("storage reopens");
+        let game = reopened.list_game_stats().expect("game stats");
+        assert_eq!(1, game.len());
+        assert_eq!(4, game[0].total_games);
+        assert_eq!("玩家一", game[0].nickname);
+        let minesweeper = reopened
+            .list_minesweeper_leaderboard()
+            .expect("minesweeper");
+        assert_eq!(1, minesweeper.len());
+        assert_eq!(12_000, minesweeper[0].elapsed_ms);
     }
 
     #[test]

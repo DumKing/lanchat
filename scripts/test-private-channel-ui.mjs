@@ -38,6 +38,8 @@ assert.match(appVue, /acceptPrivateChannelInviteCard/, "邀请卡片应支持加
 assert.match(appVue, /rejectPrivateChannelInviteCard/, "邀请卡片应支持拒绝操作");
 assert.match(appVue, /sendPrivateChannelInviteCards/, "邀请频道成员应发送私聊邀请卡片");
 assert.match(appVue, /deviceChannelConversations/, "设备列表应汇总公开和私有频道数据");
+assert.match(appVue, /class="conversation-delete-button"[\s\S]*?requestDeleteDirectConversation\(conversation\)/, "聊天列表中的单聊应提供删除入口");
+assert.match(appVue, /v-model:show="deleteDirectConversationOpen"[\s\S]*?confirmDeleteDirectConversation/, "删除单聊前应显示确认弹窗");
 assert.match(appVue, /channel-category-list/, "设备列表应展示频道分类");
 assert.doesNotMatch(appVue, /<NDropdown[\s\S]{0,240}openRecipientPicker\('gameInvite'\)/, "游戏邀请不应再使用下拉菜单");
 
@@ -46,6 +48,8 @@ assert.match(css, /\.recipient-list-row/, "接收人列表行应有独立样式"
 assert.match(css, /\.message-avatar/, "消息头像应有独立样式");
 assert.match(css, /\.group-inspector\s*\{/, "群信息栏应有独立样式");
 assert.match(css, /\.pane-resize-handle\.right-group/, "群信息栏应有右侧宽度调节手柄");
+assert.match(css, /\.list-pane\s*>\s*\.n-layout-sider-scroll-container\s*\{[\s\S]*?overflow:\s*hidden;/, "聊天列表外层侧栏不应重复显示滚动条");
+assert.match(css, /\.list-pane\s+\.list-scroll\s*\{[\s\S]*?height:\s*100%;/, "聊天列表应保留原有内部滚动区域");
 assert.match(css, /\.channel-invite-card/, "私有频道邀请卡片应有独立样式");
 assert.match(css, /\.create-room-game-option/, "创建房间下拉项应有图文样式");
 assert.match(css, /\.create-room-game-menu/, "创建房间下拉菜单应有独立滚动样式");
@@ -54,8 +58,10 @@ assert.match(api, /createPrivateChannel/, "前端 API 应暴露创建私有频�
 assert.match(api, /invitePrivateChannelMembers/, "前端 API 应暴露邀请私有频道成员");
 assert.match(api, /buildPrivateChannelInviteCard/, "前端 API 应暴露构建邀请卡片接口");
 assert.match(api, /acceptPrivateChannelInvite/, "前端 API 应暴露接受邀请接口");
+assert.match(api, /deleteDirectConversation:[\s\S]*?delete_direct_conversation/, "前端 API 应暴露删除本机单聊命令");
 assert.match(store, /buildPrivateChannelInvite/, "Store 应封装构建邀请卡片");
 assert.match(store, /acceptPrivateChannelInvite/, "Store 应封装接受邀请并切换频道");
+assert.match(store, /async function deleteDirectConversation\(conversationId: string\)/, "Store 应封装单聊删除与缓存清理");
 assert.match(store, /if \(!conversation\.is_private\) return true;/, "公开局域网频道不应依赖私有频道成员表才能发送消息");
 assert.match(eventBus, /private_channel_invited/, "前端应保留私有频道邀请事件兼容旧协议");
 assert.match(types, /is_private: boolean/, "会话类型应包含私有频道标识");
@@ -64,6 +70,7 @@ assert.match(types, /export type PrivateChannelInvitePayload/, "应定义私有�
 
 assert.match(lib, /build_private_channel_invite_card/, "后端应提供构建私有频道邀请卡片命令");
 assert.match(lib, /accept_private_channel_invite/, "后端应提供接受私有频道邀请命令");
+assert.match(lib, /fn delete_direct_conversation/, "后端应提供本机单聊删除命令");
 assert.match(protocol, /PrivateChannelInvite/, "协议应包含私有频道邀请帧");
 assert.match(protocol, /encrypted: bool/, "聊天消息帧应带加密标识");
 assert.match(protocol, /nonce: Option<String>/, "聊天消息帧应带 nonce");

@@ -1,14 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 
 const root = process.cwd();
-const tempRoot = path.join(root, ".tmp");
-await mkdir(tempRoot, { recursive: true });
-const tempDir = await mkdtemp(path.join(tempRoot, "minesweeper-leaderboard-"));
-const outfile = path.join(tempDir, "leaderboard.mjs");
+const outfile = path.join(root, ".minesweeper-leaderboard-test.mjs");
 
 try {
   await build({
@@ -62,7 +59,7 @@ try {
 
   console.log("minesweeper leaderboard ok");
 } finally {
-  await rm(tempDir, { recursive: true, force: true });
+  await rm(outfile, { force: true });
 }
 
 

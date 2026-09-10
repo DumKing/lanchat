@@ -51,8 +51,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use storage::{
     AdminNotificationRecord, CameraFaceAlertRecord, ChannelMember, ChannelMemberSeed, Conversation,
-    FaceMonitorPolicyRecord, FacePersonRecord, FacePersonSampleRecord, Message, MessageType, Peer,
-    Profile, SimulationAudit, Storage, VisionEmbeddingWrite, DEFAULT_GROUP_ID,
+    FaceMonitorPolicyRecord, FacePersonRecord, FacePersonSampleRecord, GameStatsRecord, Message,
+    MessageType, MinesweeperLeaderboardRecord, Peer, Profile, SimulationAudit, Storage,
+    VisionEmbeddingWrite, DEFAULT_GROUP_ID,
 };
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItemBuilder, PredefinedMenuItem};
@@ -3362,6 +3363,47 @@ fn list_conversations(state: State<'_, AppState>) -> Result<Vec<Conversation>, S
 }
 
 #[tauri::command]
+fn delete_direct_conversation(
+    state: State<'_, AppState>,
+    conversation_id: String,
+) -> Result<bool, String> {
+    ensure_full_client(&state, "删除单聊")?;
+    state.storage.delete_direct_conversation(&conversation_id)
+}
+
+#[tauri::command]
+fn list_game_stats(state: State<'_, AppState>) -> Result<Vec<GameStatsRecord>, String> {
+    ensure_full_client(&state, "游戏排行榜")?;
+    state.storage.list_game_stats()
+}
+
+#[tauri::command]
+fn upsert_game_stats(
+    state: State<'_, AppState>,
+    records: Vec<GameStatsRecord>,
+) -> Result<Vec<GameStatsRecord>, String> {
+    ensure_full_client(&state, "游戏排行榜")?;
+    state.storage.upsert_game_stats(&records)
+}
+
+#[tauri::command]
+fn list_minesweeper_leaderboard(
+    state: State<'_, AppState>,
+) -> Result<Vec<MinesweeperLeaderboardRecord>, String> {
+    ensure_full_client(&state, "扫雷排行榜")?;
+    state.storage.list_minesweeper_leaderboard()
+}
+
+#[tauri::command]
+fn upsert_minesweeper_leaderboard(
+    state: State<'_, AppState>,
+    records: Vec<MinesweeperLeaderboardRecord>,
+) -> Result<Vec<MinesweeperLeaderboardRecord>, String> {
+    ensure_full_client(&state, "扫雷排行榜")?;
+    state.storage.upsert_minesweeper_leaderboard(&records)
+}
+
+#[tauri::command]
 fn list_channel_members(
     state: State<'_, AppState>,
     conversation_id: String,
@@ -5750,6 +5792,11 @@ pub fn run() {
             admin_rename_peer,
             connect_peer,
             list_conversations,
+            delete_direct_conversation,
+            list_game_stats,
+            upsert_game_stats,
+            list_minesweeper_leaderboard,
+            upsert_minesweeper_leaderboard,
             list_channel_members,
             create_private_channel,
             invite_private_channel_members,
