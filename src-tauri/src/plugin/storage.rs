@@ -265,6 +265,26 @@ impl PluginStorage {
         Ok(())
     }
 
+    pub fn uninstall(&self, plugin_id: &str, delete_private_data: bool) -> Result<(), String> {
+        let mut connection = self.connection.lock().map_err(|_| "插件数据库锁已损坏".to_string())?;
+        let transaction = connection.transaction().map_err(|error| format!("启动插件卸载事务失败: {error}"))?;
+        let removed = transaction
+            .execute("DELETE FROM plugin_installations WHERE plugin_id=?1", [plugin_id])
+            .map_err(|error| format!("删除插件安装状态失败: {error}"))?;
+        if removed == 0 {
+            return Err("插件尚未安装".to_string());
+        }
+        transaction
+            .execute("DELETE FROM plugin_versions WHERE plugin_id=?1", [plugin_id])
+            .map_err(|error| format!("删除插件版本记录失败: {error}"))?;
+        if delete_private_data {
+            transaction
+                .execute("DELETE FROM plugin_private_storage WHERE plugin_id=?1", [plugin_id])
+                .map_err(|error| format!("删除插件私有数据失败: {error}"))?;
+        }
+        transaction.commit().map_err(|error| format!("提交插件卸载事务失败: {error}"))
+    }
+
     pub fn storage_set(&self, plugin_id: &str, key: &str, value: &serde_json::Value, updated_at: i64) -> Result<(), String> {
         let value = serde_json::to_string(value).map_err(|error| format!("序列化插件数据失败: {error}"))?;
         let connection = self.connection.lock().map_err(|_| "插件数据库锁已损坏".to_string())?;
@@ -352,5 +372,21 @@ mod tests {
         assert_eq!(storage.delete_private_storage("com.lanchat.a").unwrap(), 1);
         assert_eq!(storage.storage_get("com.lanchat.a", "settings").unwrap(), None);
         assert_eq!(storage.storage_get("com.lanchat.b", "settings").unwrap(), Some(serde_json::json!({"sound": false})));
+    }
+
+    #[test]
+    fn uninstall_can_retain_or_delete_private_data() {
+        let temp = tempdir().unwrap();
+        let storage = PluginStorage::open(temp.path().join("plugins.sqlite3")).unwrap();
+        for plugin_id in ["com.lanchat.keep", "com.lanchat.delete"] {
+            storage.register_version(plugin_id, "1.0.0", "v1", "aa", None, 1).unwrap();
+            storage.activate(plugin_id, "1.0.0", &[], "development", 2).unwrap();
+            storage.storage_set(plugin_id, "settings", &serde_json::json!({"value": 1}), 3).unwrap();
+        }
+        storage.uninstall("com.lanchat.keep", false).unwrap();
+        storage.uninstall("com.lanchat.delete", true).unwrap();
+        assert!(storage.get("com.lanchat.keep").unwrap().is_none());
+        assert_eq!(storage.storage_get("com.lanchat.keep", "settings").unwrap(), Some(serde_json::json!({"value": 1})));
+        assert_eq!(storage.storage_get("com.lanchat.delete", "settings").unwrap(), None);
     }
 }

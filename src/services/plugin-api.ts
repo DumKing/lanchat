@@ -26,4 +26,6 @@ export const pluginApi = {
     invoke<InstalledPluginRecord>("set_plugin_permissions", { pluginId, capabilities }),
   rollback: (pluginId: string) =>
     invoke<InstalledPluginRecord>("rollback_plugin", { pluginId }),
+  uninstall: (pluginId: string, deletePrivateData: boolean) =>
+    invoke<void>("uninstall_plugin", { pluginId, deletePrivateData }),
 };

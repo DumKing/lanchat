@@ -846,6 +846,7 @@ fn install_plugin_package(
 
 #[tauri::command]
 fn set_plugin_enabled(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     plugin_id: String,
     enabled: bool,
@@ -853,6 +854,12 @@ fn set_plugin_enabled(
     state
         .plugin_storage
         .set_enabled(&plugin_id, enabled, chrono::Utc::now().timestamp_millis())?;
+    if !enabled {
+        let _ = app.emit("plugin_access_revoked", serde_json::json!({
+            "pluginId": &plugin_id,
+            "reason": "disabled"
+        }));
+    }
     state
         .plugin_storage
         .get(&plugin_id)?
@@ -861,6 +868,7 @@ fn set_plugin_enabled(
 
 #[tauri::command]
 fn set_plugin_permissions(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     plugin_id: String,
     capabilities: Vec<String>,
@@ -885,6 +893,10 @@ fn set_plugin_permissions(
         &capabilities,
         chrono::Utc::now().timestamp_millis(),
     )?;
+    let _ = app.emit("plugin_access_revoked", serde_json::json!({
+        "pluginId": &plugin_id,
+        "reason": "permissionsChanged"
+    }));
     state
         .plugin_storage
         .get(&plugin_id)?
@@ -893,16 +905,45 @@ fn set_plugin_permissions(
 
 #[tauri::command]
 fn rollback_plugin(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     plugin_id: String,
 ) -> Result<InstalledPluginRecord, String> {
     state
         .plugin_storage
         .rollback(&plugin_id, chrono::Utc::now().timestamp_millis())?;
+    let _ = app.emit("plugin_access_revoked", serde_json::json!({
+        "pluginId": &plugin_id,
+        "reason": "rollback"
+    }));
     state
         .plugin_storage
         .get(&plugin_id)?
         .ok_or_else(|| "插件尚未安装".to_string())
+}
+
+#[tauri::command]
+fn uninstall_plugin(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    plugin_id: String,
+    delete_private_data: bool,
+) -> Result<(), String> {
+    let _ = app.emit("plugin_access_revoked", serde_json::json!({
+        "pluginId": &plugin_id,
+        "reason": "uninstalled"
+    }));
+    let quarantine = state.plugin_repository.quarantine_plugin(&plugin_id)?;
+    if let Err(error) = state.plugin_storage.uninstall(&plugin_id, delete_private_data) {
+        if let Some(quarantine) = quarantine {
+            let _ = state.plugin_repository.restore_quarantined(quarantine);
+        }
+        return Err(error);
+    }
+    if let Some(quarantine) = quarantine {
+        let _ = state.plugin_repository.delete_quarantined(quarantine);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -5882,6 +5923,7 @@ pub fn run() {
             set_plugin_enabled,
             set_plugin_permissions,
             rollback_plugin,
+            uninstall_plugin,
             get_face_monitor_status,
             get_vision_runtime_snapshot,
             set_vision_runtime_paused,

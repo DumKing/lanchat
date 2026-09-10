@@ -1,4 +1,4 @@
-use crate::plugin::manifest::{parse_and_validate_manifest, PluginManifest};
+use crate::plugin::manifest::{parse_and_validate_manifest, validate_plugin_id, PluginManifest};
 use crate::plugin::package::{
     extract_package, parse_integrity_manifest, verify_integrity, PackageLimits,
 };
@@ -34,6 +34,12 @@ pub struct PluginRepository {
     root: PathBuf,
     host_version: String,
     keyring: PluginKeyring,
+}
+
+#[derive(Debug)]
+pub struct QuarantinedPlugin {
+    original_path: PathBuf,
+    quarantine_path: PathBuf,
 }
 
 impl PluginRepository {
@@ -137,11 +143,41 @@ impl PluginRepository {
     }
 
     pub fn discard_version(&self, plugin_id: &str, version: &str) -> Result<(), String> {
+        validate_plugin_id(plugin_id)?;
+        semver::Version::parse(version).map_err(|_| "插件版本不是合法 SemVer".to_string())?;
         let path = self.root.join("plugins").join(plugin_id).join("versions").join(version);
         if path.exists() {
             fs::remove_dir_all(path).map_err(|error| format!("清理插件版本目录失败: {error}"))?;
         }
         Ok(())
+    }
+
+    pub fn quarantine_plugin(&self, plugin_id: &str) -> Result<Option<QuarantinedPlugin>, String> {
+        validate_plugin_id(plugin_id)?;
+        let original_path = self.root.join("plugins").join(plugin_id);
+        if !original_path.exists() {
+            return Ok(None);
+        }
+        let quarantine_root = self.root.join(".trash");
+        fs::create_dir_all(&quarantine_root)
+            .map_err(|error| format!("创建插件卸载暂存目录失败: {error}"))?;
+        let quarantine_path = quarantine_root.join(Uuid::new_v4().to_string());
+        fs::rename(&original_path, &quarantine_path)
+            .map_err(|error| format!("暂存待卸载插件失败: {error}"))?;
+        Ok(Some(QuarantinedPlugin { original_path, quarantine_path }))
+    }
+
+    pub fn restore_quarantined(&self, quarantine: QuarantinedPlugin) -> Result<(), String> {
+        if let Some(parent) = quarantine.original_path.parent() {
+            fs::create_dir_all(parent).map_err(|error| format!("恢复插件目录失败: {error}"))?;
+        }
+        fs::rename(quarantine.quarantine_path, quarantine.original_path)
+            .map_err(|error| format!("恢复插件目录失败: {error}"))
+    }
+
+    pub fn delete_quarantined(&self, quarantine: QuarantinedPlugin) -> Result<(), String> {
+        fs::remove_dir_all(quarantine.quarantine_path)
+            .map_err(|error| format!("清理已卸载插件文件失败: {error}"))
     }
 }
 
@@ -262,5 +298,25 @@ mod tests {
         let root = temp.path().join("repository");
         assert!(repository(&root, &signing).install(&package_path, false).is_err());
         assert!(repository(&root, &signing).install(&package_path, true).unwrap().development);
+    }
+
+    #[test]
+    fn quarantined_plugin_can_be_restored_or_deleted() {
+        let temp = tempdir().unwrap();
+        let signing = SigningKey::from_bytes(&[31; 32]);
+        let root = temp.path().join("repository");
+        let repo = repository(&root, &signing);
+        let plugin_path = root.join("plugins/com.lanchat.gomoku");
+        fs::create_dir_all(&plugin_path).unwrap();
+        fs::write(plugin_path.join("marker"), b"ok").unwrap();
+
+        let quarantine = repo.quarantine_plugin("com.lanchat.gomoku").unwrap().unwrap();
+        assert!(!plugin_path.exists());
+        repo.restore_quarantined(quarantine).unwrap();
+        assert!(plugin_path.join("marker").exists());
+
+        let quarantine = repo.quarantine_plugin("com.lanchat.gomoku").unwrap().unwrap();
+        repo.delete_quarantined(quarantine).unwrap();
+        assert!(!plugin_path.exists());
     }
 }

@@ -51,15 +51,20 @@ pub enum PluginType {
     WebSidecar,
 }
 
-fn valid_plugin_id(id: &str) -> bool {
+pub fn validate_plugin_id(id: &str) -> Result<(), String> {
     let segments = id.split('.').collect::<Vec<_>>();
-    segments.len() >= 3
+    let valid = segments.len() >= 3
         && segments.iter().all(|segment| {
             !segment.is_empty()
                 && segment
                     .bytes()
                     .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-        })
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err("插件 ID 必须是至少三段的小写反向域名".to_string())
+    }
 }
 
 pub fn validate_relative_asset_path(value: &str) -> Result<(), String> {
@@ -84,9 +89,7 @@ pub fn parse_and_validate_manifest(bytes: &[u8], host_version: &str) -> Result<P
     if manifest.manifest_version != SUPPORTED_MANIFEST_VERSION {
         return Err("不支持的插件清单版本".to_string());
     }
-    if !valid_plugin_id(&manifest.id) {
-        return Err("插件 ID 必须是至少三段的小写反向域名".to_string());
-    }
+    validate_plugin_id(&manifest.id)?;
     if manifest.name.trim().is_empty() || manifest.name.chars().count() > 80 {
         return Err("插件名称长度无效".to_string());
     }
