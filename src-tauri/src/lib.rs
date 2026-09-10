@@ -7,6 +7,7 @@ mod file_server;
 mod identity;
 mod network;
 mod protocol;
+mod plugin;
 mod storage;
 pub mod vision;
 
@@ -37,6 +38,10 @@ use protocol::{
     QuickAlertFrame, QuickAlertTrustResetFrame, SimulationMeta,
 };
 use protocol::{CallSignalFrame, GameFrame};
+use plugin::manifest::parse_and_validate_manifest;
+use plugin::repository::PluginRepository;
+use plugin::signature::PluginKeyring;
+use plugin::storage::{InstalledPluginRecord, PluginStorage};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::collections::HashMap;
@@ -679,6 +684,8 @@ struct ReleaseDownloadMetadata {
 
 struct AppState {
     storage: Arc<Storage>,
+    plugin_storage: Arc<PluginStorage>,
+    plugin_repository: Arc<PluginRepository>,
     network: Network,
     file_server: FileServer,
     tray: Arc<Mutex<TrayState>>,
@@ -786,6 +793,116 @@ fn platform_info_value() -> PlatformInfo {
 #[tauri::command]
 fn get_platform_info() -> PlatformInfo {
     platform_info_value()
+}
+
+#[tauri::command]
+fn list_installed_plugins(state: State<'_, AppState>) -> Result<Vec<InstalledPluginRecord>, String> {
+    state.plugin_storage.list()
+}
+
+#[tauri::command]
+fn install_plugin_package(
+    state: State<'_, AppState>,
+    package_path: String,
+    allow_unsigned_development: bool,
+) -> Result<InstalledPluginRecord, String> {
+    let allow_unsigned = cfg!(debug_assertions) && allow_unsigned_development;
+    let installed = state
+        .plugin_repository
+        .install(Path::new(&package_path), allow_unsigned)?;
+    let plugin_id = installed.manifest.id.clone();
+    let version = installed.manifest.version.clone();
+    let installed_at = chrono::Utc::now().timestamp_millis();
+    let source = if installed.development { "development" } else { "official" };
+    let install_path = installed.install_path.to_string_lossy().into_owned();
+
+    if let Err(error) = state.plugin_storage.register_version(
+        &plugin_id,
+        &version,
+        &install_path,
+        &installed.package_sha256,
+        installed.signature_key_id.as_deref(),
+        installed_at,
+    ) {
+        let _ = state.plugin_repository.discard_version(&plugin_id, &version);
+        return Err(error);
+    }
+    if let Err(error) = state.plugin_storage.activate(
+        &plugin_id,
+        &version,
+        &installed.manifest.capabilities,
+        source,
+        installed_at,
+    ) {
+        let _ = state.plugin_storage.unregister_version(&plugin_id, &version);
+        let _ = state.plugin_repository.discard_version(&plugin_id, &version);
+        return Err(error);
+    }
+    state
+        .plugin_storage
+        .get(&plugin_id)?
+        .ok_or_else(|| "插件安装状态未写入".to_string())
+}
+
+#[tauri::command]
+fn set_plugin_enabled(
+    state: State<'_, AppState>,
+    plugin_id: String,
+    enabled: bool,
+) -> Result<InstalledPluginRecord, String> {
+    state
+        .plugin_storage
+        .set_enabled(&plugin_id, enabled, chrono::Utc::now().timestamp_millis())?;
+    state
+        .plugin_storage
+        .get(&plugin_id)?
+        .ok_or_else(|| "插件尚未安装".to_string())
+}
+
+#[tauri::command]
+fn set_plugin_permissions(
+    state: State<'_, AppState>,
+    plugin_id: String,
+    capabilities: Vec<String>,
+) -> Result<InstalledPluginRecord, String> {
+    let current = state
+        .plugin_storage
+        .get(&plugin_id)?
+        .ok_or_else(|| "插件尚未安装".to_string())?;
+    let install_path = state
+        .plugin_storage
+        .version_install_path(&plugin_id, &current.active_version)?
+        .ok_or_else(|| "插件版本路径记录不存在".to_string())?;
+    let manifest_bytes = std::fs::read(Path::new(&install_path).join("plugin.json"))
+        .map_err(|error| format!("读取已安装插件清单失败: {error}"))?;
+    let manifest = parse_and_validate_manifest(&manifest_bytes, env!("CARGO_PKG_VERSION"))?;
+    let declared = manifest.capabilities.into_iter().collect::<std::collections::HashSet<_>>();
+    if capabilities.iter().any(|capability| !declared.contains(capability)) {
+        return Err("不能授予插件清单未声明的能力".to_string());
+    }
+    state.plugin_storage.set_granted_capabilities(
+        &plugin_id,
+        &capabilities,
+        chrono::Utc::now().timestamp_millis(),
+    )?;
+    state
+        .plugin_storage
+        .get(&plugin_id)?
+        .ok_or_else(|| "插件尚未安装".to_string())
+}
+
+#[tauri::command]
+fn rollback_plugin(
+    state: State<'_, AppState>,
+    plugin_id: String,
+) -> Result<InstalledPluginRecord, String> {
+    state
+        .plugin_storage
+        .rollback(&plugin_id, chrono::Utc::now().timestamp_millis())?;
+    state
+        .plugin_storage
+        .get(&plugin_id)?
+        .ok_or_else(|| "插件尚未安装".to_string())
 }
 
 #[tauri::command]
@@ -5583,6 +5700,18 @@ pub fn run() {
                 Storage::open(app_dir.join("lanchat.sqlite3"))
                     .map_err(|err| format!("初始化本地存储失败：{err}"))?,
             );
+            let plugin_storage = Arc::new(
+                PluginStorage::open(app_dir.join("plugins.sqlite3"))
+                    .map_err(|err| format!("初始化插件存储失败：{err}"))?,
+            );
+            let plugin_keyring = PluginKeyring::from_json(include_bytes!(
+                "../resources/plugin-trusted-keys.json"
+            ))?;
+            let plugin_repository = Arc::new(PluginRepository::new(
+                app_dir.join("plugin-platform"),
+                env!("CARGO_PKG_VERSION"),
+                plugin_keyring,
+            ));
             storage.get_or_create_profile()?;
             let desktop_pet_app_dir = shared_desktop_pet_app_dir(&app_dir);
             let pet_roots = desktop_pet_resource_roots(app, &desktop_pet_app_dir);
@@ -5719,6 +5848,8 @@ pub fn run() {
             );
             app.manage(AppState {
                 storage,
+                plugin_storage,
+                plugin_repository,
                 network,
                 file_server,
                 tray: tray_state,
@@ -5746,6 +5877,11 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_platform_info,
+            list_installed_plugins,
+            install_plugin_package,
+            set_plugin_enabled,
+            set_plugin_permissions,
+            rollback_plugin,
             get_face_monitor_status,
             get_vision_runtime_snapshot,
             set_vision_runtime_paused,
