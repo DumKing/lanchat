@@ -50,6 +50,7 @@ import ChatComposerInput from "./components/ChatComposerInput.vue";
 import MonopolyBoard3D, { type Board3DTile } from "./components/MonopolyBoard3D.vue";
 import MonopolyRoomChat from "./components/MonopolyRoomChat.vue";
 import PluginCenterPage from "./pages/PluginCenterPage.vue";
+import AppNavigationRail from "./app/navigation/AppNavigationRail.vue";
 import { DEFAULT_GROUP_ID, useLanChatStore } from "./stores/lanchat";
 import { useDesktopPetStore } from "./stores/desktopPet";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, ExternalPushConfig, ExternalPushKind, PetPackageSource, PetStateKind, PetStatePlaybackConfig } from "./types/desktop-pet";
@@ -6822,88 +6823,24 @@ async function closeWindow() {
           </div>
         </header>
         <NLayout class="app-shell" has-sider>
-          <NLayoutSider class="rail" :class="{ expanded: navExpanded }" :width="navExpanded ? 176 : 64" bordered>
-            <div class="rail-inner">
-              <button class="rail-action profile-entry" title="个人资料" @click="openSection('settings')">
-                <img v-if="avatarImage(profile?.avatar)" class="avatar-image self-avatar" :src="avatarImage(profile?.avatar)" alt="本机头像" />
-                <NAvatar v-else class="self-avatar">{{ avatarLabel(profile?.avatar, profile?.nickname) }}</NAvatar>
-                <span v-if="navExpanded" class="nav-label">{{ profile?.nickname ?? "个人资料" }}</span>
-              </button>
-              <button class="rail-collapse-toggle" :title="navExpanded ? '收起侧栏' : '展开侧栏'" @click="toggleNav">
-                {{ navExpanded ? "‹" : "›" }}
-              </button>
-              <button
-                class="rail-action"
-                :class="{ active: activeSection === 'chat' }"
-                title="聊天"
-                @click="openSection('chat')"
-              >
-                <span class="nav-icon">💬</span>
-                <span v-if="navExpanded" class="nav-label">{{ t("nav.chat") }}</span>
-                <span v-if="totalUnread > 0" class="nav-unread">{{ totalUnread > 99 ? "99+" : totalUnread }}</span>
-              </button>
-              <button
-                class="rail-action"
-                :class="{ active: activeSection === 'devices' }"
-                title="设备列表"
-                @click="openSection('devices')"
-              >
-                <span class="nav-icon">🖥</span>
-                <span v-if="navExpanded" class="nav-label">{{ t("nav.devices") }}</span>
-              </button>
-              <button
-                v-if="gamesFeatureAvailable"
-                class="rail-action"
-                :class="{ active: activeSection === 'games' }"
-                title="游戏"
-                @click="openSection('games')"
-              >
-                <span class="nav-icon">🎮</span>
-                <span v-if="navExpanded" class="nav-label">{{ t("nav.games") }}</span>
-                <span v-if="showGameAttention" class="nav-unread">{{ gameAttentionCount > 9 ? "9+" : gameAttentionCount }}</span>
-              </button>
-              <button
-                v-if="petAlertEnabled"
-                class="rail-action"
-                :class="{ active: activeSection === 'alerts' }"
-                title="狼来了排行榜"
-                @click="openSection('alerts')"
-              >
-                <span class="nav-icon">🐸</span>
-                <span v-if="navExpanded" class="nav-label">狼来了</span>
-              </button>
-              <button class="rail-action add" title="添加设备" @click="openSection('devices')">
-                <span class="nav-icon">＋</span>
-                <span v-if="navExpanded" class="nav-label">添加设备</span>
-              </button>
-              <div class="rail-spacer"></div>
-              <NTooltip trigger="hover" placement="right">
-                <template #trigger>
-                  <button class="rail-action rail-notification-bell" title="历史公告" @click="openAdminNotificationHistory">
-                    <span class="nav-icon nav-bell-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M18 10a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 22h4" /></svg></span>
-                    <span v-if="navExpanded" class="nav-label">公告通知</span>
-                    <span v-if="pendingAdminNotificationCount > 0" class="nav-notification-dot"></span>
-                  </button>
-                </template>
-                历史公告
-              </NTooltip>
-              <NTooltip trigger="hover" placement="right">
-                <template #trigger>
-                  <button
-                    class="rail-action"
-                    :class="{ active: activeSection === 'settings' }"
-                    title="设置"
-                    @click="openSection('settings')"
-                  >
-                    <span class="nav-icon">⚙</span>
-                    <span v-if="navExpanded" class="nav-label">设置</span>
-                    <span v-if="visibleUpdateAvailable" class="nav-upgrade-badge">{{ updateBadgeLabel }}</span>
-                  </button>
-                </template>
-                设置
-              </NTooltip>
-            </div>
-          </NLayoutSider>
+          <AppNavigationRail
+            :expanded="navExpanded"
+            :active-section="activeSection"
+            :profile-nickname="profile?.nickname ?? '个人资料'"
+            :profile-avatar-src="avatarImage(profile?.avatar) ?? null"
+            :profile-avatar-label="avatarLabel(profile?.avatar, profile?.nickname)"
+            :total-unread="totalUnread"
+            :games-available="gamesFeatureAvailable"
+            :game-attention-count="gameAttentionCount"
+            :show-game-attention="showGameAttention"
+            :pet-alert-enabled="petAlertEnabled"
+            :pending-notification-count="pendingAdminNotificationCount"
+            :update-available="visibleUpdateAvailable"
+            :update-badge-label="updateBadgeLabel"
+            @select="openSection"
+            @toggle="toggleNav"
+            @open-notification-history="openAdminNotificationHistory"
+          />
           <button
             v-if="listPaneAvailable"
             class="list-pane-toggle"
