@@ -69,4 +69,16 @@ describe("BridgeDispatcher", () => {
     await expect(dispatcher().dispatch(request({ method: "system.shell" })))
       .resolves.toMatchObject({ ok: false, error: { code: "UNKNOWN_METHOD" } });
   });
+
+  it("超时与限流返回稳定错误码", async () => {
+    const slow = createBridgeDispatcher({
+      resolveInstance: () => ({ pluginId: "com.lanchat.test", instanceId: "instance-1", capabilities: new Set(["devices.read"]) }),
+      handlers: { "devices.list": () => new Promise(() => undefined) },
+      timeoutMs: 5,
+      maxRequestsPerWindow: 1,
+    });
+
+    await expect(slow.dispatch(request())).resolves.toMatchObject({ ok: false, error: { code: "HOST_TIMEOUT" } });
+    await expect(slow.dispatch(request({ id: "request-2" }))).resolves.toMatchObject({ ok: false, error: { code: "RATE_LIMITED" } });
+  });
 });

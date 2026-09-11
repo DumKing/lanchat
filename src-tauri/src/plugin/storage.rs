@@ -316,6 +316,25 @@ impl PluginStorage {
             .transpose()
     }
 
+    pub fn storage_delete(&self, plugin_id: &str, key: &str) -> Result<(), String> {
+        let connection = self.connection.lock().map_err(|_| "插件数据库锁已损坏".to_string())?;
+        connection.execute(
+            "DELETE FROM plugin_private_storage WHERE plugin_id=?1 AND storage_key=?2",
+            params![plugin_id, key],
+        ).map_err(|error| format!("删除插件数据失败: {error}"))?;
+        Ok(())
+    }
+
+    pub fn storage_keys(&self, plugin_id: &str) -> Result<Vec<String>, String> {
+        let connection = self.connection.lock().map_err(|_| "插件数据库锁已损坏".to_string())?;
+        let mut statement = connection.prepare(
+            "SELECT storage_key FROM plugin_private_storage WHERE plugin_id=?1 ORDER BY storage_key",
+        ).map_err(|error| format!("准备插件数据查询失败: {error}"))?;
+        let rows = statement.query_map([plugin_id], |row| row.get(0))
+            .map_err(|error| format!("查询插件数据失败: {error}"))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|error| format!("读取插件数据失败: {error}"))
+    }
+
     pub fn delete_private_storage(&self, plugin_id: &str) -> Result<usize, String> {
         let connection = self.connection.lock().map_err(|_| "插件数据库锁已损坏".to_string())?;
         connection
@@ -376,6 +395,10 @@ mod tests {
         assert_eq!(storage.delete_private_storage("com.lanchat.a").unwrap(), 1);
         assert_eq!(storage.storage_get("com.lanchat.a", "settings").unwrap(), None);
         assert_eq!(storage.storage_get("com.lanchat.b", "settings").unwrap(), Some(serde_json::json!({"sound": false})));
+        storage.storage_set("com.lanchat.b", "other", &serde_json::json!(1), 2).unwrap();
+        assert_eq!(storage.storage_keys("com.lanchat.b").unwrap(), vec!["other", "settings"]);
+        storage.storage_delete("com.lanchat.b", "settings").unwrap();
+        assert_eq!(storage.storage_get("com.lanchat.b", "settings").unwrap(), None);
     }
 
     #[test]

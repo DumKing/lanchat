@@ -1,8 +1,11 @@
 pub mod catalog;
+pub mod commands;
 pub mod manifest;
 pub mod package;
 pub mod permissions;
+pub mod protocol;
 pub mod registry;
 pub mod repository;
+pub mod runtime;
 pub mod signature;
 pub mod storage;

@@ -50,6 +50,7 @@ import ChatComposerInput from "./components/ChatComposerInput.vue";
 import MonopolyBoard3D, { type Board3DTile } from "./components/MonopolyBoard3D.vue";
 import MonopolyRoomChat from "./components/MonopolyRoomChat.vue";
 import PluginCenterPage from "./pages/PluginCenterPage.vue";
+import PluginViewport from "./components/plugins/PluginViewport.vue";
 import AppNavigationRail from "./app/navigation/AppNavigationRail.vue";
 import { DEFAULT_GROUP_ID, useLanChatStore } from "./stores/lanchat";
 import { useDesktopPetStore } from "./stores/desktopPet";
@@ -72,6 +73,12 @@ import { peerDisplayName, peerOriginalName, sameDeviceId, sortPeersForDisplay } 
 import { dateLocale, effectiveLocale, installUiTranslation, languagePreference, naiveLocale, setLanguagePreference, t } from "./i18n";
 import type { PluginManifestV1 } from "./plugin-host/contracts/manifest";
 import { resolvePluginFeatures } from "./plugin-host/registry/featureAvailability";
+import { PluginRuntime } from "./plugin-host/runtime/PluginRuntime";
+import { createTauriPluginRuntimeAdapter } from "./services/plugin-runtime-api";
+import { installTauriPluginBridge } from "./plugin-host/runtime/tauriBridge";
+import { createPluginHostHandlers } from "./plugin-host/runtime/createHostHandlers";
+import { PluginRoomService } from "./plugin-host/services/PluginRoomService";
+import { PluginLeaderboardService } from "./plugin-host/services/PluginLeaderboardService";
 
 const MONOPOLY_CARD_SYMBOLS: Record<MonopolyCard, string> = {
   acquittal: "赦", seize: "夺", frame: "囚", double: "倍", fixed_dice: "骰",
@@ -487,6 +494,7 @@ let unlistenDesktopPetAction: (() => void) | null = null;
 let unlistenDesktopPetStopHotkey: (() => void) | null = null;
 let unlistenDesktopPetSendHotkey: (() => void) | null = null;
 let unlistenDesktopPetRegistry: (() => void) | null = null;
+let unlistenPluginBridge: (() => void) | null = null;
 const desktopPetFeedbackInFlight = new Set<string>();
 const conversationSearch = ref("");
 const deviceSearch = ref("");
@@ -732,11 +740,22 @@ const petDiscoDurationMs = computed(() =>
 );
 const selectedGameType = ref<GameType>("doudizhu");
 const enabledPluginManifests = ref<PluginManifestV1[]>([]);
+const activePluginGameId = ref("");
 const pluginFeatures = computed(() => resolvePluginFeatures(
   enabledPluginManifests.value.map((manifest) => ({ manifest, enabled: true })),
 ));
 const availableGameRegistry = computed(() => gameRegistry.filter((game) => pluginFeatures.value.gameIds.includes(game.type)));
 const gamesFeatureAvailable = computed(() => availableGameRegistry.value.length > 0);
+const enabledGamePlugins = computed(() => enabledPluginManifests.value.flatMap((manifest) =>
+  (manifest.contributes?.games ?? []).map((game) => ({
+    pluginId: manifest.id,
+    pluginName: manifest.name,
+    gameId: game.id,
+    minPlayers: game.minPlayers,
+    maxPlayers: game.maxPlayers,
+  })),
+));
+const activePluginGame = computed(() => enabledGamePlugins.value.find((item) => item.gameId === activePluginGameId.value) ?? enabledGamePlugins.value[0] ?? null);
 const roomNameDraft = ref("午休娱乐局");
 const monopolyStartingCoinsDraft = ref(5000);
 const monopolyMaxRoundsDraft = ref(20);
@@ -816,6 +835,69 @@ const themeOverrides = computed(() => ({
     borderRadius: "7px",
   },
 }));
+let pluginRuntime: PluginRuntime;
+const pluginRoomService = new PluginRoomService({
+  profile: () => profile.value,
+  send: async (frame) => { await store.sendGameFrame(null, frame, true); },
+  emit: async (gameId, event) => {
+    const pluginIds = enabledPluginManifests.value
+      .filter((manifest) => manifest.contributes?.games?.some((game) => game.id === gameId))
+      .map((manifest) => manifest.id);
+    await Promise.all(pluginRuntime.instances()
+      .filter((instance) => pluginIds.includes(instance.pluginId))
+      .map((instance) => pluginRuntime.emit(instance.instanceId, "room.event", event)));
+  },
+});
+const pluginLeaderboardService = new PluginLeaderboardService({
+  profile: () => profile.value,
+  peers: () => peers.value,
+  rooms: pluginRoomService,
+  policy: (gameId) => {
+    const game = enabledPluginManifests.value.flatMap((manifest) => manifest.contributes?.games ?? [])
+      .find((item) => item.id === gameId);
+    return game ? { maxPlayers: game.maxPlayers, minHumanPlayers: game.ranking?.minHumanPlayers } : undefined;
+  },
+});
+const pluginThemeSnapshot = () => ({
+  mode: "light" as const,
+  tokens: {
+    accent: currentTheme.value.accent,
+    accentHover: currentTheme.value.hover,
+    accentPressed: currentTheme.value.pressed,
+    panelBg: "#ffffff",
+    textColor: "#1f2d3d",
+    mutedColor: "#748096",
+  },
+});
+pluginRuntime = new PluginRuntime(
+  createTauriPluginRuntimeAdapter(),
+  createPluginHostHandlers({
+    hostVersion: "0.8.0",
+    listDevices: () => peers.value.map((peer) => ({
+      id: peer.device_id,
+      name: peerDisplayName(peer),
+      online: peer.online,
+      capabilities: { chat: peer.supports_chat !== false },
+    })),
+    sendChat: async (input) => {
+      const message = await api.sendMessage(input.conversationId, input.text);
+      return { messageId: message.id };
+    },
+    currentTheme: pluginThemeSnapshot,
+    close: async (instanceId): Promise<void> => { await pluginRuntime.destroy(instanceId, "navigation"); },
+    notify: (input) => { error.value = input.level === "error" ? input.body : ""; },
+    confirm: (input) => window.confirm(`${input.title}\n\n${input.body}`),
+    pickFile: async (input) => {
+      const result = await openFileDialog({
+        title: input.title,
+        multiple: input.multiple ?? false,
+        filters: input.extensions?.length ? [{ name: "允许的文件", extensions: input.extensions }] : undefined,
+      });
+      return result == null ? [] : Array.isArray(result) ? result : [result];
+    },
+    additionalHandlers: { ...pluginRoomService.handlers(), ...pluginLeaderboardService.handlers() },
+  }),
+);
 const sortedConversations = computed(() => {
   const keyword = conversationSearch.value.trim().toLowerCase();
   return [...conversations.value]
@@ -1811,6 +1893,9 @@ async function openReleasePage() {
 }
 async function initializePluginFeatures() {
   enabledPluginManifests.value = await pluginApi.listEnabledManifests().catch(() => []);
+  if (!enabledGamePlugins.value.some((item) => item.gameId === activePluginGameId.value)) {
+    activePluginGameId.value = enabledGamePlugins.value[0]?.gameId ?? "";
+  }
   const firstGame = availableGameRegistry.value[0];
   if (firstGame && !availableGameRegistry.value.some((game) => game.type === selectedGameType.value)) {
     selectedGameType.value = firstGame.type;
@@ -1819,8 +1904,18 @@ async function initializePluginFeatures() {
     activeSection.value = "chat";
   }
 }
+function openPluginGame(gameId: string) {
+  if (!enabledGamePlugins.value.some((item) => item.gameId === gameId)) return;
+  activePluginGameId.value = gameId;
+  activeSection.value = "games";
+  listPaneCollapsed.value = true;
+}
+function handlePluginViewportError(message: string) {
+  error.value = message;
+}
 onMounted(async () => {
   stopUiTranslation = installUiTranslation();
+  unlistenPluginBridge = await installTauriPluginBridge(pluginRuntime).catch(() => null);
   void initializeAutostart();
   platformInfo.value = await api.getPlatformInfo().catch(() => null);
   appVersionInfo.value = await api.getAppVersionInfo().catch(() => null);
@@ -1908,6 +2003,8 @@ onUnmounted(() => {
   unlistenDesktopPetSendHotkey = null;
   unlistenDesktopPetRegistry?.();
   unlistenDesktopPetRegistry = null;
+  unlistenPluginBridge?.();
+  unlistenPluginBridge = null;
   if (turnTicker !== null && typeof window !== "undefined") {
     window.clearInterval(turnTicker);
     turnTicker = null;
@@ -1988,7 +2085,14 @@ watch(selectedTheme, (next) => {
   if (typeof window !== "undefined") {
     window.localStorage.setItem("lanchat-ui-theme", next);
   }
+  void Promise.all(pluginRuntime.instances().map((instance) =>
+    pluginRuntime.emit(instance.instanceId, "theme.changed", pluginThemeSnapshot())));
   void syncDesktopPetRuntime();
+});
+watch(() => onlinePeers.value.length, () => {
+  const snapshot = { online: Boolean(profile.value), lanAvailable: onlinePeers.value.length > 0 };
+  void Promise.all(pluginRuntime.instances().map((instance) =>
+    pluginRuntime.emit(instance.instanceId, "network.changed", snapshot)));
 });
 watch(selectedLanguage, (next) => {
   setLanguagePreference(next);
@@ -2054,7 +2158,9 @@ watch(
 watch(monopolyRooms, () => scheduleMonopolyBotTurns(), { deep: true });
 watch(latestGameFrame, (frame) => {
   if (!frame) return;
-  processGameFrame(frame);
+  void pluginRoomService.receive(frame).then((handled) => {
+    if (!handled) processGameFrame(frame);
+  });
 });
 watch(latestChannelNotice, (payload) => {
   if (!payload) return;
@@ -2616,15 +2722,6 @@ function selectLanguage(key: string | number) {
 function selectCreateRoomGame(type: GameType) {
   selectedGameType.value = type;
   createRoomGameMenuOpen.value = false;
-}
-function openBuiltinGame(type: GameType) {
-  if (!availableGameRegistry.value.some((game) => game.type === type)) return;
-  selectedGameType.value = type;
-  activeGameRoomId.value = "";
-  selectedCardIds.value = [];
-  selectedXiangqiPoint.value = null;
-  activeSection.value = "games";
-  void broadcastLeaderboardSync();
 }
 async function selectMinesweeperDifficulty(key: string | number) {
   if (!profile.value || activeGameRoom.value?.gameType !== "minesweeper" || activeMinesweeperState.value?.phase !== "lobby" || !isRoomHost()) return;
@@ -6912,25 +7009,24 @@ async function closeWindow() {
             <div class="pane-header">
               <div class="pane-title-row">
                 <strong>游戏</strong>
-                <NButton quaternary circle size="small" title="创建房间" @click="createRoomOpen = true">＋</NButton>
               </div>
               <NInput size="small" clearable placeholder="搜索游戏或房间" />
             </div>
             <NScrollbar class="list-scroll">
               <div class="section-label">已启用插件</div>
               <div
-                v-for="game in availableGameRegistry"
-                :key="game.type"
+                v-for="game in enabledGamePlugins"
+                :key="game.pluginId"
                 class="game-list-card"
-                :class="{ active: selectedGameType === game.type }"
-                @click="openBuiltinGame(game.type)"
+                :class="{ active: activePluginGame?.gameId === game.gameId }"
+                @click="openPluginGame(game.gameId)"
               >
-                <div class="game-list-icon">{{ game.icon }}</div>
+                <div class="game-list-icon">🎮</div>
                 <div>
-                  <div class="game-list-title">{{ game.name }}</div>
+                  <div class="game-list-title">{{ game.pluginName }}</div>
                   <div class="game-list-sub">{{ game.minPlayers }}-{{ game.maxPlayers }} 人房间 · 支持房间聊天</div>
                 </div>
-                <NTag size="small" :bordered="false" type="success">可用</NTag>
+                <NTag size="small" :bordered="false" type="success">插件</NTag>
               </div>
               <div class="section-label">房间</div>
               <div
@@ -7234,6 +7330,16 @@ async function closeWindow() {
                   </div>
                 </div>
               </footer>
+            </section>
+            <section v-else-if="activeSection === 'games' && activePluginGame" class="game-workspace plugin-game-workspace">
+              <PluginViewport
+                :key="activePluginGame.pluginId"
+                :runtime="pluginRuntime"
+                :plugin-id="activePluginGame.pluginId"
+                :feature-code="activePluginGame.gameId"
+                host-version="0.8.0"
+                @error="handlePluginViewportError"
+              />
             </section>
             <section v-else-if="activeSection === 'games'" class="game-workspace" :class="{ 'gomoku-workspace': activeGameRoom?.gameType === 'gomoku', 'xiangqi-workspace': activeGameRoom?.gameType === 'xiangqi', 'minesweeper-workspace': activeGameRoom?.gameType === 'minesweeper', 'monopoly-workspace': activeGameRoom?.gameType === 'monopoly' }">
               <header class="game-header" data-tauri-drag-region>

@@ -31,9 +31,17 @@ use protocol::{
     QuickAlertFrame, QuickAlertTrustResetFrame, SimulationMeta,
 };
 use protocol::{CallSignalFrame, GameFrame};
+use plugin::commands::{
+    destroy_plugin_instance, destroy_plugin_instances, emit_plugin_runtime_event,
+    plugin_private_storage_delete, plugin_private_storage_get, plugin_private_storage_keys,
+    plugin_private_storage_set, resolve_plugin_bridge_request,
+    set_plugin_instance_bounds, set_plugin_instance_visible, start_plugin_instance,
+};
 use plugin::manifest::{parse_and_validate_manifest, PluginManifest};
+use plugin::protocol::{plugin_bridge_protocol, plugin_protocol_response};
 use plugin::registry::load_enabled_plugin_manifests;
 use plugin::repository::PluginRepository;
+use plugin::runtime::PluginRuntime;
 use plugin::signature::PluginKeyring;
 use plugin::storage::{InstalledPluginRecord, PluginStorage};
 use serde::{Deserialize, Serialize};
@@ -564,6 +572,7 @@ struct AppState {
     storage: Arc<Storage>,
     plugin_storage: Arc<PluginStorage>,
     plugin_repository: Arc<PluginRepository>,
+    plugin_runtime: Arc<PluginRuntime>,
     network: Network,
     file_server: FileServer,
     tray: Arc<Mutex<TrayState>>,
@@ -750,6 +759,7 @@ fn set_plugin_enabled(
         .plugin_storage
         .set_enabled(&plugin_id, enabled, chrono::Utc::now().timestamp_millis())?;
     if !enabled {
+        destroy_plugin_instances(&app, &state, &plugin_id, "disabled")?;
         let _ = app.emit("plugin_access_revoked", serde_json::json!({
             "pluginId": &plugin_id,
             "reason": "disabled"
@@ -789,6 +799,7 @@ fn set_plugin_permissions(
         &capabilities,
         chrono::Utc::now().timestamp_millis(),
     )?;
+    destroy_plugin_instances(&app, &state, &plugin_id, "permissionsChanged")?;
     let _ = app.emit("plugin_access_revoked", serde_json::json!({
         "pluginId": &plugin_id,
         "reason": "permissionsChanged"
@@ -809,6 +820,7 @@ fn rollback_plugin(
     state
         .plugin_storage
         .rollback(&plugin_id, chrono::Utc::now().timestamp_millis())?;
+    destroy_plugin_instances(&app, &state, &plugin_id, "rollback")?;
     let _ = app.emit("plugin_access_revoked", serde_json::json!({
         "pluginId": &plugin_id,
         "reason": "rollback"
@@ -827,6 +839,7 @@ fn uninstall_plugin(
     plugin_id: String,
     delete_private_data: bool,
 ) -> Result<(), String> {
+    destroy_plugin_instances(&app, &state, &plugin_id, "uninstalled")?;
     let _ = app.emit("plugin_access_revoked", serde_json::json!({
         "pluginId": &plugin_id,
         "reason": "uninstalled"
@@ -4243,6 +4256,8 @@ pub fn run() {
         return;
     }
     tauri::Builder::default()
+        .register_uri_scheme_protocol("lanchat-plugin", plugin_protocol_response)
+        .register_asynchronous_uri_scheme_protocol("lanchat-plugin-bridge", plugin_bridge_protocol)
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             let _ = show_main_window(app, None);
         }))
@@ -4307,6 +4322,7 @@ pub fn run() {
                 env!("CARGO_PKG_VERSION"),
                 plugin_keyring,
             ));
+            let plugin_runtime = Arc::new(PluginRuntime::default());
             storage.get_or_create_profile()?;
             let desktop_pet_app_dir = shared_desktop_pet_app_dir(&app_dir);
             let pet_roots = desktop_pet_resource_roots(app, &desktop_pet_app_dir);
@@ -4332,6 +4348,7 @@ pub fn run() {
                 storage,
                 plugin_storage,
                 plugin_repository,
+                plugin_runtime,
                 network,
                 file_server,
                 tray: tray_state,
@@ -4353,6 +4370,16 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_platform_info,
+            start_plugin_instance,
+            set_plugin_instance_bounds,
+            set_plugin_instance_visible,
+            destroy_plugin_instance,
+            emit_plugin_runtime_event,
+            resolve_plugin_bridge_request,
+            plugin_private_storage_get,
+            plugin_private_storage_set,
+            plugin_private_storage_delete,
+            plugin_private_storage_keys,
             list_installed_plugins,
             list_enabled_plugin_manifests,
             install_plugin_package,
