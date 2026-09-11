@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const source = await readFile("src/App.vue", "utf8");
+const sidebar = await readFile("src/components/plugins/PluginGamesSidebar.vue", "utf8");
 
-assert.match(source, /function openBuiltinGame\(type: GameType\)/, "内置游戏点击应有独立入口函数");
-assert.match(source, /@click="openBuiltinGame\(game\.type\)"/, "左侧内置游戏卡片应调用入口函数");
-assert.match(source, /activeGameRoomId\.value = ""/, "点击内置游戏应清空当前房间选择");
-assert.match(source, /class="game-catalog-board"/, "未选中房间时右侧应展示游戏目录排行榜视图");
-assert.match(source, /<NTabs[\s\S]*class="minesweeper-leaderboard-tabs"/, "扫雷排行榜应使用难度 Tab 展示");
-assert.match(source, /v-for="difficulty in MINESWEEPER_DIFFICULTIES"/, "扫雷排行榜 Tab 应来自难度列表");
-assert.doesNotMatch(source, /v-if="activeGameRoom\?\.gameType === 'minesweeper' \|\| selectedGameType === 'minesweeper'" class="leaderboard-grid"/, "扫雷目录排行榜不应再使用多个难度卡片");
+assert.match(source, /import PluginGamesSidebar from/, "主界面应使用独立的插件游戏导航组件");
+assert.match(source, /import PluginViewport from/, "主界面应使用隔离的插件运行视图");
+assert.match(source, /<PluginGamesSidebar[\s\S]*@select="openPluginGame"/, "游戏入口应只列出已启用插件贡献的游戏");
+assert.match(source, /<PluginViewport[\s\S]*:plugin-id="activePluginGame\.pluginId"/, "游戏内容应由插件视图加载");
+assert.match(sidebar, /v-for="game in games"/, "插件游戏导航应根据清单贡献动态渲染");
+assert.doesNotMatch(source, /openBuiltinGame|createRoomOpen|class="game-catalog-board"/, "主程序不应保留旧版内置游戏目录和建房入口");
+assert.doesNotMatch(source, /gameInvite|GAME_INVITE_PREFIX/, "主程序不应保留旧版游戏邀请协议");
 
-console.log("game catalog view ok");
+console.log("plugin game catalog view ok");

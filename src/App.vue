@@ -47,8 +47,6 @@ import { api } from "./services/tauri-api";
 import { pluginApi } from "./services/plugin-api";
 import { callMediaCoordinator } from "./services/callMediaCoordinator";
 import ChatComposerInput from "./components/ChatComposerInput.vue";
-import MonopolyBoard3D, { type Board3DTile } from "./components/MonopolyBoard3D.vue";
-import MonopolyRoomChat from "./components/MonopolyRoomChat.vue";
 import PluginCenterPage from "./pages/PluginCenterPage.vue";
 import PluginViewport from "./components/plugins/PluginViewport.vue";
 import PluginGamesSidebar from "./components/plugins/PluginGamesSidebar.vue";
@@ -59,15 +57,14 @@ import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings,
 import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AdminRemoteUpdate, AdminRemoteUpdateDispatchTarget, AdminRemoteUpdateProgress, AppVersionInfo, CallSignal, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Nudge, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, SimulationMeta, TrayAttentionItem, UpdateCheckResult, UpdateGithubTokenInfo } from "./types/lanchat";
 import { DDZ_TURN_TIMEOUT_MS, canBeat, dealHands, evaluatePlay, isTurnTimedOut, playLabel, sortCards, turnRemainingSeconds, type DdzCard, type DdzPhase, type DdzPlay } from "./games/doudizhu";
 import { GOMOKU_TURN_TIMEOUT_MS, chooseAutoGomokuPoint, cloneGomokuBoard, createGomokuBoard, gomokuStoneLabel, gomokuTurnRemainingSeconds, isGomokuTurnTimedOut, placeGomokuStone, type GomokuBoard, type GomokuPhase, type GomokuPoint, type GomokuStone } from "./games/gomoku";
-import { cloneXiangqiBoard, createXiangqiBoard, createXiangqiDisplayGrid, isLegalXiangqiMove, moveXiangqiPiece, otherXiangqiSide, resignXiangqiSide, undoXiangqiMove, xiangqiPieceLabel, xiangqiSideLabel, type XiangqiBoard, type XiangqiPhase, type XiangqiPiece, type XiangqiPoint, type XiangqiSide } from "./games/xiangqi";
-import { MINESWEEPER_DEFAULT_HEIGHT, MINESWEEPER_DEFAULT_MINES, MINESWEEPER_DEFAULT_WIDTH, chordRevealMinesweeperCell, cloneMinesweeperBoard, createMinesweeperBoard, getMinesweeperProgress, revealMinesweeperCell, toggleMinesweeperFlag, type MinesweeperBoard, type MinesweeperCell, type MinesweeperPhase, type MinesweeperPoint } from "./games/minesweeper";
-import { MINESWEEPER_DIFFICULTIES, createMinesweeperLeaderboardRecord, difficultyByKey, formatMinesweeperElapsed, minesweeperDifficultyLabel, recordsForDifficulty, upsertMinesweeperLeaderboardRecords, type MinesweeperLeaderboardRecord } from "./games/minesweeperLeaderboard";
-import { formatWinRate, incrementGameStats, qualifyingRankedPlayers, recordsForGame, upsertGameStatsRecords, type GameStatsRecord, type RankedGameType } from "./games/gameLeaderboard";
-import { createGameRoomShell, gameDefinitionOf, gameRegistry, type GameRoomShell, type GameType } from "./games/registry";
-import { isGameRoomHost, removeGameRoomShell, upsertGameRoomShell } from "./features/games/roomHostService";
-import { gameRuleBookOf } from "./games/rules";
-import { MONOPOLY_TURN_TIMEOUT_MS, cloneMonopolyState, monopolyPropertyCityName as monopolyCityNameOf, monopolyPropertyToll, monopolyTurnRemainingSeconds, type MonopolyCard, type MonopolyCardTarget, type MonopolyGod, type MonopolyPlayer } from "./games/monopoly";
-import { applyMonopolyRoomAction, createMonopolyRoomState, planMonopolyBotAction, restartMonopolyRoomState, type MonopolyRoomAction, type MonopolyRoomAnnouncement, type MonopolyRoomSeat, type MonopolyRoomState } from "./games/monopolyRoom";
+import { cloneXiangqiBoard, createXiangqiBoard, moveXiangqiPiece, otherXiangqiSide, resignXiangqiSide, undoXiangqiMove, xiangqiPieceLabel, xiangqiSideLabel, type XiangqiBoard, type XiangqiPhase, type XiangqiPiece, type XiangqiPoint, type XiangqiSide } from "./games/xiangqi";
+import { chordRevealMinesweeperCell, cloneMinesweeperBoard, createMinesweeperBoard, getMinesweeperProgress, revealMinesweeperCell, toggleMinesweeperFlag, type MinesweeperBoard, type MinesweeperPhase, type MinesweeperPoint } from "./games/minesweeper";
+import { createMinesweeperLeaderboardRecord, minesweeperDifficultyLabel, upsertMinesweeperLeaderboardRecords, type MinesweeperLeaderboardRecord } from "./games/minesweeperLeaderboard";
+import { incrementGameStats, qualifyingRankedPlayers, upsertGameStatsRecords, type GameStatsRecord, type RankedGameType } from "./games/gameLeaderboard";
+import { gameDefinitionOf, gameRegistry, type GameRoomShell, type GameType } from "./games/registry";
+import { isGameRoomHost, upsertGameRoomShell } from "./features/games/roomHostService";
+import { MONOPOLY_TURN_TIMEOUT_MS, monopolyTurnRemainingSeconds, type MonopolyPlayer } from "./games/monopoly";
+import { applyMonopolyRoomAction, planMonopolyBotAction, type MonopolyRoomAction, type MonopolyRoomAnnouncement, type MonopolyRoomState } from "./games/monopolyRoom";
 import { alertTemperature, alertTruthScore, senderCredibility } from "./utils/alertCredibility";
 import { detectMentionKind, trayConversationTitle, type MentionKind } from "./utils/messageMentions";
 import { peerDisplayName, peerOriginalName, sameDeviceId, sortPeersForDisplay } from "./utils/peerPresentation";
@@ -81,45 +78,9 @@ import { createPluginHostHandlers } from "./plugin-host/runtime/createHostHandle
 import { PluginRoomService } from "./plugin-host/services/PluginRoomService";
 import { PluginLeaderboardService } from "./plugin-host/services/PluginLeaderboardService";
 
-const MONOPOLY_CARD_SYMBOLS: Record<MonopolyCard, string> = {
-  acquittal: "赦", seize: "夺", frame: "囚", double: "倍", fixed_dice: "骰",
-  roadblock: "障", turtle: "龟", stay: "停", reverse: "转", loot: "掠", seal: "封",
-};
-const MONOPOLY_RULE_BUILDINGS = [
-  { level: "empty", label: "空地", appearance: "灰色等距台座", description: "无人持有的灰色地块。支付 350 金币即可购入并立即建成小屋。" },
-  { level: "house", label: "小屋", appearance: "三款玩家色小屋", description: "玩家购入空地后形成；过路费 500。自己再次踩中时免费升级为洋房。" },
-  { level: "level2", label: "洋房", appearance: "三款玩家色洋房", description: "小屋升级后的中阶建筑；过路费 1000。自己再次踩中时免费升级为地标。" },
-  { level: "level3", label: "地标", appearance: "三款玩家色地标", description: "最高等级建筑；过路费 2000，不能继续升级。" },
-] as const;
-const MONOPOLY_RULE_SPECIAL_TILES = [
-  { key: "start", label: "起点", description: "经过起点时领取对应的起点奖励。" },
-  { key: "airport", label: "飞机场", description: "落到后可直接传送至任意指定地块。" },
-  { key: "price_double", label: "地价翻倍", description: "随机令自己的一块已购地产过路费加倍。" },
-  { key: "jail", label: "监狱", description: "关押 3 个自己的回合，期间不能收租。" },
-  { key: "event", label: "随机事件", description: "摇奖机抽取拆迁、补贴、征收等随机事件。" },
-] as const;
-const MONOPOLY_RULE_GODS: Array<{ god: MonopolyGod; label: string; description: string }> = [
-  { god: "wealth", label: "财神", description: "获得时向每位对手收取现金；附身期间踩到敌方地产免除过路费。" },
-  { god: "poverty", label: "穷鬼", description: "获得时向每位对手赠送现金；附身期间踩到敌方地产时过路费翻倍。" },
-  { god: "angel", label: "天使", description: "附身期间走到任意已有建筑地产，自动将其升级一级。" },
-  { god: "devil", label: "恶魔", description: "附身期间走到任意已有建筑地产，自动降级一级；小屋会降为空地。" },
-];
-const MONOPOLY_RULE_CARDS: Array<{ card: MonopolyCard; description: string }> = [
-  { card: "acquittal", description: "入狱时自动回到起点。" },
-  { card: "seize", description: "夺取指定玩家的一块地产。" },
-  { card: "frame", description: "将指定玩家送入监狱。" },
-  { card: "double", description: "永久提高指定地产的过路费。" },
-  { card: "fixed_dice", description: "指定下一次骰子点数。" },
-  { card: "roadblock", description: "任意地块放置一次性路障。" },
-  { card: "turtle", description: "指定玩家三回合每次走一格。" },
-  { card: "stay", description: "指定任意玩家下一回合原地停留并跳过投骰。" },
-  { card: "reverse", description: "永久改变指定玩家行进方向。" },
-  { card: "loot", description: "随机夺取指定玩家的一张卡。" },
-  { card: "seal", description: "查封指定地产三个所属回合。" },
-];
 type UiThemeKey = "theme-dingtalk" | "theme-work" | "theme-lan" | "theme-light";
 type MainSection = "chat" | "devices" | "games" | "alerts" | "settings";
-type RecipientPickerMode = "gameInvite" | "privateChannelCreate" | "privateChannelInvite";
+type RecipientPickerMode = "privateChannelCreate" | "privateChannelInvite";
 type SimulationKind = "direct" | "channel" | "alert" | "disco";
 type UndoRequest = {
   requesterId: string;
@@ -320,20 +281,6 @@ type XiangqiActionPayload =
   | { action: "leave"; playerId: string }
   | { action: "chat"; message: RoomChatItem };
 type GameActionPayload = DdzActionPayload | GomokuActionPayload | XiangqiActionPayload | MinesweeperActionPayload | MonopolyRoomAction;
-type GameInvitePayload = {
-  roomId: string;
-  roomName: string;
-  gameType: GameType;
-  gameName: string;
-  hostName: string;
-  hostDeviceId?: string;
-  createdAt: number;
-};
-type LeaderboardSyncPayload = {
-  gameStatsRecords?: GameStatsRecord[];
-  minesweeperLeaderboardRecords?: MinesweeperLeaderboardRecord[];
-};
-const GAME_INVITE_PREFIX = "LANCHAT_GAME_INVITE:";
 const PRIVATE_CHANNEL_INVITE_PREFIX = "LANCHAT_PRIVATE_CHANNEL_INVITE:";
 const DEFAULT_CHANNEL_NOTICE = "欢迎来到频道，公告可以由超管维护。";
 const QUICK_ALERT_TRUST_RESET_ALL_TARGET = "__all__";
@@ -698,28 +645,18 @@ const listPaneWidth = ref(readSavedPaneWidth("lanchat-list-pane-width", 292, 240
 const groupInspectorWidth = ref(readSavedPaneWidth("lanchat-group-inspector-width", 252, 210, 340));
 const paneResizeState = ref<PaneResizeState | null>(null);
 const chatEmojiOpen = ref(false);
-const roomEmojiOpen = ref(false);
-const roomChatDraft = ref("");
 const nowTick = ref(Date.now());
-const createRoomOpen = ref(false);
-const createRoomGameMenuOpen = ref(false);
 const channelNoticeEditing = ref(false);
 const channelNoticeDraft = ref("");
 const channelNotices = ref<Record<string, string>>(readSavedChannelNotices());
 const publicChannelMutedIds = ref<Record<string, boolean>>(readSavedPublicChannelMutedIds());
 const recipientPickerOpen = ref(false);
-const recipientPickerMode = ref<RecipientPickerMode>("gameInvite");
+const recipientPickerMode = ref<RecipientPickerMode>("privateChannelCreate");
 const selectedRecipientPeerIds = ref<string[]>([]);
-const selectedRecipientConversationIds = ref<string[]>([]);
 const privateChannelTitleDraft = ref("私有频道");
 const handledPrivateChannelInvites = ref<Record<string, "accepted" | "rejected">>(readSavedPrivateChannelInviteStates());
-const leaderboardOpen = ref(false);
-const gameRulesOpen = ref(false);
-const gameRulesTab = ref("rules");
-const fixedDicePickerOpen = ref(false);
 const gameStatsRecords = ref<GameStatsRecord[]>(readSavedGameStatsRecords());
 const minesweeperLeaderboardRecords = ref<MinesweeperLeaderboardRecord[]>(readSavedMinesweeperLeaderboardRecords());
-const selectedMinesweeperLeaderboardKey = ref(MINESWEEPER_DIFFICULTIES[0]?.key ?? "");
 const recordedGameResultIds = new Set<string>();
 const messageContextMenuOpen = ref(false);
 const messageContextMenuX = ref(0);
@@ -757,18 +694,10 @@ const enabledGamePlugins = computed(() => enabledPluginManifests.value.flatMap((
   })),
 ));
 const activePluginGame = computed(() => enabledGamePlugins.value.find((item) => item.gameId === activePluginGameId.value) ?? enabledGamePlugins.value[0] ?? null);
-const roomNameDraft = ref("午休娱乐局");
-const monopolyStartingCoinsDraft = ref(5000);
-const monopolyMaxRoundsDraft = ref(20);
-const monopolyRandomBuildingVariantsDraft = ref(true);
 const gameRoomsState = ref<GameRoomShell[]>([]);
 const activeGameRoomId = ref("");
 const selectedCardIds = ref<string[]>([]);
 const selectedXiangqiPoint = ref<XiangqiPoint | null>(null);
-const selectedMonopolyTargetIndex = ref(0);
-const selectedMonopolyCard = ref<MonopolyCard | null>(null);
-const monopolyCardTargetPickerOpen = ref(false);
-const monopolyCardTargeting = ref<MonopolyCard | null>(null);
 const monopolyDiceRolling = ref(false);
 const monopolyDiceResultVisible = ref(false);
 const monopolyDiceFaces = ref<number[]>([1, 1]);
@@ -778,8 +707,6 @@ const activeMonopolyAnnouncements = ref<MonopolyRoomAnnouncement[]>([]);
 const seenMonopolyAnnouncementIds = new Set<string>();
 const monopolyAnimatedPositions = ref<Record<string, number>>({});
 const monopolyMovingPlayerIds = ref<string[]>([]);
-const monopolyFocusedPlayerId = ref("");
-const monopolyFocusedTileIndex = ref(-1);
 const monopolyKnownPositions = new Map<string, number>();
 let monopolyPlaybackRoomId = "";
 let monopolyDiceRollTimer: ReturnType<typeof setInterval> | undefined;
@@ -921,19 +848,13 @@ const pickerPeerOptions = computed(() => {
 });
 const activeMentionNotices = computed(() => mentionNoticesByConversation.value[activeConversationId.value] ?? []);
 const activeMentionLabel = computed(() => activeMentionNotices.value[0]?.kind === "all" ? "@所有人" : "有人@我");
-const pickerConversationOptions = computed(() => sortedConversations.value.filter((conversation) => {
-  if (recipientPickerMode.value !== "gameInvite") return false;
-  return conversation.kind === "group";
-}));
 const recipientPickerTitle = computed(() => {
   if (recipientPickerMode.value === "privateChannelCreate") return "创建私有频道";
-  if (recipientPickerMode.value === "privateChannelInvite") return "邀请频道成员";
-  return "发送游戏邀请";
+  return "邀请频道成员";
 });
 const recipientConfirmDisabled = computed(() => {
   if (recipientPickerMode.value === "privateChannelCreate") return !privateChannelTitleDraft.value.trim();
-  if (recipientPickerMode.value === "privateChannelInvite") return selectedRecipientPeerIds.value.length === 0;
-  return selectedRecipientPeerIds.value.length + selectedRecipientConversationIds.value.length === 0;
+  return selectedRecipientPeerIds.value.length === 0;
 });
 const deviceChannelConversations = computed(() => conversations.value
   .filter((conversation) => conversation.kind === "group")
@@ -1067,68 +988,16 @@ const composerPlaceholder = computed(() => {
   return activeConversation.value?.kind === "direct" ? "对方已离线，暂不能发送私聊消息" : "当前不可发送消息";
 });
 const activeGameRoom = computed(() => gameRoomsState.value.find((room) => room.roomId === activeGameRoomId.value) ?? null);
-const activeGameDefinition = computed(() => gameDefinitionOf(activeGameRoom.value?.gameType ?? selectedGameType.value));
-const activeGameRuleBook = computed(() => gameRuleBookOf(activeGameDefinition.value.type));
 const activeDdzState = computed(() => doudizhuRooms.value[activeGameRoomId.value] ?? null);
 const activeGomokuState = computed(() => gomokuRooms.value[activeGameRoomId.value] ?? null);
 const activeXiangqiState = computed(() => xiangqiRooms.value[activeGameRoomId.value] ?? null);
 const activeMinesweeperState = computed(() => minesweeperRooms.value[activeGameRoomId.value] ?? null);
 const activeMonopolyState = computed(() => monopolyRooms.value[activeGameRoomId.value] ?? null);
 const myDeviceId = computed(() => profile.value?.device_id ?? "");
-const myDdzSeat = computed(() => activeDdzState.value?.players.find((player) => player.deviceId === myDeviceId.value) ?? null);
-const myGomokuSeat = computed(() => activeGomokuState.value?.players.find((player) => player.deviceId === myDeviceId.value) ?? null);
-const myXiangqiSeat = computed(() => activeXiangqiState.value?.players.find((player) => player.deviceId === myDeviceId.value) ?? null);
-const myMinesweeperSeat = computed(() => activeMinesweeperState.value?.players.find((player) => player.deviceId === myDeviceId.value) ?? null);
-const myMonopolySeat = computed(() => activeMonopolyState.value?.seats.find((player) => player.deviceId === myDeviceId.value) ?? null);
-const myMonopolySpectator = computed(() => activeMonopolyState.value?.spectators?.find((player) => player.deviceId === myDeviceId.value) ?? null);
-const monopolyPlayersInTurnOrder = computed(() => activeMonopolyState.value?.game.players ?? []);
-const monopolyLeftPlayers = computed(() => monopolyPlayersInTurnOrder.value.filter((_, index) => index === 0 || index === 3));
-const monopolyRightPlayers = computed(() => monopolyPlayersInTurnOrder.value.filter((_, index) => index === 1 || index === 2));
-const myGameSeat = computed(() => {
-  if (activeGameRoom.value?.gameType === "gomoku") return myGomokuSeat.value;
-  if (activeGameRoom.value?.gameType === "xiangqi") return myXiangqiSeat.value;
-  if (activeGameRoom.value?.gameType === "minesweeper") return myMinesweeperSeat.value;
-  if (activeGameRoom.value?.gameType === "monopoly") return myMonopolySeat.value;
-  return myDdzSeat.value;
-});
 const myDdzHand = computed(() => sortCards(activeDdzState.value?.hands[myDeviceId.value] ?? []));
-const selectedCards = computed(() => myDdzHand.value.filter((card) => selectedCardIds.value.includes(card.id)));
-const selectedPlay = computed(() => evaluatePlay(selectedCards.value));
 const isMyDdzTurn = computed(() => activeDdzState.value?.turnDeviceId === myDeviceId.value);
-const isMyGomokuTurn = computed(() => activeGomokuState.value?.turnDeviceId === myDeviceId.value);
-const isMyXiangqiTurn = computed(() => activeXiangqiState.value?.turnDeviceId === myDeviceId.value);
-const isMyMonopolyTurn = computed(() => activeMonopolyState.value?.phase === "playing" && activeMonopolyState.value.game.currentPlayerId === myDeviceId.value);
 const isDdzLeading = computed(() => !activeDdzState.value?.lastPlay || activeDdzState.value.lastPlay.playerId === myDeviceId.value);
 const canPassDdz = computed(() => activeDdzState.value?.phase === "playing" && isMyDdzTurn.value && !isDdzLeading.value);
-const canPlaySelectedCards = computed(() => {
-  if (activeDdzState.value?.phase !== "playing" || !isMyDdzTurn.value) return false;
-  return canBeat(selectedCards.value, isDdzLeading.value ? null : activeDdzState.value.lastPlay);
-});
-const playHint = computed(() => {
-  if (!activeDdzState.value) return "先创建或加入斗地主房间";
-  if (activeDdzState.value.phase === "lobby") return "凑齐 3 人并全部准备后自动发牌";
-  if (activeDdzState.value.phase === "bidding") return isMyDdzTurn.value ? "轮到你叫地主" : "等待其他玩家叫地主";
-  if (activeDdzState.value.phase === "ended") return activeDdzState.value.winnerName ? `${activeDdzState.value.winnerName} 获胜` : "牌局结束";
-  if (selectedCards.value.length === 0) return isMyDdzTurn.value ? "请选择要出的牌" : "等待对方出牌";
-  const label = playLabel(selectedPlay.value);
-  return canPlaySelectedCards.value ? `${label}，可以出牌` : `${label}，压不过上家，只能不要`;
-});
-const minesweeperDifficultyOptions = MINESWEEPER_DIFFICULTIES.map((difficulty) => ({ label: `${difficulty.label} · ${difficulty.mines} 雷`, key: difficulty.key }));
-const selectedCreateRoomGame = computed(() => gameDefinitionOf(selectedGameType.value));
-const leaderboardTitle = computed(() => `${activeGameDefinition.value.name}排行榜`);
-const rankedActiveGame = computed<RankedGameType | null>(() => {
-  const game = activeGameRoom.value?.gameType ?? selectedGameType.value;
-  return game === "doudizhu" || game === "gomoku" || game === "xiangqi" || game === "monopoly" ? game : null;
-});
-const activeGameStatsRows = computed(() => {
-  const game = rankedActiveGame.value;
-  return game ? recordsForGame(gameStatsRecords.value, game, 30) : [];
-});
-const minesweeperLeaderboardRows = computed(() => recordsForDifficulty(
-  minesweeperLeaderboardRecords.value,
-  selectedMinesweeperLeaderboardKey.value,
-  Number.MAX_SAFE_INTEGER,
-));
 const pendingAlertCount = computed(() => alertRecords.value.filter((item) => item.incoming && !item.handled && item.senderDeviceId !== profile.value?.device_id).length);
 const adminDeviceOptions = computed(() => {
   const local = profile.value
@@ -1252,188 +1121,7 @@ const activeMonopolyTurnRemainingSeconds = computed(() => {
   if (!state || state.phase !== "playing") return 0;
   return monopolyTurnRemainingSeconds(state.game.turnStartedAt, nowTick.value, MONOPOLY_TURN_TIMEOUT_MS);
 });
-const monopolyBoardTiles = computed(() => activeMonopolyState.value?.game.board ?? []);
 // Local presentation only: changing the view never sends a room action.
-const monopolyViewMode = ref<'flat' | '3d'>('3d');
-const monopoly3DTiles = computed<Board3DTile[]>(() => monopolyBoardTiles.value.map(tile => {
-  const owner = activeMonopolyState.value?.game.properties[tile.index]?.ownerDeviceId;
-  return {
-    index: tile.index, kind: tile.kind, corner: tile.kind === 'corner' ? tile.corner : undefined,
-    title: monopolyTileTitle(tile.index), meta: monopolyTileMeta(tile.index),
-    level: monopolyPropertyLevel(tile.index), buildingStyle: monopolyBuildingStyle(tile.index),
-    ownerColor: owner ? monopolyPlayerColor(owner) : 'var(--line)', toll: monopolyPropertyTollAmount(tile.index),
-    selected: selectedMonopolyTargetIndex.value === tile.index,
-    target: canMonopolyAirportTarget(tile.index) || canMonopolyCardTargetTile(monopolyCardTargeting.value, tile.index),
-    focused: monopolyFocusedTileIndex.value === tile.index, markers: monopolyTileStatusMarkers(tile.index),
-    players: monopolyPlayersAt(tile.index).map(player => ({
-      id: player.deviceId, name: player.nickname,
-      tone: Math.max(0, monopolyPlayersInTurnOrder.value.findIndex(p => p.deviceId === player.deviceId)) % 4,
-      color: monopolyPlayerColor(player.deviceId), mine: player.deviceId === myDeviceId.value,
-      moving: isMonopolyTokenMoving(player.deviceId), god: player.god,
-    })),
-  };
-}));
-const monopolyCurrentPlayer = computed(() => activeMonopolyState.value?.game.players.find((player) => player.deviceId === activeMonopolyState.value?.game.currentPlayerId) ?? null);
-const monopolyMyPlayer = computed(() => activeMonopolyState.value?.game.players.find((player) => player.deviceId === myDeviceId.value) ?? null);
-const monopolyPendingProperty = computed(() => {
-  const pending = activeMonopolyState.value?.pendingLanding;
-  return pending?.kind === "buy" ? activeMonopolyState.value?.game.properties[pending.index] ?? null : null;
-});
-const monopolySettlementRows = computed(() => [...(activeMonopolyState.value?.game.players ?? [])]
-  .sort((a, b) => b.coins - a.coins || a.nickname.localeCompare(b.nickname)));
-function monopolyCardCanTargetSelf(card: MonopolyCard | null): boolean {
-  return card === "frame" || card === "turtle" || card === "stay" || card === "reverse";
-}
-const monopolyCardTargetPlayers = computed(() => (activeMonopolyState.value?.game.players ?? [])
-  .filter((player) => !player.eliminated
-    && (player.deviceId !== myDeviceId.value || monopolyCardCanTargetSelf(selectedMonopolyCard.value))));
-const visibleLandlordCards = computed(() => {
-  const state = activeDdzState.value;
-  if (!state || state.landlordCards.length === 0 || state.phase === "bidding") return [null, null, null];
-  return state.landlordCards;
-});
-const tableLastCards = computed(() => activeDdzState.value?.lastPlay?.cards ?? []);
-const settlementRows = computed(() => {
-  const state = activeDdzState.value;
-  if (!state) return [];
-  return state.players.map((player) => ({
-    ...player,
-    remaining: state.hands[player.deviceId]?.length ?? player.handCount,
-  }));
-});
-const settlementWinnerLabel = computed(() => activeDdzState.value?.winnerName ?? "本局结束");
-const gomokuSeats = computed(() => activeGomokuState.value?.players ?? []);
-const blackGomokuSeat = computed(() => gomokuSeats.value.find((player) => player.stone === "black") ?? null);
-const whiteGomokuSeat = computed(() => gomokuSeats.value.find((player) => player.stone === "white") ?? null);
-const gomokuWinPointKeys = computed(() => new Set((activeGomokuState.value?.winLine ?? []).map((point) => `${point.x}:${point.y}`)));
-const gomokuBoardPoints = computed(() => (activeGomokuState.value?.board ?? []).flatMap((row, y) => row.map((cell, x) => ({ x, y, cell }))));
-const lastOpponentGomokuMove = computed(() => {
-  const moves = activeGomokuState.value?.moves ?? [];
-  for (let index = moves.length - 1; index >= 0; index -= 1) {
-    if (moves[index]?.playerId !== myDeviceId.value) return moves[index] ?? null;
-  }
-  return null;
-});
-const lastGomokuMove = computed(() => activeGomokuState.value?.moves.slice(-1)[0] ?? null);
-const canRequestUndoGomoku = computed(() => activeGomokuState.value?.phase === "playing" && !!myGomokuSeat.value && !!lastGomokuMove.value && !activeGomokuState.value?.pendingUndo);
-const canRespondGomokuUndo = computed(() => {
-  const state = activeGomokuState.value;
-  const pending = state?.pendingUndo;
-  return state?.phase === "playing" && !!pending && pending.requesterId !== myDeviceId.value;
-});
-const canResignGomoku = computed(() => activeGomokuState.value?.phase === "playing" && !!myGomokuSeat.value);
-const gomokuSettlementRows = computed(() => gomokuSeats.value.map((player) => ({
-  ...player,
-  result: activeGomokuState.value?.winnerDeviceId === player.deviceId ? "胜利" : activeGomokuState.value?.winnerDeviceId ? "失败" : "平局",
-})));
-const xiangqiSeats = computed(() => activeXiangqiState.value?.players ?? []);
-
-const xiangqiPerspectiveSide = computed<XiangqiSide>(() => myXiangqiSeat.value?.side === "black" ? "black" : "red");
-const leftXiangqiSide = computed<XiangqiSide>(() => xiangqiPerspectiveSide.value === "black" ? "red" : "black");
-const rightXiangqiSide = computed<XiangqiSide>(() => xiangqiPerspectiveSide.value === "black" ? "black" : "red");
-const leftXiangqiSeat = computed(() => xiangqiSeats.value.find((player) => player.side === leftXiangqiSide.value) ?? null);
-const rightXiangqiSeat = computed(() => xiangqiSeats.value.find((player) => player.side === rightXiangqiSide.value) ?? null);
-const xiangqiDisplayRows = computed(() => {
-  const board = activeXiangqiState.value?.board;
-  if (!board) return [];
-  return createXiangqiDisplayGrid(xiangqiPerspectiveSide.value).map((row) =>
-    row.map((point) => ({ ...point, cell: board[point.y]?.[point.x] ?? null })),
-  );
-});
-const lastXiangqiMove = computed(() => activeXiangqiState.value?.moves.slice(-1)[0] ?? null);
-const lastOpponentXiangqiMove = computed(() => {
-  const moves = activeXiangqiState.value?.moves ?? [];
-  for (let index = moves.length - 1; index >= 0; index -= 1) {
-    if (moves[index]?.playerId !== myDeviceId.value) return moves[index] ?? null;
-  }
-  return null;
-});
-const canRequestUndoXiangqi = computed(() => activeXiangqiState.value?.phase === "playing" && !!myXiangqiSeat.value && !!lastXiangqiMove.value?.piece && !activeXiangqiState.value?.pendingUndo);
-const canRespondXiangqiUndo = computed(() => {
-  const state = activeXiangqiState.value;
-  const pending = state?.pendingUndo;
-  return state?.phase === "playing" && !!pending && pending.requesterId !== myDeviceId.value;
-});
-const canResignXiangqi = computed(() => activeXiangqiState.value?.phase === "playing" && !!myXiangqiSeat.value);
-const isMyXiangqiChecked = computed(() => !!activeXiangqiState.value?.checkSide && activeXiangqiState.value.checkSide === myXiangqiSeat.value?.side);
-const xiangqiSettlementRows = computed(() => xiangqiSeats.value.map((player) => ({
-  ...player,
-  result: activeXiangqiState.value?.winnerDeviceId === player.deviceId ? "胜利" : activeXiangqiState.value?.winnerDeviceId ? "失败" : "结束",
-})));
-const minesweeperPlayers = computed(() => activeMinesweeperState.value?.players ?? []);
-const myMinesweeperBoardState = computed(() => activeMinesweeperState.value?.boards[myDeviceId.value] ?? null);
-
-const activeMinesweeperDifficultyLabel = computed(() => {
-  const state = activeMinesweeperState.value;
-  return state
-    ? minesweeperDifficultyLabel(state.width, state.height, state.mines)
-    : minesweeperDifficultyLabel(MINESWEEPER_DEFAULT_WIDTH, MINESWEEPER_DEFAULT_HEIGHT, MINESWEEPER_DEFAULT_MINES);
-});
-const minesweeperBoardStyle = computed<Record<string, string>>(() => {
-  const width = activeMinesweeperState.value?.width ?? MINESWEEPER_DEFAULT_WIDTH;
-  const height = activeMinesweeperState.value?.height ?? MINESWEEPER_DEFAULT_HEIGHT;
-  return {
-    gridTemplateColumns: `repeat(${width}, minmax(0, 1fr))`,
-    aspectRatio: `${width} / ${height}`,
-    "--minesweeper-ratio": String(width / height),
-  };
-});
-const minesweeperSettlementRows = computed(() => minesweeperPlayers.value.map((player) => {
-  const boardState = activeMinesweeperState.value?.boards[player.deviceId];
-  return {
-    ...player,
-    boardState,
-    result: activeMinesweeperState.value?.winnerDeviceId === player.deviceId ? "胜利" : boardState?.status === "lost" ? "失败" : boardState?.status === "won" ? "完成" : "进行中",
-  };
-}));
-const leftDdzSeat = computed(() => otherDdzSeats().slice(0, 1)[0] ?? null);
-const rightDdzSeat = computed(() => otherDdzSeats().slice(1, 2)[0] ?? null);
-const roomPrimaryLabel = computed(() => {
-  const room = activeGameRoom.value;
-  if (!room) return "先创建房间";
-  if (room.gameType === "gomoku") {
-    const state = activeGomokuState.value;
-    if (!state) return "先创建房间";
-    if (!myGomokuSeat.value) return "加入房间";
-    if (state.phase === "lobby") return myGomokuSeat.value.ready ? "取消准备" : "准备";
-    if (state.phase === "ended") return isRoomHost() ? "再来一局" : "等待房主开局";
-    return isMyGomokuTurn.value ? "轮到你" : "等待中";
-  }
-  if (room.gameType === "minesweeper") {
-    const state = activeMinesweeperState.value;
-    if (!state) return "先创建房间";
-    if (!myMinesweeperSeat.value) return "加入房间";
-    if (state.phase === "lobby") return myMinesweeperSeat.value.ready ? "取消准备" : "准备";
-    if (state.phase === "ended") return isRoomHost() ? "再来一局" : "等待房主开局";
-    return myMinesweeperBoardState.value?.status === "playing" ? "扫雷中" : "等待结算";
-  }
-  if (room.gameType === "monopoly") {
-    const state = activeMonopolyState.value;
-    if (!state) return "先创建房间";
-    if (myMonopolySpectator.value) return "观战中";
-    if (!myMonopolySeat.value) return "加入房间";
-    if (state.phase === "lobby") {
-      const allReady = state.seats.length >= 2 && state.seats.every((seat) => seat.ready);
-      if (isRoomHost() && allReady) return "开始游戏";
-      return myMonopolySeat.value.ready ? "取消准备" : "准备";
-    }
-    if (state.phase === "ended") return isRoomHost() ? "再来一局" : "等待房主开局";
-    return isMyMonopolyTurn.value ? "轮到你" : "等待中";
-  }
-  if (room.gameType === "xiangqi") {
-    const state = activeXiangqiState.value;
-    if (!state) return "先创建房间";
-    if (!myXiangqiSeat.value) return "加入房间";
-    if (state.phase === "lobby") return myXiangqiSeat.value.ready ? "取消准备" : "准备";
-    if (state.phase === "ended") return isRoomHost() ? "再来一局" : "等待房主开局";
-    return isMyXiangqiTurn.value ? "轮到你" : "等待中";
-  }
-  if (!activeDdzState.value) return "先创建房间";
-  if (!myDdzSeat.value) return "加入房间";
-  if (activeDdzState.value.phase === "lobby") return myDdzSeat.value.ready ? "取消准备" : "准备";
-  if (activeDdzState.value.phase === "ended") return isRoomHost() ? "再来一局" : "等待房主开局";
-  return isMyDdzTurn.value ? "轮到你" : "等待中";
-});
 const listPaneAvailable = computed(() => ["chat", "devices", "games"].includes(activeSection.value));
 const listPaneToggleTitle = computed(() => listPaneCollapsed.value ? "展开列表栏" : "收起列表栏");
 const isGameStarted = computed(() => {
@@ -2159,9 +1847,7 @@ watch(
 watch(monopolyRooms, () => scheduleMonopolyBotTurns(), { deep: true });
 watch(latestGameFrame, (frame) => {
   if (!frame) return;
-  void pluginRoomService.receive(frame).then((handled) => {
-    if (!handled) processGameFrame(frame);
-  });
+  void pluginRoomService.receive(frame);
 });
 watch(latestChannelNotice, (payload) => {
   if (!payload) return;
@@ -2720,219 +2406,17 @@ function selectLanguage(key: string | number) {
   setLanguagePreference(key);
 }
 
-function selectCreateRoomGame(type: GameType) {
-  selectedGameType.value = type;
-  createRoomGameMenuOpen.value = false;
-}
-async function selectMinesweeperDifficulty(key: string | number) {
-  if (!profile.value || activeGameRoom.value?.gameType !== "minesweeper" || activeMinesweeperState.value?.phase !== "lobby" || !isRoomHost()) return;
-  const difficulty = difficultyByKey(String(key));
-  await sendRoomAction({
-    action: "difficulty",
-    playerId: profile.value.device_id,
-    width: difficulty.width,
-    height: difficulty.height,
-    mines: difficulty.mines,
-  });
-}
-async function createGameRoom() {
-  if (!profile.value) return;
-  const room = createGameRoomShell(
-    selectedGameType.value,
-    roomNameDraft.value,
-    profile.value.device_id,
-    profile.value.nickname,
-    profile.value.avatar,
-  );
-  const state = createInitialGameState(room);
-  upsertGameRoom(room);
-  if (room.gameType === "gomoku") {
-    gomokuRooms.value = { ...gomokuRooms.value, [room.roomId]: state as GomokuTableState };
-  } else if (room.gameType === "minesweeper") {
-    minesweeperRooms.value = { ...minesweeperRooms.value, [room.roomId]: state as MinesweeperTableState };
-  } else if (room.gameType === "xiangqi") {
-    xiangqiRooms.value = { ...xiangqiRooms.value, [room.roomId]: state as XiangqiTableState };
-  } else if (room.gameType === "monopoly") {
-    monopolyRooms.value = { ...monopolyRooms.value, [room.roomId]: state as MonopolyRoomState };
-  } else {
-    doudizhuRooms.value = { ...doudizhuRooms.value, [room.roomId]: state as DdzTableState };
-  }
-  activeGameRoomId.value = room.roomId;
-  selectedCardIds.value = [];
-  selectedXiangqiPoint.value = null;
-  createRoomOpen.value = false;
-  activeSection.value = "games";
-  await broadcastGameFrame("room_created", { room, state }, room.roomId);
-}
 function openGameRoom(roomId: string) {
   activeGameRoomId.value = roomId;
   selectedCardIds.value = [];
   selectedXiangqiPoint.value = null;
   activeSection.value = "games";
 }
-function createInitialGameState(room: GameRoomShell): DdzTableState | GomokuTableState | XiangqiTableState | MinesweeperTableState | MonopolyRoomState {
-  if (room.gameType === "gomoku") return createInitialGomokuState(room);
-  if (room.gameType === "minesweeper") return createInitialMinesweeperState(room);
-  if (room.gameType === "xiangqi") return createInitialXiangqiState(room);
-  if (room.gameType === "monopoly") return createInitialMonopolyState(room, monopolyStartingCoinsDraft.value, monopolyMaxRoundsDraft.value, monopolyRandomBuildingVariantsDraft.value);
-  return createInitialDdzState(room);
-}
-function createInitialMonopolyState(room: GameRoomShell, startingCoins = 5000, maxRounds = 20, randomBuildingVariants = true): MonopolyRoomState {
-  const host = room.players[0];
-  if (!host) throw new Error("大富翁房间缺少房主");
-  let state = createMonopolyRoomState({
-    roomId: room.roomId,
-    host: { ...host },
-    startingCoins,
-    maxRounds,
-    randomBuildingVariants,
-  });
-  for (const player of room.players.slice(1)) {
-    state = applyMonopolyRoomAction(state, player.isBot
-      ? { action: "add_bot", hostId: host.deviceId, bot: { ...player, ready: true, online: true, isBot: true } }
-      : { action: "join", player: { ...player, ready: false } });
-  }
-  return state;
-}
-function createInitialDdzState(room: GameRoomShell): DdzTableState {
-  return {
-    roomId: room.roomId,
-    phase: "lobby",
-    players: room.players.map((player) => ({ ...player, handCount: 0 })),
-    landlordCards: [],
-    hands: {},
-    bidOrder: [],
-    bidIndex: 0,
-    bids: {},
-    lastPlay: null,
-    passCount: 0,
-    chatMessages: [],
-    logs: [`${room.hostName} 创建了 ${gameDefinitionOf(room.gameType).name} 房间`],
-    updatedAt: Date.now(),
-  };
-}
-function createInitialGomokuState(room: GameRoomShell): GomokuTableState {
-  return {
-    roomId: room.roomId,
-    phase: "lobby",
-    players: room.players.map((player) => ({ ...player, stone: undefined })),
-    board: createGomokuBoard(),
-    moves: [],
-    winLine: [],
-    chatMessages: [],
-    logs: [`${room.hostName} 创建了 ${gameDefinitionOf(room.gameType).name} 房间`],
-    updatedAt: Date.now(),
-  };
-}
-function createInitialMinesweeperState(room: GameRoomShell): MinesweeperTableState {
-  const difficulty = MINESWEEPER_DIFFICULTIES[0];
-  return {
-    roomId: room.roomId,
-    phase: "lobby",
-    players: room.players.map((player) => ({ ...player })),
-    width: difficulty.width,
-    height: difficulty.height,
-    mines: difficulty.mines,
-    seed: Date.now(),
-    boards: {},
-    chatMessages: [],
-    logs: [`${room.hostName} 创建了 ${gameDefinitionOf(room.gameType).name} 房间`],
-    updatedAt: Date.now(),
-  };
-}
-function createInitialXiangqiState(room: GameRoomShell): XiangqiTableState {
-  return {
-    roomId: room.roomId,
-    phase: "lobby",
-    players: room.players.map((player) => ({ ...player, side: undefined })),
-    board: createXiangqiBoard(),
-    moves: [],
-    chatMessages: [],
-    logs: [`${room.hostName} 创建了 ${gameDefinitionOf(room.gameType).name} 房间`],
-    updatedAt: Date.now(),
-  };
-}
-function currentGomokuPlayer(): GomokuSeat | null {
-  if (!profile.value) return null;
-  return {
-    deviceId: profile.value.device_id,
-    nickname: profile.value.nickname,
-    avatar: profile.value.avatar,
-    online: true,
-    ready: false,
-  };
-}
-function currentMinesweeperPlayer(): MinesweeperSeat | null {
-  if (!profile.value) return null;
-  return {
-    deviceId: profile.value.device_id,
-    nickname: profile.value.nickname,
-    avatar: profile.value.avatar,
-    online: true,
-    ready: false,
-  };
-}
-function currentXiangqiPlayer(): XiangqiSeat | null {
-  if (!profile.value) return null;
-  return {
-    deviceId: profile.value.device_id,
-    nickname: profile.value.nickname,
-    avatar: profile.value.avatar,
-    online: true,
-    ready: false,
-  };
-}
-function currentDdzPlayer(): DdzSeat | null {
-  if (!profile.value) return null;
-  return {
-    deviceId: profile.value.device_id,
-    nickname: profile.value.nickname,
-    avatar: profile.value.avatar,
-    online: true,
-    ready: false,
-    handCount: 0,
-  };
-}
-function currentMonopolyPlayer(): MonopolyRoomSeat | null {
-  if (!profile.value) return null;
-  return {
-    deviceId: profile.value.device_id,
-    nickname: profile.value.nickname,
-    avatar: profile.value.avatar,
-    online: true,
-    ready: false,
-  };
-}
-function otherDdzSeats() {
-  const state = activeDdzState.value;
-  if (!state) return [];
-  return state.players.filter((player) => player.deviceId !== myDeviceId.value);
-}
 function isRoomHost(room = activeGameRoom.value) {
   return isGameRoomHost(room, myDeviceId.value);
 }
 function upsertGameRoom(room: GameRoomShell) {
   gameRoomsState.value = upsertGameRoomShell(gameRoomsState.value, room);
-}
-function removeGameRoom(roomId: string) {
-  const removal = removeGameRoomShell(gameRoomsState.value, roomId, activeGameRoomId.value);
-  gameRoomsState.value = removal.rooms;
-  const { [roomId]: _removed, ...rest } = doudizhuRooms.value;
-  doudizhuRooms.value = rest;
-  const { [roomId]: _removedGomoku, ...gomokuRest } = gomokuRooms.value;
-  gomokuRooms.value = gomokuRest;
-  const { [roomId]: _removedXiangqi, ...xiangqiRest } = xiangqiRooms.value;
-  xiangqiRooms.value = xiangqiRest;
-  const { [roomId]: _removedMinesweeper, ...minesweeperRest } = minesweeperRooms.value;
-  minesweeperRooms.value = minesweeperRest;
-  const { [roomId]: _removedMonopoly, ...monopolyRest } = monopolyRooms.value;
-  monopolyRooms.value = monopolyRest;
-  if (activeGameRoomId.value === roomId) {
-    activeGameRoomId.value = removal.activeRoomId;
-    selectedCardIds.value = [];
-    selectedXiangqiPoint.value = null;
-    roomChatDraft.value = "";
-  }
 }
 function updateRoomFromState(roomId: string, state: { players: Array<{ deviceId: string; nickname: string; avatar?: string | null; isBot?: boolean; online: boolean; ready: boolean }>; updatedAt: number }) {
   const room = gameRoomsState.value.find((item) => item.roomId === roomId);
@@ -2967,37 +2451,6 @@ async function broadcastGameFrame(kind: string, payload: unknown, roomId = activ
   const room = gameRoomsState.value.find((item) => item.roomId === roomId);
   const onlyLocalPlayers = !!room && room.players.every((player) => player.isBot || player.deviceId === myDeviceId.value);
   await store.sendGameFrame(null, makeGameFrame(kind, payload, roomId), onlyLocalPlayers);
-}
-function ownLeaderboardSyncPayload(): LeaderboardSyncPayload {
-  const deviceId = myDeviceId.value;
-  if (!deviceId) return {};
-  return {
-    gameStatsRecords: gameStatsRecords.value.filter((record) => record.deviceId === deviceId),
-    minesweeperLeaderboardRecords: minesweeperLeaderboardRecords.value.filter((record) => record.deviceId === deviceId),
-  };
-}
-async function broadcastLeaderboardSync() {
-  const payload = ownLeaderboardSyncPayload();
-  if ((payload.gameStatsRecords?.length ?? 0) + (payload.minesweeperLeaderboardRecords?.length ?? 0) === 0) return;
-  await store.sendGameFrame(null, makeGameFrame("leaderboard_sync", payload, "leaderboard", "doudizhu"), true);
-}
-function applyLeaderboardSync(payload: LeaderboardSyncPayload) {
-  let changed = false;
-  if (payload.gameStatsRecords?.length) {
-    const next = upsertGameStatsRecords(gameStatsRecords.value, payload.gameStatsRecords);
-    changed = changed || JSON.stringify(next) !== JSON.stringify(gameStatsRecords.value);
-    gameStatsRecords.value = next;
-    saveGameStatsRecords();
-  }
-  if (payload.minesweeperLeaderboardRecords?.length) {
-    const next = upsertMinesweeperLeaderboardRecords(minesweeperLeaderboardRecords.value, payload.minesweeperLeaderboardRecords);
-    changed = changed || JSON.stringify(next) !== JSON.stringify(minesweeperLeaderboardRecords.value);
-    minesweeperLeaderboardRecords.value = next;
-    saveMinesweeperLeaderboardRecords();
-  }
-  if (changed) {
-    void store.addSystemNotice(DEFAULT_GROUP_ID, `${payload.gameStatsRecords?.[0]?.nickname ?? payload.minesweeperLeaderboardRecords?.[0]?.nickname ?? "局域网玩家"} 同步了游戏排行榜`);
-  }
 }
 async function sendRoomAction(action: GameActionPayload) {
   const room = activeGameRoom.value;
@@ -3417,24 +2870,6 @@ function nextGomokuPlayerId(state: GomokuTableState, currentId: string) {
   const index = state.players.findIndex((player) => player.deviceId === currentId);
   return state.players[(index + 1) % state.players.length]?.deviceId;
 }
-function gomokuPointStyle(x: number, y: number) {
-  const size = Math.max((activeGomokuState.value?.board.length ?? 15) - 1, 1);
-  return {
-    "--gx": String(x / size),
-    "--gy": String(y / size),
-  } as Record<string, string>;
-}
-function canPlaceGomokuCell(x: number, y: number) {
-  const state = activeGomokuState.value;
-  return !!state && state.phase === "playing" && !state.pendingUndo && isMyGomokuTurn.value && !state.board[y]?.[x];
-}
-function isGomokuWinPoint(x: number, y: number) {
-  return gomokuWinPointKeys.value.has(`${x}:${y}`);
-}
-async function placeGomokuCell(x: number, y: number) {
-  if (!profile.value || !canPlaceGomokuCell(x, y)) return;
-  await sendRoomAction({ action: "move", playerId: profile.value.device_id, x, y });
-}
 function applyXiangqiAction(roomId: string, action: XiangqiActionPayload) {
   const current = xiangqiRooms.value[roomId];
   if (!current) return false;
@@ -3618,123 +3053,6 @@ function nextXiangqiPlayerId(state: XiangqiTableState, currentId: string) {
   const index = state.players.findIndex((player) => player.deviceId === currentId);
   return state.players[(index + 1) % state.players.length]?.deviceId;
 }
-function xiangqiSideShortLabel(side: XiangqiSide) {
-  return side === "black" ? "黑" : "红";
-}
-
-function xiangqiSeatName(seat: XiangqiSeat | null, side: XiangqiSide) {
-  if (!seat) return `等待${xiangqiSideShortLabel(side)}方`;
-  return seat.deviceId === myDeviceId.value ? `我 · ${seat.nickname}` : seat.nickname;
-}
-
-function xiangqiSeatStatus(seat: XiangqiSeat | null, side: XiangqiSide) {
-  if (seat?.ready) return "已准备";
-  if (activeXiangqiState.value?.phase === "playing") return `执${xiangqiSideShortLabel(side)}`;
-  return "未准备";
-}
-
-function isSelectedXiangqiCell(x: number, y: number) {
-  return selectedXiangqiPoint.value?.x === x && selectedXiangqiPoint.value.y === y;
-}
-function canSelectXiangqiCell(x: number, y: number) {
-  const state = activeXiangqiState.value;
-  const piece = state?.board[y]?.[x];
-  return !!state && state.phase === "playing" && !state.pendingUndo && isMyXiangqiTurn.value && !!myXiangqiSeat.value?.side && piece?.side === myXiangqiSeat.value.side;
-}
-function canMoveSelectedXiangqiTo(x: number, y: number) {
-  const state = activeXiangqiState.value;
-  const from = selectedXiangqiPoint.value;
-  const side = myXiangqiSeat.value?.side;
-  if (!state || !from || !side || state.phase !== "playing" || state.pendingUndo || !isMyXiangqiTurn.value) return false;
-  return isLegalXiangqiMove(state.board, from, { x, y }, side);
-}
-function isXiangqiCellPlayable(x: number, y: number) {
-  return canSelectXiangqiCell(x, y) || canMoveSelectedXiangqiTo(x, y);
-}
-async function clickXiangqiCell(x: number, y: number) {
-  const state = activeXiangqiState.value;
-  if (!profile.value || state?.phase !== "playing" || state.pendingUndo || !isMyXiangqiTurn.value) return;
-  if (canSelectXiangqiCell(x, y)) {
-    selectedXiangqiPoint.value = { x, y };
-    return;
-  }
-  const from = selectedXiangqiPoint.value;
-  if (from && canMoveSelectedXiangqiTo(x, y)) {
-    selectedXiangqiPoint.value = null;
-    await sendRoomAction({ action: "move", playerId: profile.value.device_id, from, to: { x, y } });
-    return;
-  }
-  selectedXiangqiPoint.value = null;
-}
-function canUseMinesweeperBoard() {
-  return activeMinesweeperState.value?.phase === "playing" && myMinesweeperBoardState.value?.status === "playing";
-}
-function minesweeperCellText(cell: MinesweeperCell) {
-  if (cell.flagged && !cell.revealed) return "⚑";
-  if (!cell.revealed) return "";
-  if (cell.mine) return "✹";
-  return cell.adjacent > 0 ? String(cell.adjacent) : "";
-}
-function minesweeperCellTone(cell: MinesweeperCell) {
-  if (!cell.revealed || cell.mine || cell.adjacent === 0) return "";
-  return `n${cell.adjacent}`;
-}
-async function revealMinesweeperAt(x: number, y: number) {
-  if (!profile.value || !canUseMinesweeperBoard()) return;
-  await sendRoomAction({ action: "reveal", playerId: profile.value.device_id, x, y });
-}
-async function flagMinesweeperAt(x: number, y: number) {
-  if (!profile.value || !canUseMinesweeperBoard()) return;
-  await sendRoomAction({ action: "flag", playerId: profile.value.device_id, x, y });
-}
-async function chordMinesweeperAt(x: number, y: number) {
-  if (!profile.value || !canUseMinesweeperBoard()) return;
-  await sendRoomAction({ action: "chord", playerId: profile.value.device_id, x, y });
-}
-function minesweeperElapsedLabel(startedAt?: number, finishedAt?: number) {
-  if (!startedAt) return "--";
-  const end = finishedAt ?? nowTick.value;
-  return `${Math.max(0, Math.floor((end - startedAt) / 1000))}s`;
-}
-function minesweeperProgressPercent(boardState?: MinesweeperPlayerState | null) {
-  if (!boardState?.totalSafe) return 0;
-  return Math.round((boardState.revealedSafe / boardState.totalSafe) * 100);
-}
-function isOpponentLastGomokuCell(x: number, y: number) {
-  const move = lastOpponentGomokuMove.value;
-  return !!move && move.x === x && move.y === y;
-}
-function isOpponentLastXiangqiCell(x: number, y: number) {
-  const move = lastOpponentXiangqiMove.value;
-  return !!move && move.to.x === x && move.to.y === y;
-}
-async function requestGomokuUndo() {
-  if (!profile.value || !canRequestUndoGomoku.value) return;
-  await sendRoomAction({ action: "undo_request", playerId: profile.value.device_id });
-}
-async function respondGomokuUndo(accepted: boolean) {
-  if (!profile.value || !canRespondGomokuUndo.value) return;
-  await sendRoomAction({ action: "undo_response", playerId: profile.value.device_id, accepted });
-}
-async function resignGomoku() {
-  if (!profile.value || !canResignGomoku.value) return;
-  await sendRoomAction({ action: "resign", playerId: profile.value.device_id });
-}
-async function requestXiangqiUndo() {
-  if (!profile.value || !canRequestUndoXiangqi.value) return;
-  selectedXiangqiPoint.value = null;
-  await sendRoomAction({ action: "undo_request", playerId: profile.value.device_id });
-}
-async function respondXiangqiUndo(accepted: boolean) {
-  if (!profile.value || !canRespondXiangqiUndo.value) return;
-  selectedXiangqiPoint.value = null;
-  await sendRoomAction({ action: "undo_response", playerId: profile.value.device_id, accepted });
-}
-async function resignXiangqi() {
-  if (!profile.value || !canResignXiangqi.value) return;
-  selectedXiangqiPoint.value = null;
-  await sendRoomAction({ action: "resign", playerId: profile.value.device_id });
-}
 function maybeAutoStartDdz(state: DdzTableState) {
   if (state.phase !== "lobby" || state.players.length !== 3 || !state.players.every((player) => player.ready)) return;
   const { hands, landlordCards } = dealHands(state.players);
@@ -3850,475 +3168,17 @@ async function handleGomokuTurnTimeout(state: GomokuTableState) {
     autoTurnRunning = false;
   }
 }
-function seatTurnLabel(seat: DdzSeat) {
-  const state = activeDdzState.value;
-  if (!state || state.turnDeviceId !== seat.deviceId || (state.phase !== "bidding" && state.phase !== "playing")) return "";
-  return `${activeTurnRemainingSeconds.value}s`;
-}
-function gomokuSeatTurnLabel(seat: GomokuSeat | null) {
-  const state = activeGomokuState.value;
-  if (!seat || !state || state.turnDeviceId !== seat.deviceId || state.phase !== "playing") return "";
-  return `${activeGomokuTurnRemainingSeconds.value}s`;
-}
 function nextDdzPlayerId(state: DdzTableState, currentId: string) {
   const index = state.players.findIndex((player) => player.deviceId === currentId);
   return state.players[(index + 1) % state.players.length]?.deviceId;
-}
-async function dissolveRoom() {
-  const room = activeGameRoom.value;
-  if (!room || !isRoomHost(room)) return;
-  const frame = makeGameFrame("room_dissolved", { roomId: room.roomId }, room.roomId, room.gameType);
-  removeGameRoom(room.roomId);
-  const onlyLocalPlayers = room.players.every((player) => player.isBot || player.deviceId === myDeviceId.value);
-  await store.sendGameFrame(null, frame, onlyLocalPlayers);
-}
-async function leaveRoom() {
-  const room = activeGameRoom.value;
-  if (!room || !profile.value) return;
-  if (isRoomHost(room)) {
-    await dissolveRoom();
-    return;
-  }
-  const action: GameActionPayload = { action: "leave", playerId: profile.value.device_id };
-  const frame = makeGameFrame("room_action", { roomId: room.roomId, action }, room.roomId, room.gameType);
-  removeGameRoom(room.roomId);
-  await store.sendGameFrame(room.hostDeviceId, frame);
-}
-async function roomPrimaryAction() {
-  const room = activeGameRoom.value;
-  if (!room) return;
-  if (room.gameType === "monopoly") {
-    const player = currentMonopolyPlayer();
-    const state = activeMonopolyState.value;
-    if (!state || !player) return;
-    if (myMonopolySpectator.value) return;
-    if (!myMonopolySeat.value) {
-      await sendRoomAction({ action: "join", player });
-      listPaneCollapsed.value = true;
-      return;
-    }
-    if (state.phase === "lobby") {
-      const allReady = state.seats.length >= 2 && state.seats.every((seat) => seat.ready);
-      if (isRoomHost(room) && allReady) {
-        await sendRoomAction({ action: "start", playerId: player.deviceId });
-      } else {
-        await sendRoomAction({ action: "ready", playerId: player.deviceId, ready: !myMonopolySeat.value.ready });
-      }
-      return;
-    }
-    if (state.phase === "ended" && isRoomHost(room)) {
-      const reset = restartMonopolyRoomState(state);
-      monopolyRooms.value = { ...monopolyRooms.value, [room.roomId]: reset };
-      updateRoomFromState(room.roomId, { players: reset.seats, updatedAt: reset.updatedAt });
-      await broadcastSnapshot(room.roomId);
-    }
-    return;
-  }
-  if (room.gameType === "gomoku") {
-    const player = currentGomokuPlayer();
-    if (!activeGomokuState.value || !player) return;
-    if (!myGomokuSeat.value) {
-      await sendRoomAction({ action: "join", player });
-      return;
-    }
-    if (activeGomokuState.value.phase === "lobby") {
-      await sendRoomAction({ action: "ready", playerId: player.deviceId, ready: !myGomokuSeat.value.ready });
-      return;
-    }
-    if (activeGomokuState.value.phase === "ended" && isRoomHost(room)) {
-      const reset = createInitialGomokuState({ ...room, players: room.players.map((item) => ({ ...item, ready: false })) });
-      gomokuRooms.value = { ...gomokuRooms.value, [room.roomId]: reset };
-      updateRoomFromState(room.roomId, reset);
-      await broadcastSnapshot(room.roomId);
-    }
-    return;
-  }
-  if (room.gameType === "minesweeper") {
-    const player = currentMinesweeperPlayer();
-    if (!activeMinesweeperState.value || !player) return;
-    if (!myMinesweeperSeat.value) {
-      await sendRoomAction({ action: "join", player });
-      return;
-    }
-    if (activeMinesweeperState.value.phase === "lobby") {
-      await sendRoomAction({ action: "ready", playerId: player.deviceId, ready: !myMinesweeperSeat.value.ready });
-      return;
-    }
-    if (activeMinesweeperState.value.phase === "ended" && isRoomHost(room)) {
-      const reset = createInitialMinesweeperState({ ...room, players: room.players.map((item) => ({ ...item, ready: false })) });
-      minesweeperRooms.value = { ...minesweeperRooms.value, [room.roomId]: reset };
-      updateRoomFromState(room.roomId, reset);
-      await broadcastSnapshot(room.roomId);
-    }
-    return;
-  }  if (room.gameType === "xiangqi") {
-    const player = currentXiangqiPlayer();
-    if (!activeXiangqiState.value || !player) return;
-    if (!myXiangqiSeat.value) {
-      await sendRoomAction({ action: "join", player });
-      return;
-    }
-    if (activeXiangqiState.value.phase === "lobby") {
-      await sendRoomAction({ action: "ready", playerId: player.deviceId, ready: !myXiangqiSeat.value.ready });
-      return;
-    }
-    if (activeXiangqiState.value.phase === "ended" && isRoomHost(room)) {
-      const reset = createInitialXiangqiState({ ...room, players: room.players.map((item) => ({ ...item, ready: false })) });
-      xiangqiRooms.value = { ...xiangqiRooms.value, [room.roomId]: reset };
-      selectedXiangqiPoint.value = null;
-      updateRoomFromState(room.roomId, reset);
-      await broadcastSnapshot(room.roomId);
-    }
-    return;
-  }
-  const player = currentDdzPlayer();
-  if (!activeDdzState.value || !player) return;
-  if (!myDdzSeat.value) {
-    await sendRoomAction({ action: "join", player });
-    return;
-  }
-  if (activeDdzState.value.phase === "lobby") {
-    await sendRoomAction({ action: "ready", playerId: player.deviceId, ready: !myDdzSeat.value.ready });
-    return;
-  }
-  if (activeDdzState.value.phase === "ended" && isRoomHost(room)) {
-    const reset = createInitialDdzState({ ...room, players: room.players.map((item) => ({ ...item, ready: false })) });
-    doudizhuRooms.value = { ...doudizhuRooms.value, [room.roomId]: reset };
-    updateRoomFromState(room.roomId, reset);
-    await broadcastSnapshot(room.roomId);
-  }
-}
-async function bidLandlord(call: boolean) {
-  if (!profile.value || activeDdzState.value?.phase !== "bidding" || !isMyDdzTurn.value) return;
-  await sendRoomAction({ action: "bid", playerId: profile.value.device_id, call });
-}
-function toggleCard(cardId: string) {
-  if (activeDdzState.value?.phase !== "playing" || !isMyDdzTurn.value) return;
-  selectedCardIds.value = selectedCardIds.value.includes(cardId)
-    ? selectedCardIds.value.filter((id) => id !== cardId)
-    : [...selectedCardIds.value, cardId];
-}
-async function playSelectedCards() {
-  if (!profile.value || !canPlaySelectedCards.value || !selectedPlay.value) return;
-  const cardIds = selectedCards.value.map((card) => card.id);
-  selectedCardIds.value = [];
-  await sendRoomAction({ action: "play", playerId: profile.value.device_id, cardIds });
-}
-async function passTurn() {
-  if (!profile.value || !canPassDdz.value) return;
-  selectedCardIds.value = [];
-  await sendRoomAction({ action: "pass", playerId: profile.value.device_id });
-}
-async function sendRoomChat() {
-  const content = roomChatDraft.value.trim();
-  if (!content || !profile.value || !activeGameRoom.value) return;
-  const message: RoomChatItem = {
-    id: `room-chat-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    senderDeviceId: profile.value.device_id,
-    sender: profile.value.nickname,
-    content,
-    mine: true,
-    createdAt: Date.now(),
-  };
-  roomChatDraft.value = "";
-  await sendRoomAction({ action: "chat", message });
-}
-function processGameFrame(frame: GameFrame) {
-  if (frame.sender_device_id === profile.value?.device_id) return;
-  if (!availableGameRegistry.value.some((game) => game.type === frame.game)) return;
-  if (frame.kind === "leaderboard_sync") {
-    applyLeaderboardSync(frame.payload as LeaderboardSyncPayload);
-    return;
-  }
-  const payload = frame.payload as { room?: GameRoomShell; state?: DdzTableState | GomokuTableState | XiangqiTableState | MinesweeperTableState | MonopolyRoomState; roomId?: string; action?: GameActionPayload };
-  if (frame.kind === "room_created" && payload.room && payload.state) {
-    upsertGameRoom(payload.room);
-    upsertIncomingGameState(payload.room, payload.state);
-  }
-  if (frame.kind === "room_dissolved" && payload.roomId) {
-    removeGameRoom(payload.roomId);
-    return;
-  }
-  if (frame.kind === "room_snapshot" && payload.room && payload.state) {
-    upsertGameRoom(payload.room);
-    upsertIncomingGameState(payload.room, payload.state);
-  }
-  if (frame.kind === "room_action" && payload.roomId && payload.action && isRoomHost(gameRoomsState.value.find((room) => room.roomId === payload.roomId) ?? null)) {
-    const changed = applyRoomAction(payload.roomId, payload.action);
-    if (changed) broadcastSnapshot(payload.roomId);
-  }
-}
-function upsertIncomingGameState(room: GameRoomShell, state: DdzTableState | GomokuTableState | XiangqiTableState | MinesweeperTableState | MonopolyRoomState) {
-  if (room.gameType === "gomoku") {
-    const normalized = normalizeIncomingState(state as GomokuTableState);
-    gomokuRooms.value = { ...gomokuRooms.value, [room.roomId]: normalized };
-    maybeRecordGameResult(room, normalized);
-    return;
-  }
-  if (room.gameType === "minesweeper") {
-    const normalized = normalizeIncomingState(state as MinesweeperTableState);
-    minesweeperRooms.value = { ...minesweeperRooms.value, [room.roomId]: normalized };
-    maybeRecordGameResult(room, normalized);
-    return;
-  }
-  if (room.gameType === "xiangqi") {
-    const normalized = normalizeIncomingState(state as XiangqiTableState);
-    xiangqiRooms.value = { ...xiangqiRooms.value, [room.roomId]: normalized };
-    selectedXiangqiPoint.value = null;
-    maybeRecordGameResult(room, normalized);
-    return;
-  }
-  if (room.gameType === "monopoly") {
-    const normalized = normalizeIncomingMonopolyState(state as MonopolyRoomState);
-    monopolyRooms.value = { ...monopolyRooms.value, [room.roomId]: normalized };
-    maybeRecordGameResult(room, normalized);
-    return;
-  }
-  const normalized = normalizeIncomingState(state as DdzTableState);
-  doudizhuRooms.value = { ...doudizhuRooms.value, [room.roomId]: normalized };
-  maybeRecordGameResult(room, normalized);
-}
-async function addMonopolyBot() {
-  const room = activeGameRoom.value;
-  const state = activeMonopolyState.value;
-  const hostId = profile.value?.device_id;
-  if (!room || room.gameType !== "monopoly" || !state || !hostId || !isRoomHost(room) || state.phase !== "lobby" || state.seats.length >= 4) return;
-  const botNumber = state.seats.filter((seat) => seat.isBot).length + 1;
-  await sendRoomAction({
-    action: "add_bot",
-    hostId,
-    bot: {
-      deviceId: `bot:${room.roomId}:${botNumber}`,
-      nickname: `机器人 ${botNumber}`,
-      online: true,
-      ready: true,
-      isBot: true,
-    },
-  });
-}
-async function removeMonopolyMember(targetId: string) {
-  const room = activeGameRoom.value;
-  const state = activeMonopolyState.value;
-  const hostId = profile.value?.device_id;
-  if (!room || room.gameType !== "monopoly" || !state || !hostId || !isRoomHost(room) || state.phase !== "lobby" || targetId === hostId) return;
-  await sendRoomAction({ action: "remove_member", hostId, targetId });
-}
-function monopolyTileStyle(index: number): Record<string, string> {
-  if (index <= 10) return { gridColumn: String(index + 1), gridRow: "1" };
-  if (index <= 20) return { gridColumn: "11", gridRow: String(index - 9) };
-  if (index <= 30) return { gridColumn: String(31 - index), gridRow: "11" };
-  return { gridColumn: "1", gridRow: String(41 - index) };
-}
-function monopolyPlayerColor(deviceId: string): string {
-  if (activeMonopolyState.value?.phase === "lobby") return "#94a3b8";
-  const seatIndex = monopolyPlayersInTurnOrder.value.findIndex((player) => player.deviceId === deviceId);
-  const tone = Math.max(0, seatIndex) % 4;
-  return `var(--monopoly-player-${tone + 1}, ${['#e45a5a', '#377fe8', '#3ca56a', '#9a62d6'][tone]})`;
-}
-function monopolyVirtualAvatarTone(player: MonopolyPlayer | null | undefined): string {
-  const seatIndex = player
-    ? monopolyPlayersInTurnOrder.value.findIndex((item) => item.deviceId === player.deviceId)
-    : 0;
-  return `monopoly-avatar-tone-${Math.max(0, seatIndex) % 4 + 1}`;
-}
-function monopolyPlayerStyle(deviceId: string): Record<string, string> {
-  return { "--monopoly-player-color": monopolyPlayerColor(deviceId) };
-}
-function isMonopolyPlayerReady(deviceId: string): boolean {
-  return activeMonopolyState.value?.seats.find((seat) => seat.deviceId === deviceId)?.ready === true;
-}
-function monopolyAnnouncementBeneficiary(announcement: MonopolyRoomAnnouncement): MonopolyPlayer | null {
-  const players = activeMonopolyState.value?.game.players ?? [];
-  const rentReceiver = /向(.+?)支付过路费/.exec(announcement.text)?.[1];
-  if (rentReceiver) return players.find((player) => player.nickname === rentReceiver) ?? null;
-  return players.find((player) => announcement.text.includes(player.nickname)) ?? null;
 }
 function monopolyAnnouncementAvatarPlayers(announcement: MonopolyRoomAnnouncement): MonopolyPlayer[] {
   const players = activeMonopolyState.value?.game.players ?? [];
   const matched = players.filter((player) => announcement.text.includes(player.nickname)).slice(0, 2);
   return matched.sort((left, right) => announcement.text.indexOf(left.nickname) - announcement.text.indexOf(right.nickname));
 }
-function monopolyGodName(god: MonopolyGod): string {
-  return { wealth: "财神", poverty: "穷鬼", angel: "天使", devil: "恶魔" }[god];
-}
-function monopolyGodAvatarGlyph(god: MonopolyGod): string {
-  return { wealth: "财", poverty: "穷", angel: "天", devil: "魔" }[god];
-}
-function monopolyGodAvatarTone(god: MonopolyGod): string {
-  return `monopoly-god-avatar-${god}`;
-}
-function monopolyAnnouncementParts(announcement: MonopolyRoomAnnouncement): Array<{ text: string; player?: MonopolyPlayer; god?: MonopolyGod }> {
-  const players = (activeMonopolyState.value?.game.players ?? []).filter((player) => player.nickname.length > 0);
-  const gods: MonopolyGod[] = ["wealth", "poverty", "angel", "devil"];
-  const entities: Array<{ label: string; player?: MonopolyPlayer; god?: MonopolyGod }> = [
-    ...players.map((player) => ({ label: player.nickname, player })),
-    ...gods.map((god) => ({ label: monopolyGodName(god), god })),
-  ];
-  const parts: Array<{ text: string; player?: MonopolyPlayer; god?: MonopolyGod }> = [];
-  let remaining = announcement.text;
-  while (remaining.length > 0) {
-    const candidate = entities
-      .map((entity) => ({ ...entity, index: remaining.indexOf(entity.label) }))
-      .filter((item) => item.index >= 0)
-      .sort((left, right) => left.index - right.index || right.label.length - left.label.length)[0];
-    if (!candidate) {
-      parts.push({ text: remaining });
-      break;
-    }
-    if (candidate.index > 0) parts.push({ text: remaining.slice(0, candidate.index) });
-    if (candidate.player) parts.push({ text: candidate.label, player: candidate.player });
-    else if (candidate.god) parts.push({ text: candidate.label, god: candidate.god });
-    remaining = remaining.slice(candidate.index + candidate.label.length);
-  }
-  return parts;
-}
-function monopolyAnnouncementStyle(announcement: MonopolyRoomAnnouncement): Record<string, string> {
-  const beneficiary = monopolyAnnouncementBeneficiary(announcement);
-  return { "--monopoly-announcement-color": beneficiary ? monopolyPlayerColor(beneficiary.deviceId) : "#78869a" };
-}
-function monopolyPropertySignalColor(index: number): string {
-  const ownerId = activeMonopolyState.value?.game.properties[index]?.ownerDeviceId;
-  return ownerId ? monopolyPlayerColor(ownerId) : "#8c96a4";
-}
-function monopolyCityRingStyle(index: number): Record<string, string> {
-  const cell = 100 / 11;
-  if (index > 0 && index < 10) return { left: `${(index + 0.5) * cell}%`, top: "10.6%" };
-  if (index > 10 && index < 20) return { left: "89.4%", top: `${(index - 9.5) * cell}%` };
-  if (index > 20 && index < 30) return { left: `${(30.5 - index) * cell}%`, top: "89.4%" };
-  return { left: "10.6%", top: `${(40.5 - index) * cell}%` };
-}
-function monopolyBuildingStyle(index: number): Record<string, string> {
-  const property = activeMonopolyState.value?.game.properties[index];
-  const playerIndex = property?.ownerDeviceId
-    ? monopolyPlayersInTurnOrder.value.findIndex((player) => player.deviceId === property.ownerDeviceId)
-    : -1;
-  const colorColumn = playerIndex < 0 ? 0 : Math.min(4, playerIndex + 1);
-  const levelRow = property?.level === "level3" ? 2 : property?.level === "level2" ? 1 : 0;
-  const variant = property?.buildingVariant ?? (index % 3);
-  return {
-    "--monopoly-building-sheet": `url('/games/monopoly/buildings/style-${Math.max(0, Math.min(2, variant)) + 1}.png')`,
-    "--monopoly-building-column": `${colorColumn * 25}%`,
-    "--monopoly-building-row": `${levelRow * 50}%`,
-  };
-}
-function monopolyRuleBuildingStyle(level: string, variant = 1): Record<string, string> {
-  const levelRow = level === "level3" ? 2 : level === "level2" ? 1 : 0;
-  return {
-    "--monopoly-building-sheet": `url('/games/monopoly/buildings/style-${variant}.png')`,
-    "--monopoly-building-column": "0%",
-    "--monopoly-building-row": `${levelRow * 50}%`,
-  };
-}
-function monopolyBuildingTone(index: number): string {
-  const property = activeMonopolyState.value?.game.properties[index];
-  if (!property?.ownerDeviceId) return "neutral";
-  const playerIndex = monopolyPlayersInTurnOrder.value.findIndex((player) => player.deviceId === property.ownerDeviceId);
-  return `player-${Math.max(0, playerIndex) + 1}`;
-}
-function monopolyTileStatusMarkers(index: number): Array<{ kind: "god" | "roadblock" | "sealed" | "double"; label: string; title: string; god?: MonopolyGod }> {
-  const state = activeMonopolyState.value;
-  if (!state) return [];
-  const property = state.game.properties[index];
-  const markers: Array<{ kind: "god" | "roadblock" | "sealed" | "double"; label: string; title: string; god?: MonopolyGod }> = [];
-  const god = monopolyGodAt(index);
-  if (god) markers.push({ kind: "god", god, label: monopolyGodLabel(god), title: `${monopolyGodName(god)}神明` });
-  if (state.game.roadblocks.some((item) => item.index === index)) markers.push({ kind: "roadblock", label: "障", title: "路障：任何玩家都会被截停" });
-  if (property?.sealedTurns > 0) markers.push({ kind: "sealed", label: `封${property.sealedTurns}`, title: `查封中，还剩 ${property.sealedTurns} 个所属玩家回合` });
-  if ((property?.tollMultiplier ?? 1) > 1) markers.push({ kind: "double", label: `×${property!.tollMultiplier}`, title: `过路费 ×${property!.tollMultiplier}` });
-  return markers;
-}
-function monopolyPropertyCityName(index: number): string {
-  return monopolyCityNameOf(index);
-}
-function monopolyPropertyLevelLabel(level?: string): string {
-  if (level === "house") return "小屋";
-  if (level === "level2") return "洋房";
-  if (level === "level3") return "地标";
-  return "空地";
-}
-function monopolyPropertyLevel(index: number): "empty" | "house" | "level2" | "level3" {
-  return activeMonopolyState.value?.game.properties[index]?.level ?? "empty";
-}
-function monopolyPropertyTollAmount(index: number): number {
-  const property = activeMonopolyState.value?.game.properties[index];
-  return property?.ownerDeviceId ? monopolyPropertyToll(property) : 0;
-}
-function monopolyPropertyLevelBars(index: number): number[] {
-  const level = monopolyPropertyLevel(index);
-  const count = level === "house" ? 1 : level === "level2" ? 2 : level === "level3" ? 3 : 0;
-  return Array.from({ length: count }, (_, bar) => bar + 1);
-}
-function monopolyTileInnerEdge(index: number): "top" | "right" | "bottom" | "left" {
-  if (index > 0 && index < 10) return "top";
-  if (index > 10 && index < 20) return "right";
-  if (index > 20 && index < 30) return "bottom";
-  return "left";
-}
-function monopolyTileTitle(index: number) {
-  const tile = monopolyBoardTiles.value[index];
-  if (!tile) return "地块";
-  if (tile.kind === "event") return "随机事件";
-  if (tile.kind === "corner") return { start: "起点", airport: "飞机场", price_double: "地价翻倍", jail: "监狱" }[tile.corner];
-  return monopolyPropertyCityName(index);
-}
-function monopolyTileMeta(index: number) {
-  const state = activeMonopolyState.value;
-  const tile = state?.game.board[index];
-  if (!state || !tile) return "";
-  if (tile.kind !== "property") return "";
-  const property = state.game.properties[index];
-  if (!property?.ownerDeviceId) return "空地 · 350 金币";
-  const owner = state.game.players.find((player) => player.deviceId === property.ownerDeviceId);
-  return `${monopolyPropertyLevelLabel(property.level)} · ${owner?.nickname ?? "银行"}${property.tollMultiplier > 1 ? ` ×${property.tollMultiplier}` : ""}${property.sealedTurns > 0 ? " · 查封" : ""}`;
-}
-function monopolyPropertyCount(deviceId: string): number {
-  return Object.values(activeMonopolyState.value?.game.properties ?? {}).filter((property) => property.ownerDeviceId === deviceId).length;
-}
-function monopolyPlayerOrder(deviceId: string): number | null {
-  if (activeMonopolyState.value?.phase === "lobby") return null;
-  return monopolyPlayersInTurnOrder.value.findIndex((player) => player.deviceId === deviceId) + 1;
-}
-function isMonopolyPlayerOnline(deviceId: string): boolean {
-  return activeMonopolyState.value?.seats.find((seat) => seat.deviceId === deviceId)?.online ?? true;
-}
-function monopolyPlayerEffects(player: MonopolyPlayer): Array<{ key: string; label: string; tone: "buff" | "debuff" | "neutral"; remainingTurns: number }> {
-  const effects: Array<{ key: string; label: string; tone: "buff" | "debuff" | "neutral"; remainingTurns: number }> = [];
-  if (player.god && player.godTurns > 0) {
-    const god = {
-      wealth: { label: "财神", tone: "buff" as const },
-      poverty: { label: "穷鬼", tone: "debuff" as const },
-      angel: { label: "天使", tone: "buff" as const },
-      devil: { label: "恶魔", tone: "neutral" as const },
-    }[player.god];
-    effects.push({ key: `god-${player.god}`, label: god.label, tone: god.tone, remainingTurns: player.godTurns });
-  }
-  if (player.forcedDice !== undefined) effects.push({ key: "fixed-dice", label: `定点 ${player.forcedDice}`, tone: "buff", remainingTurns: 1 });
-  if (player.stayTurns > 0) effects.push({ key: "stay", label: "停留", tone: "debuff", remainingTurns: player.stayTurns });
-  if (player.turtleTurns > 0) effects.push({ key: "turtle", label: "乌龟", tone: "debuff", remainingTurns: player.turtleTurns });
-  if (player.jailTurns > 0) effects.push({ key: "jail", label: "入狱", tone: "debuff", remainingTurns: player.jailTurns });
-  if (player.direction === "counterclockwise") effects.push({ key: "reverse", label: "逆行", tone: "neutral", remainingTurns: 0 });
-  return effects;
-}
-function monopolyPlayersAt(index: number) {
-  return activeMonopolyState.value?.game.players.filter((player) => monopolyPlayerDisplayPosition(player) === index && !player.eliminated) ?? [];
-}
-function monopolyPlayerDisplayPosition(player: MonopolyPlayer): number {
-  return monopolyAnimatedPositions.value[player.deviceId] ?? player.position;
-}
 function isMonopolyTokenMoving(playerId: string): boolean {
   return monopolyMovingPlayerIds.value.includes(playerId);
-}
-function focusMonopolyPlayer(player: MonopolyPlayer): void {
-  const focusIndex = monopolyPlayerDisplayPosition(player);
-  monopolyFocusedPlayerId.value = player.deviceId;
-  monopolyFocusedTileIndex.value = focusIndex;
-  const existingTimer = monopolyMovementTimers.get(`focus:${player.deviceId}`);
-  if (existingTimer) window.clearTimeout(existingTimer);
-  monopolyMovementTimers.set(`focus:${player.deviceId}`, window.setTimeout(() => {
-    if (monopolyFocusedPlayerId.value === player.deviceId) monopolyFocusedPlayerId.value = "";
-    if (monopolyFocusedTileIndex.value === focusIndex) monopolyFocusedTileIndex.value = -1;
-    monopolyMovementTimers.delete(`focus:${player.deviceId}`);
-  }, 1800));
 }
 function playMonopolyDiceAnimation(finalFaces: number[]): void {
   if (monopolyDiceRollTimer) window.clearInterval(monopolyDiceRollTimer);
@@ -4459,163 +3319,6 @@ function syncMonopolyTokenPlayback(): void {
 function shouldTeleportMonopolyToken(player: MonopolyPlayer, previousPosition: number): boolean {
   return previousPosition === 10 || (player.position === 30 && player.jailTurns > 0);
 }
-function monopolyGodAt(index: number) {
-  return activeMonopolyState.value?.game.godTokens.find((token) => token.index === index)?.god;
-}
-function monopolyGodLabel(god?: string) {
-  return god === "wealth" ? "财" : god === "poverty" ? "穷" : god === "angel" ? "天" : god === "devil" ? "魔" : "";
-}
-function monopolyCardLabel(card: MonopolyCard) {
-  return {
-    acquittal: "免罪", seize: "抢占", frame: "陷害", double: "翻倍", fixed_dice: "指定", roadblock: "路障", turtle: "乌龟", stay: "停留", reverse: "转向", loot: "掠夺", seal: "查封",
-  }[card];
-}
-function monopolyCardSymbol(card: MonopolyCard) {
-  return MONOPOLY_CARD_SYMBOLS[card];
-}
-function monopolyCardTooltip(card: MonopolyCard): string {
-  const usage: Record<MonopolyCard, string> = {
-    acquittal: "被送入监狱时自动回到起点。",
-    seize: "夺取其他玩家指定的一块地产。",
-    frame: "将任意指定玩家送入监狱三回合。",
-    double: "永久提高指定已购地产的过路费。",
-    fixed_dice: "指定下一次骰子点数为 1 至 6。",
-    roadblock: "在任意地块放置一次性路障。",
-    turtle: "指定玩家接下来三个回合每次只能前进一格。",
-    stay: "指定任意玩家下一回合原地停留；若同时受乌龟影响，会消耗一次乌龟回合。",
-    reverse: "永久改变指定玩家的行进方向。",
-    loot: "随机夺取指定玩家背包中的一张卡。",
-    seal: "查封指定地产三个所属回合。",
-  };
-  const actionHint = activeMonopolyState.value?.turnRolled ? "投骰后本回合不能使用或弃置。" : "单击选中后可使用，右键可删除。";
-  return `${monopolyCardLabel(card)}卡：${usage[card]} ${actionHint}`;
-}
-function monopolyCardTargetKind(card: MonopolyCard): "player" | "tile" | "dice" | "passive" {
-  if (["frame", "turtle", "stay", "reverse", "loot"].includes(card)) return "player";
-  if (["seize", "double", "roadblock", "seal"].includes(card)) return "tile";
-  if (card === "fixed_dice") return "dice";
-  return "passive";
-}
-function canMonopolyAirportTarget(index: number): boolean {
-  const state = activeMonopolyState.value;
-  const pending = state?.pendingLanding;
-  return !!state
-    && pending?.kind === "airport"
-    && pending.playerId === myDeviceId.value
-    && Number.isInteger(index)
-    && index >= 0
-    && index < state.game.board.length;
-}
-function canMonopolyCardTargetTile(card: MonopolyCard | null, index: number): boolean {
-  const state = activeMonopolyState.value;
-  if (!card || monopolyCardTargetKind(card) !== "tile" || !state || !isMyMonopolyTurn.value || state.turnRolled || state.pendingLanding) return false;
-  const tile = state.game.board[index];
-  if (!tile) return false;
-  if (card === "roadblock") {
-    return !state.game.roadblocks.some((roadblock) => roadblock.index === index)
-      && !state.game.players.some((player) => !player.eliminated && player.position === index)
-      && !state.game.godTokens.some((token) => token.index === index);
-  }
-  if (tile.kind !== "property") return false;
-  const property = state.game.properties[index];
-  if (!property) return false;
-  if (card === "seize") return !!property.ownerDeviceId && property.ownerDeviceId !== myDeviceId.value;
-  if (card === "double") return property.ownerDeviceId === myDeviceId.value && property.level !== "empty";
-  if (card === "seal") return property.level !== "empty";
-  return false;
-}
-function selectMonopolyCard(card: MonopolyCard) {
-  if (!isMyMonopolyTurn.value || activeMonopolyState.value?.turnRolled) return;
-  if (card === "acquittal") {
-    operationNotice.value = "免罪卡会在入狱时自动使用，无需手动操作。";
-    return;
-  }
-  selectedMonopolyCard.value = selectedMonopolyCard.value === card ? null : card;
-  monopolyCardTargeting.value = null;
-  monopolyCardTargetPickerOpen.value = false;
-}
-function cancelMonopolyCardSelection() {
-  selectedMonopolyCard.value = null;
-  monopolyCardTargeting.value = null;
-  monopolyCardTargetPickerOpen.value = false;
-}
-async function prepareMonopolyCardUse() {
-  const card = selectedMonopolyCard.value;
-  if (!card || !isMyMonopolyTurn.value || activeMonopolyState.value?.turnRolled) return;
-  const targetKind = monopolyCardTargetKind(card);
-  if (targetKind === "player") {
-    monopolyCardTargetPickerOpen.value = true;
-    return;
-  }
-  if (targetKind === "tile") {
-    monopolyCardTargeting.value = card;
-    selectedMonopolyTargetIndex.value = -1;
-    return;
-  }
-  if (targetKind === "dice") {
-    fixedDicePickerOpen.value = true;
-  }
-}
-async function submitMonopolyCardUse(card: MonopolyCard, target: MonopolyCardTarget = {}) {
-  const player = monopolyMyPlayer.value;
-  if (!player || !isMyMonopolyTurn.value || activeMonopolyState.value?.turnRolled) return;
-  await sendRoomAction({ action: "card", playerId: player.deviceId, card, target });
-  cancelMonopolyCardSelection();
-}
-async function chooseMonopolyCardPlayer(playerId: string) {
-  const card = selectedMonopolyCard.value;
-  if (!card || monopolyCardTargetKind(card) !== "player") return;
-  await submitMonopolyCardUse(card, { playerId });
-}
-async function chooseMonopolyCardTile(index: number) {
-  const card = monopolyCardTargeting.value;
-  if (!card || !canMonopolyCardTargetTile(card, index)) return;
-  const target: MonopolyCardTarget = card === "roadblock" ? { index } : { propertyIndex: index };
-  await submitMonopolyCardUse(card, target);
-}
-async function handleMonopolyTileClick(index: number) {
-  if (monopolyCardTargeting.value) {
-    await chooseMonopolyCardTile(index);
-    return;
-  }
-  if (activeMonopolyState.value?.pendingLanding?.kind === "airport" && isMyMonopolyTurn.value) {
-    await chooseMonopolyAirport(index);
-    return;
-  }
-  selectedMonopolyTargetIndex.value = index;
-}
-function canMonopolyBuy() {
-  const state = activeMonopolyState.value;
-  return !!state && isMyMonopolyTurn.value && state.pendingLanding?.kind === "buy" && state.pendingLanding.playerId === myDeviceId.value;
-}
-async function rollMonopolyDice() {
-  if (!isMyMonopolyTurn.value || !profile.value || activeMonopolyState.value?.turnRolled) return;
-  await sendRoomAction({ action: "roll", playerId: profile.value.device_id });
-}
-async function buyMonopolyLanding() {
-  const pending = activeMonopolyState.value?.pendingLanding;
-  if (!profile.value || pending?.kind !== "buy") return;
-  await sendRoomAction({ action: "buy", playerId: profile.value.device_id, propertyIndex: pending.index });
-}
-async function skipMonopolyLanding() {
-  if (!profile.value || !activeMonopolyState.value?.pendingLanding) return;
-  await sendRoomAction({ action: "skip_landing", playerId: profile.value.device_id });
-}
-async function chooseMonopolyAirport(index: number) {
-  if (!profile.value || !canMonopolyAirportTarget(index)) return;
-  await sendRoomAction({ action: "airport", playerId: profile.value.device_id, targetIndex: index });
-}
-async function chooseMonopolyFixedDice(dice: number) {
-  fixedDicePickerOpen.value = false;
-  if (selectedMonopolyCard.value !== "fixed_dice") return;
-  await submitMonopolyCardUse("fixed_dice", { dice });
-}
-async function discardMonopolyCardAction(card: MonopolyCard) {
-  const player = monopolyMyPlayer.value;
-  if (!player || !isMyMonopolyTurn.value || activeMonopolyState.value?.turnRolled) return;
-  await sendRoomAction({ action: "discard", playerId: player.deviceId, card });
-  if (selectedMonopolyCard.value === card || monopolyCardTargeting.value === card) cancelMonopolyCardSelection();
-}
 async function handleMonopolyTurnTimeout(state: MonopolyRoomState) {
   const room = activeGameRoom.value;
   if (!room || !isRoomHost(room) || state.phase !== "playing" || activeMonopolyTurnRemainingSeconds.value > 0) return;
@@ -4673,58 +3376,8 @@ async function runMonopolyBotTurn(roomId: string) {
   if (!action) return;
   if (applyMonopolyAction(roomId, action)) await broadcastSnapshot(roomId);
 }
-function normalizeIncomingMonopolyState(state: MonopolyRoomState): MonopolyRoomState {
-  return {
-    ...state,
-    seats: state.seats.map((seat) => ({ ...seat })),
-    spectators: (state.spectators ?? []).map((seat) => ({ ...seat })),
-    game: cloneMonopolyState(state.game),
-    announcements: (state.announcements ?? (state.lastAnnouncement ? [state.lastAnnouncement] : [])).map((announcement) => ({ ...announcement })),
-    announcedGameLogCount: state.announcedGameLogCount ?? state.game.logs.length,
-    chatMessages: state.chatMessages.map((message) => ({ ...message, mine: message.senderDeviceId === profile.value?.device_id })),
-    logs: [...state.logs],
-  };
-}
-function normalizeIncomingState<T extends { chatMessages: RoomChatItem[] }>(state: T): T {
-  return {
-    ...state,
-    chatMessages: state.chatMessages.map((item) => ({ ...item, mine: item.senderDeviceId === profile.value?.device_id })),
-  };
-}
-function openLeaderboard() {
-  leaderboardOpen.value = true;
-}
-function openGameRules() {
-  gameRulesTab.value = activeGameRuleBook.value.tabs[0]?.key ?? "rules";
-  gameRulesOpen.value = true;
-}
 function rankedGameTypeOf(game: GameType): RankedGameType | null {
   return game === "doudizhu" || game === "gomoku" || game === "xiangqi" || game === "monopoly" ? game : null;
-}
-function encodeGameInvite(room: GameRoomShell) {
-  const payload: GameInvitePayload = {
-    roomId: room.roomId,
-    roomName: room.roomName,
-    gameType: room.gameType,
-    gameName: gameDefinitionOf(room.gameType).name,
-    hostName: room.hostName,
-    hostDeviceId: room.hostDeviceId,
-    createdAt: Date.now(),
-  };
-  return `${GAME_INVITE_PREFIX}${JSON.stringify(payload)}`;
-}
-function parseGameInvite(content: string): GameInvitePayload | null {
-  if (!content.startsWith(GAME_INVITE_PREFIX)) return null;
-  try {
-    const payload = JSON.parse(content.slice(GAME_INVITE_PREFIX.length)) as GameInvitePayload;
-    if (!payload.roomId || !payload.gameType || !payload.roomName) return null;
-    return payload;
-  } catch {
-    return null;
-  }
-}
-function gameInvitePayload(message: Message) {
-  return message.message_type === "text" ? parseGameInvite(message.content) : null;
 }
 function encodePrivateChannelInvite(invite: PrivateChannelInvitePayload) {
   return `${PRIVATE_CHANNEL_INVITE_PREFIX}${JSON.stringify(invite)}`;
@@ -4790,7 +3443,6 @@ function rejectPrivateChannelInviteCard(invite: PrivateChannelInvitePayload | nu
 function openRecipientPicker(mode: RecipientPickerMode) {
   recipientPickerMode.value = mode;
   selectedRecipientPeerIds.value = [];
-  selectedRecipientConversationIds.value = [];
   if (mode === "privateChannelCreate") {
     privateChannelTitleDraft.value = "私有频道";
   }
@@ -4801,22 +3453,9 @@ function toggleRecipientPeer(deviceId: string) {
     ? selectedRecipientPeerIds.value.filter((id) => id !== deviceId)
     : [...selectedRecipientPeerIds.value, deviceId];
 }
-function toggleRecipientConversation(conversationId: string) {
-  selectedRecipientConversationIds.value = selectedRecipientConversationIds.value.includes(conversationId)
-    ? selectedRecipientConversationIds.value.filter((id) => id !== conversationId)
-    : [...selectedRecipientConversationIds.value, conversationId];
-}
 async function confirmRecipientPicker() {
   if (recipientConfirmDisabled.value) return;
-  if (recipientPickerMode.value === "gameInvite") {
-    const room = activeGameRoom.value;
-    if (!room) return;
-    const payload = encodeGameInvite(room);
-    const targets = [...selectedRecipientPeerIds.value, ...selectedRecipientConversationIds.value];
-    for (const conversationId of targets) {
-      await store.sendMessageToConversation(conversationId, payload);
-    }
-  } else if (recipientPickerMode.value === "privateChannelCreate") {
+  if (recipientPickerMode.value === "privateChannelCreate") {
     const selectedTargets = [...selectedRecipientPeerIds.value];
     const conversation = await store.createPrivateChannel(privateChannelTitleDraft.value, []);
     activeSection.value = "chat";
@@ -4826,58 +3465,6 @@ async function confirmRecipientPicker() {
     await sendPrivateChannelInviteCards(activeConversation.value.id, selectedTargets);
   }
   recipientPickerOpen.value = false;
-}
-function seedInvitedRoomState(room: GameRoomShell) {
-  if (room.gameType === "gomoku" && !gomokuRooms.value[room.roomId]) {
-    gomokuRooms.value = { ...gomokuRooms.value, [room.roomId]: createInitialGameState(room) as GomokuTableState };
-    return;
-  }
-  if (room.gameType === "minesweeper" && !minesweeperRooms.value[room.roomId]) {
-    minesweeperRooms.value = { ...minesweeperRooms.value, [room.roomId]: createInitialGameState(room) as MinesweeperTableState };
-    return;
-  }
-  if (room.gameType === "xiangqi" && !xiangqiRooms.value[room.roomId]) {
-    xiangqiRooms.value = { ...xiangqiRooms.value, [room.roomId]: createInitialGameState(room) as XiangqiTableState };
-    return;
-  }
-  if (room.gameType === "monopoly" && !monopolyRooms.value[room.roomId]) {
-    monopolyRooms.value = { ...monopolyRooms.value, [room.roomId]: createInitialGameState(room) as MonopolyRoomState };
-    return;
-  }
-  if (room.gameType === "doudizhu" && !doudizhuRooms.value[room.roomId]) {
-    doudizhuRooms.value = { ...doudizhuRooms.value, [room.roomId]: createInitialGameState(room) as DdzTableState };
-  }
-}
-function ensureRoomFromInvite(invite: GameInvitePayload) {
-  const existing = gameRoomsState.value.find((item) => item.roomId === invite.roomId);
-  if (existing) return existing;
-  const hostPeer = invite.hostDeviceId ? peers.value.find((peer) => peer.device_id === invite.hostDeviceId) : null;
-  const now = Date.now();
-  const room: GameRoomShell = {
-    roomId: invite.roomId,
-    roomName: invite.roomName,
-    gameType: invite.gameType,
-    hostDeviceId: invite.hostDeviceId ?? "",
-    hostName: invite.hostName || hostPeer?.nickname || "房主",
-    players: invite.hostDeviceId ? [{
-      deviceId: invite.hostDeviceId,
-      nickname: invite.hostName || hostPeer?.nickname || "房主",
-      avatar: hostPeer?.avatar,
-      online: hostPeer?.online ?? false,
-      ready: false,
-    }] : [],
-    createdAt: invite.createdAt || now,
-    updatedAt: now,
-  };
-  upsertGameRoom(room);
-  seedInvitedRoomState(room);
-  return room;
-}
-function openGameInvite(invite: GameInvitePayload | null) {
-  if (!invite) return;
-  selectedGameType.value = invite.gameType;
-  const room = ensureRoomFromInvite(invite);
-  openGameRoom(room.roomId);
 }
 function maybeRecordGameResult(room: GameRoomShell, state: DdzTableState | GomokuTableState | XiangqiTableState | MinesweeperTableState | MonopolyRoomState) {
   if (state.phase !== "ended") return;
@@ -5711,9 +4298,6 @@ function openSection(section: MainSection) {
     unreadByConversation.value = { ...unreadByConversation.value, [activeConversationId.value]: 0 };
     void scrollActiveChatToBottom();
   }
-  if (section === "games") {
-    void broadcastLeaderboardSync();
-  }
   if (section !== "games") {
     listPaneCollapsed.value = false;
   }
@@ -5735,10 +4319,6 @@ function insertMentionToDraft(member?: ChannelMember | Peer) {
   draft.value = `${draft.value}${prefix}@${name} `;
   mentionPickerOpen.value = false;
   mentionSearch.value = "";
-}
-function appendEmojiToRoomDraft(emoji: string) {
-  roomChatDraft.value += emoji;
-  roomEmojiOpen.value = false;
 }
 function openDevice(peer: Peer) {
   selectedPeerId.value = peer.device_id;
@@ -6659,11 +5239,6 @@ async function toggleVoiceRecording() {
     store.error = err instanceof Error ? err.message : String(err);
   }
 }
-function handleRoomChatEnter(event: KeyboardEvent) {
-  if (event.shiftKey) return;
-  event.preventDefault();
-  sendRoomChat();
-}
 async function startWindowDrag(event: MouseEvent) {
   if (event.button !== 0) return;
   const target = event.target as HTMLElement | null;
@@ -7138,7 +5713,7 @@ async function closeWindow() {
                         <span class="message-meta-time">{{ formatTime(message.created_at) }}</span>
                       </div>
                       <div class="message-content-line">
-                        <div class="message-bubble" :class="{ 'message-card-bubble': privateChannelInvitePayload(message) || gameInvitePayload(message) }">
+                        <div class="message-bubble" :class="{ 'message-card-bubble': privateChannelInvitePayload(message) }">
                           <template v-if="privateChannelInvitePayload(message)">
                             <div class="channel-invite-card invite-message-card">
                               <span class="channel-invite-icon">私</span>
@@ -7157,15 +5732,6 @@ async function closeWindow() {
                                 <NTag v-else size="small" :bordered="false" type="success">已发送</NTag>
                               </span>
                             </div>
-                          </template>
-                          <template v-else-if="gameInvitePayload(message)">
-                            <button class="game-invite-card invite-message-card" type="button" @click="openGameInvite(gameInvitePayload(message))">
-                              <span class="game-invite-icon">{{ gameDefinitionOf(gameInvitePayload(message)?.gameType ?? 'doudizhu').icon }}</span>
-                              <span class="game-invite-copy">
-                                <strong>{{ gameInvitePayload(message)?.roomName }}</strong>
-                                <small>{{ gameInvitePayload(message)?.gameName }} · {{ gameInvitePayload(message)?.hostName }} 邀请加入</small>
-                              </span>
-                            </button>
                           </template>
                           <template v-else-if="message.message_type === 'text'">
                             <p>
@@ -7299,697 +5865,6 @@ async function closeWindow() {
                 host-version="0.8.0"
                 @error="handlePluginViewportError"
               />
-            </section>
-            <section v-else-if="activeSection === 'games'" class="game-workspace" :class="{ 'gomoku-workspace': activeGameRoom?.gameType === 'gomoku', 'xiangqi-workspace': activeGameRoom?.gameType === 'xiangqi', 'minesweeper-workspace': activeGameRoom?.gameType === 'minesweeper', 'monopoly-workspace': activeGameRoom?.gameType === 'monopoly' }">
-              <header class="game-header" data-tauri-drag-region>
-                <div>
-                  <h2>{{ activeGameDefinition.name }} · {{ activeGameRoom?.roomName ?? "排行榜" }}</h2>
-                  <p>{{ activeGameDefinition.description }} · 房间类型：{{ activeGameDefinition.name }}</p>
-                </div>
-                <div class="game-header-actions">                  <div v-if="activeGameRoom?.gameType === 'monopoly'" class="monopoly-view-switch" aria-label="棋盘显示模式">
-                    <button type="button" :aria-pressed="monopolyViewMode === 'flat'" @click="monopolyViewMode = 'flat'">平面</button>
-                    <button type="button" :aria-pressed="monopolyViewMode === '3d'" @click="monopolyViewMode = '3d'">3D</button>
-                  </div>
-                  <NButton v-if="activeGameRoom" secondary @click="openRecipientPicker('gameInvite')">邀请</NButton>
-                  <NButton secondary @click="openGameRules">玩法规则</NButton>
-                  <NButton v-if="activeGameRoom" secondary @click="openLeaderboard">排行榜</NButton>
-                  <NButton v-if="!activeGameRoom" secondary @click="createRoomOpen = true">创建房间</NButton>
-                  <NButton v-if="activeGameRoom && isRoomHost()" secondary type="error" @click="dissolveRoom">解散房间</NButton>
-                  <NButton v-else-if="activeGameRoom && (myGameSeat || myMonopolySpectator)" secondary type="warning" @click="leaveRoom">退出房间</NButton>
-                  <NButton v-if="activeGameRoom && activeGameRoom.gameType !== 'monopoly'" type="primary" :disabled="activeGameRoom?.gameType === 'doudizhu' ? activeDdzState?.phase === 'playing' || activeDdzState?.phase === 'bidding' : activeGameRoom?.gameType === 'xiangqi' ? activeXiangqiState?.phase === 'playing' : activeGameRoom?.gameType === 'minesweeper' ? activeMinesweeperState?.phase === 'playing' : activeGomokuState?.phase === 'playing'" @click="roomPrimaryAction">{{ roomPrimaryLabel }}</NButton>
-                </div>
-              </header>
-              <div v-if="activeGameRoom?.gameType === 'doudizhu'" class="doudizhu-layout">
-                <main class="doudizhu-table">
-                  <div class="landlord-cards">
-                    <div v-for="(card, index) in visibleLandlordCards" :key="card ? card.id : `back-${index}`" class="poker-card" :class="card ? { red: card.red } : { back: true }">{{ card ? card.label : "牌" }}</div>
-                  </div>
-                  <div class="desk-surface">
-                    <div class="desk-center">
-                      <div class="played-cards">
-                        <div v-for="card in tableLastCards" :key="card.id" class="poker-card" :class="{ red: card.red }">{{ card.label }}</div>
-                      </div>
-                      <div class="turn-note">上家出牌：{{ activeDdzState?.lastPlay ? `${activeDdzState.lastPlay.playerName} · ${playLabel(activeDdzState.lastPlay)}` : "无" }} · {{ playHint }}</div>
-                    </div>
-                  </div>
-                  <div v-if="leftDdzSeat" class="table-player left">
-                    <NAvatar class="table-avatar" :src="avatarImage(leftDdzSeat.avatar)">{{ firstLetter(leftDdzSeat.nickname) }}</NAvatar>
-                    <div>
-                      <div class="table-player-name">{{ leftDdzSeat.nickname }} <span v-if="seatTurnLabel(leftDdzSeat)" class="turn-countdown">{{ seatTurnLabel(leftDdzSeat) }}</span> <NTag v-if="leftDdzSeat.role === 'landlord'" size="small" :bordered="false" type="warning">地主</NTag></div>
-                      <div class="table-player-meta">{{ leftDdzSeat.online ? "在线" : "离线" }} · 剩余 {{ leftDdzSeat.handCount }} 张</div>
-                    </div>
-                  </div>
-                  <div v-if="rightDdzSeat" class="table-player right">
-                    <NAvatar class="table-avatar" :src="avatarImage(rightDdzSeat.avatar)">{{ firstLetter(rightDdzSeat.nickname) }}</NAvatar>
-                    <div>
-                      <div class="table-player-name">{{ rightDdzSeat.nickname }} <span v-if="seatTurnLabel(rightDdzSeat)" class="turn-countdown">{{ seatTurnLabel(rightDdzSeat) }}</span> <NTag v-if="rightDdzSeat.role === 'landlord'" size="small" :bordered="false" type="warning">地主</NTag></div>
-                      <div class="table-player-meta">{{ rightDdzSeat.online ? "在线" : "离线" }} · 剩余 {{ rightDdzSeat.handCount }} 张</div>
-                    </div>
-                  </div>
-                  <div v-if="myDdzSeat" class="table-player me">
-                    <NAvatar class="table-avatar" :src="avatarImage(myDdzSeat.avatar)">{{ firstLetter(myDdzSeat.nickname) }}</NAvatar>
-                    <div>
-                      <div class="table-player-name">我 · {{ myDdzSeat.nickname }} <span v-if="seatTurnLabel(myDdzSeat)" class="turn-countdown">{{ seatTurnLabel(myDdzSeat) }}</span> <NTag v-if="myDdzSeat.role === 'landlord'" size="small" :bordered="false" type="warning">地主</NTag></div>
-                      <div class="table-player-meta">{{ myDdzSeat.role === "landlord" ? "地主" : myDdzSeat.role === "farmer" ? "农民" : myDdzSeat.ready ? "已准备" : "未准备" }} · {{ isMyDdzTurn ? "轮到你" : "等待" }}</div>
-                    </div>
-                  </div>
-                  <div v-if="activeDdzState?.phase === 'ended'" class="settlement-overlay">
-                    <div class="settlement-panel">
-                      <div class="settlement-kicker">本局结算</div>
-                      <h3>{{ settlementWinnerLabel }} 获胜</h3>
-                      <div class="settlement-list">
-                        <div v-for="player in settlementRows" :key="player.deviceId" class="settlement-row" :class="{ winner: player.deviceId === activeDdzState?.winnerDeviceId }">
-                          <div class="settlement-player">
-                            <NAvatar :size="28" class="table-avatar" :src="avatarImage(player.avatar)">{{ firstLetter(player.nickname) }}</NAvatar>
-                            <span>{{ player.deviceId === myDeviceId ? `我 · ${player.nickname}` : player.nickname }}</span>
-                          </div>
-                          <NTag v-if="player.role" size="small" :bordered="false" :type="player.role === 'landlord' ? 'warning' : 'info'">
-                            {{ player.role === "landlord" ? "地主" : "农民" }}
-                          </NTag>
-                          <strong>剩余 {{ player.remaining }} 张</strong>
-                        </div>
-                      </div>
-                      <div class="settlement-actions">
-                        <NButton v-if="activeGameRoom && isRoomHost()" type="primary" @click="roomPrimaryAction">再来一局</NButton>
-                        <NButton secondary @click="leaveRoom">退出房间</NButton>
-                      </div>
-                    </div>
-                  </div>                </main>
-                <aside class="game-room-panel">
-                  <div class="room-chat-panel">
-                    <div class="room-chat-head">房间聊天</div>
-                    <div ref="roomChatPane" class="room-chat-list">
-                      <div v-for="item in activeRoomChatMessages" :key="item.id" class="room-chat-msg" :class="{ mine: item.mine }">
-                        <div class="room-chat-name">{{ item.sender }}</div>
-                        <div class="room-chat-bubble">{{ item.content }}</div>
-                      </div>
-                    </div>
-                    <div class="room-chat-composer">
-                      <div class="emoji-wrap">
-                        <button class="emoji-trigger" title="表情" @click="roomEmojiOpen = !roomEmojiOpen">☺</button>
-                        <div v-if="roomEmojiOpen" class="emoji-panel room-emoji-panel">
-                          <button v-for="emoji in emojiOptions" :key="emoji" @click="appendEmojiToRoomDraft(emoji)">{{ emoji }}</button>
-                        </div>
-                      </div>
-                      <NInput v-model:value="roomChatDraft" placeholder="房间聊天" @keydown.enter="handleRoomChatEnter" />
-                      <NButton type="primary" @click="sendRoomChat">发</NButton>
-                    </div>
-                  </div>
-                </aside>
-              </div>
-              <div v-else-if="activeGameRoom?.gameType === 'minesweeper'" class="minesweeper-layout">
-                <main class="minesweeper-table">
-
-                  <div class="minesweeper-race-area">
-                    <aside class="minesweeper-player-list">
-                      <div v-for="player in minesweeperSettlementRows" :key="player.deviceId" class="minesweeper-player" :class="{ me: player.deviceId === myDeviceId, winner: activeMinesweeperState?.winnerDeviceId === player.deviceId, lost: player.boardState?.status === 'lost' }">
-                        <NAvatar class="table-avatar" :src="avatarImage(player.avatar)">{{ firstLetter(player.nickname) }}</NAvatar>
-                        <div class="minesweeper-player-main">
-                          <strong>{{ player.deviceId === myDeviceId ? `我 · ${player.nickname}` : player.nickname }}</strong>
-                          <span>{{ player.result }} · {{ minesweeperProgressPercent(player.boardState) }}% · {{ minesweeperElapsedLabel(player.boardState?.startedAt, player.boardState?.finishedAt) }}</span>
-                          <div class="minesweeper-progress"><i :style="{ width: `${minesweeperProgressPercent(player.boardState)}%` }"></i></div>
-                        </div>
-                      </div>
-                    </aside>
-
-                    <div class="minesweeper-board-wrap">
-                      <div class="minesweeper-board-meta">
-                        <NDropdown
-                          v-if="activeMinesweeperState?.phase === 'lobby' && activeGameRoom && isRoomHost()"
-                          trigger="click"
-                          :options="minesweeperDifficultyOptions"
-                          @select="selectMinesweeperDifficulty"
-                        >
-                          <button class="minesweeper-meta-chip difficulty" type="button">{{ activeMinesweeperDifficultyLabel }}</button>
-                        </NDropdown>
-                        <span v-else class="minesweeper-meta-chip">{{ activeMinesweeperDifficultyLabel }}</span>
-                        <span class="minesweeper-meta-chip">{{ activeMinesweeperState?.mines ?? 40 }} 雷</span>
-                        <span class="minesweeper-meta-chip">旗 {{ myMinesweeperBoardState?.flagged ?? 0 }}</span>
-                      </div>
-                      <div
-                        class="minesweeper-board"
-                        :style="minesweeperBoardStyle"
-                        aria-label="扫雷棋盘"
-                      >
-                        <template v-for="(row, y) in myMinesweeperBoardState?.board ?? []" :key="`mine-row-${y}`">
-                          <button
-                            v-for="(cell, x) in row"
-                            :key="`mine-cell-${x}-${y}`"
-                            class="minesweeper-cell"
-                            :class="[{ revealed: cell.revealed, flagged: cell.flagged, mine: cell.mine && cell.revealed, exploded: cell.exploded }, minesweeperCellTone(cell)]"
-                            :disabled="!canUseMinesweeperBoard()"
-                            @click="revealMinesweeperAt(x, y)"
-                            @dblclick="chordMinesweeperAt(x, y)"
-                            @contextmenu.prevent="flagMinesweeperAt(x, y)"
-                          >
-                            {{ minesweeperCellText(cell) }}
-                          </button>
-                        </template>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div v-if="activeMinesweeperState?.phase === 'ended'" class="settlement-overlay minesweeper-settlement">
-                    <div class="settlement-panel">
-                      <div class="settlement-kicker">竞速结算</div>
-                      <h3>{{ activeMinesweeperState?.winnerDeviceId ? `${activeMinesweeperState.winnerName} 获胜` : activeMinesweeperState?.winnerName ?? '本局结束' }}</h3>
-                      <div class="settlement-list">
-                        <div v-for="player in minesweeperSettlementRows" :key="player.deviceId" class="settlement-row" :class="{ winner: activeMinesweeperState?.winnerDeviceId === player.deviceId }">
-                          <div class="settlement-player">
-                            <NAvatar :size="28" class="table-avatar" :src="avatarImage(player.avatar)">{{ firstLetter(player.nickname) }}</NAvatar>
-                            <span>{{ player.deviceId === myDeviceId ? `我 · ${player.nickname}` : player.nickname }}</span>
-                          </div>
-                          <NTag size="small" :bordered="false" :type="player.boardState?.status === 'lost' ? 'error' : player.boardState?.status === 'won' ? 'success' : 'info'">{{ player.result }}</NTag>
-                          <strong>{{ minesweeperProgressPercent(player.boardState) }}%</strong>
-                        </div>
-                      </div>
-                      <div class="settlement-actions">
-                        <NButton v-if="activeGameRoom && isRoomHost()" type="primary" @click="roomPrimaryAction">再来一局</NButton>
-                        <NButton secondary @click="leaveRoom">退出房间</NButton>
-                      </div>
-                    </div>
-                  </div>
-                </main>
-                <aside class="game-room-panel minesweeper-room-panel">
-                  <div class="room-chat-panel">
-                    <div class="room-chat-head">房间聊天</div>
-                    <div ref="roomChatPane" class="room-chat-list">
-                      <div v-for="item in activeRoomChatMessages" :key="item.id" class="room-chat-msg" :class="{ mine: item.mine }">
-                        <div class="room-chat-name">{{ item.sender }}</div>
-                        <div class="room-chat-bubble">{{ item.content }}</div>
-                      </div>
-                    </div>
-                    <div class="room-chat-composer">
-                      <div class="emoji-wrap">
-                        <button class="emoji-trigger" title="表情" @click="roomEmojiOpen = !roomEmojiOpen">☺</button>
-                        <div v-if="roomEmojiOpen" class="emoji-panel room-emoji-panel">
-                          <button v-for="emoji in emojiOptions" :key="emoji" @click="appendEmojiToRoomDraft(emoji)">{{ emoji }}</button>
-                        </div>
-                      </div>
-                      <NInput v-model:value="roomChatDraft" placeholder="房间聊天" @keydown.enter="handleRoomChatEnter" />
-                      <NButton type="primary" @click="sendRoomChat">发</NButton>
-                    </div>
-                  </div>
-                </aside>
-              </div>              <div v-else-if="activeGameRoom?.gameType === 'gomoku'" class="gomoku-layout">
-                <main class="gomoku-table">
-                  <div class="gomoku-arena">
-                    <div class="gomoku-player-card gomoku-side-player" :class="{ active: activeGomokuState?.turnDeviceId === blackGomokuSeat?.deviceId, winner: activeGomokuState?.winnerDeviceId === blackGomokuSeat?.deviceId }">
-                      <span class="gomoku-stone black"></span>
-                      <div>
-                        <strong class="gomoku-player-name">
-                          <span class="gomoku-player-name-text">{{ blackGomokuSeat?.deviceId === myDeviceId ? `我 · ${blackGomokuSeat?.nickname}` : blackGomokuSeat?.nickname ?? '等待黑棋' }}</span>
-                          <span v-if="gomokuSeatTurnLabel(blackGomokuSeat)" class="turn-countdown">{{ gomokuSeatTurnLabel(blackGomokuSeat) }}</span>
-                        </strong>
-                        <small>{{ blackGomokuSeat?.ready ? '已准备' : activeGomokuState?.phase === 'playing' ? '执黑' : '未准备' }}</small>
-                      </div>
-                    </div>
-                    <div class="gomoku-board-shell">
-                      <div class="gomoku-board" aria-label="五子棋棋盘">
-                        <div class="gomoku-grid-lines"></div>
-                        <button
-                          v-for="point in gomokuBoardPoints"
-                          :key="`gomoku-cell-${point.x}-${point.y}`"
-                          class="gomoku-cell"
-                          :class="{ occupied: !!point.cell, black: point.cell === 'black', white: point.cell === 'white', win: isGomokuWinPoint(point.x, point.y), opponentLast: isOpponentLastGomokuCell(point.x, point.y), playable: canPlaceGomokuCell(point.x, point.y) }"
-                          :style="gomokuPointStyle(point.x, point.y)"
-                          :disabled="!canPlaceGomokuCell(point.x, point.y)"
-                          @click="placeGomokuCell(point.x, point.y)"
-                        >
-                          <span v-if="point.cell" class="gomoku-stone" :class="point.cell"></span>
-                          <span v-if="isGomokuWinPoint(point.x, point.y)" class="gomoku-win-dot"></span>
-                          <span v-if="isOpponentLastGomokuCell(point.x, point.y)" class="gomoku-last-move-ring"></span>
-                        </button>
-                      </div>
-                    </div>
-                    <div class="gomoku-player-card gomoku-side-player" :class="{ active: activeGomokuState?.turnDeviceId === whiteGomokuSeat?.deviceId, winner: activeGomokuState?.winnerDeviceId === whiteGomokuSeat?.deviceId }">
-                      <span class="gomoku-stone white"></span>
-                      <div>
-                        <strong class="gomoku-player-name">
-                          <span class="gomoku-player-name-text">{{ whiteGomokuSeat?.deviceId === myDeviceId ? `我 · ${whiteGomokuSeat?.nickname}` : whiteGomokuSeat?.nickname ?? '等待白棋' }}</span>
-                          <span v-if="gomokuSeatTurnLabel(whiteGomokuSeat)" class="turn-countdown">{{ gomokuSeatTurnLabel(whiteGomokuSeat) }}</span>
-                        </strong>
-                        <small>{{ whiteGomokuSeat?.ready ? '已准备' : activeGomokuState?.phase === 'playing' ? '执白' : '未准备' }}</small>
-                      </div>
-                    </div>
-                  </div>
-                  <div class="gomoku-action-strip">
-                    <template v-if="activeGomokuState?.pendingUndo">
-                      <span class="undo-request-note">
-                        {{ activeGomokuState.pendingUndo.requesterId === myDeviceId ? '已发起悔棋，等待对方同意' : `${activeGomokuState.pendingUndo.requesterName} 请求悔棋` }}
-                      </span>
-                      <NButton v-if="canRespondGomokuUndo" size="small" type="primary" @click="respondGomokuUndo(true)">同意</NButton>
-                      <NButton v-if="canRespondGomokuUndo" size="small" secondary @click="respondGomokuUndo(false)">拒绝</NButton>
-                    </template>
-                    <template v-else>
-                      <NButton size="small" secondary :disabled="!canRequestUndoGomoku" @click="requestGomokuUndo">悔棋</NButton>
-                      <NButton size="small" secondary type="error" :disabled="!canResignGomoku" @click="resignGomoku">投降</NButton>
-                    </template>
-                  </div>
-                  <div class="gomoku-log-strip">
-                    <span v-for="move in activeGomokuState?.moves.slice(-6) ?? []" :key="`${move.playerId}-${move.createdAt}`">
-                      {{ move.playerName }} {{ gomokuStoneLabel(move.stone) }} {{ move.x + 1 }},{{ move.y + 1 }}
-                    </span>
-                  </div>
-                  <div v-if="activeGomokuState?.phase === 'ended'" class="settlement-overlay gomoku-settlement">
-                    <div class="settlement-panel">
-                      <div class="settlement-kicker">本局结算</div>
-                      <h3>{{ activeGomokuState?.winnerName ? `${activeGomokuState.winnerName} 获胜` : '平局' }}</h3>
-                      <div class="settlement-list">
-                        <div v-for="player in gomokuSettlementRows" :key="player.deviceId" class="settlement-row" :class="{ winner: activeGomokuState?.winnerDeviceId === player.deviceId }">
-                          <div class="settlement-player">
-                            <span class="gomoku-stone" :class="player.stone"></span>
-                            <span>{{ player.deviceId === myDeviceId ? `我 · ${player.nickname}` : player.nickname }}</span>
-                          </div>
-                          <NTag size="small" :bordered="false" :type="player.stone === 'black' ? 'default' : 'info'">{{ gomokuStoneLabel(player.stone) }}</NTag>
-                          <strong>{{ player.result }}</strong>
-                        </div>
-                      </div>
-                      <div class="settlement-actions">
-                        <NButton v-if="activeGameRoom && isRoomHost()" type="primary" @click="roomPrimaryAction">再来一局</NButton>
-                        <NButton secondary @click="leaveRoom">退出房间</NButton>
-                      </div>
-                    </div>
-                  </div>
-                </main>
-                <aside class="game-room-panel gomoku-room-panel">
-                  <div class="room-chat-panel">
-                    <div class="room-chat-head">房间聊天</div>
-                    <div ref="roomChatPane" class="room-chat-list">
-                      <div v-for="item in activeRoomChatMessages" :key="item.id" class="room-chat-msg" :class="{ mine: item.mine }">
-                        <div class="room-chat-name">{{ item.sender }}</div>
-                        <div class="room-chat-bubble">{{ item.content }}</div>
-                      </div>
-                    </div>
-                    <div class="room-chat-composer">
-                      <div class="emoji-wrap">
-                        <button class="emoji-trigger" title="表情" @click="roomEmojiOpen = !roomEmojiOpen">☺</button>
-                        <div v-if="roomEmojiOpen" class="emoji-panel room-emoji-panel">
-                          <button v-for="emoji in emojiOptions" :key="emoji" @click="appendEmojiToRoomDraft(emoji)">{{ emoji }}</button>
-                        </div>
-                      </div>
-                      <NInput v-model:value="roomChatDraft" placeholder="房间聊天" @keydown.enter="handleRoomChatEnter" />
-                      <NButton type="primary" @click="sendRoomChat">发</NButton>
-                    </div>
-                  </div>
-                </aside>
-              </div>
-              <div v-else-if="activeGameRoom?.gameType === 'monopoly'" class="monopoly-layout" :class="{ 'monopoly-view-3d': monopolyViewMode === '3d' }">
-                <main class="monopoly-table">
-                  <div class="monopoly-stage">
-                    <aside class="monopoly-player-side left" aria-label="投骰顺序左侧玩家">
-                      <aside class="monopoly-announcement-log">
-                        <div class="monopoly-announcement-log-heading">
-                          <span>事件日志</span><small>{{ activeMonopolyState?.announcements.length ?? 0 }}</small>
-                        </div>
-                        <div ref="monopolyAnnouncementLogPane" class="monopoly-announcement-log-list">
-                          <article v-for="announcement in activeMonopolyState?.announcements ?? []" :key="announcement.id" :title="announcement.text" :class="announcement.kind" :style="monopolyAnnouncementStyle(announcement)">
-                            <strong :title="announcement.text"><template v-for="(part, partIndex) in monopolyAnnouncementParts(announcement)" :key="`${announcement.id}-${partIndex}`"><span v-if="part.player" class="monopoly-announcement-entity"><span class="monopoly-virtual-avatar monopoly-virtual-avatar-small monopoly-announcement-inline-avatar" :class="monopolyVirtualAvatarTone(part.player)" aria-hidden="true"></span><span>{{ part.text }}</span></span><span v-else-if="part.god" class="monopoly-announcement-entity"><span class="monopoly-god-avatar monopoly-announcement-inline-avatar" :class="monopolyGodAvatarTone(part.god)" aria-hidden="true">{{ monopolyGodAvatarGlyph(part.god) }}</span><span>{{ part.text }}</span></span><span v-else>{{ part.text }}</span></template></strong>
-                          </article>
-                        </div>
-                      </aside>
-                      <article v-for="player in monopolyLeftPlayers" :key="player.deviceId" class="monopoly-player-seat" :class="{ active: monopolyCurrentPlayer?.deviceId === player.deviceId, mine: player.deviceId === myDeviceId, bankrupt: player.eliminated, jailed: player.jailTurns > 0 }" :style="monopolyPlayerStyle(player.deviceId)" @click="focusMonopolyPlayer(player)">
-                        <div class="monopoly-player-seat-top"><span class="monopoly-player-order">{{ monopolyPlayerOrder(player.deviceId) ?? '待' }}</span><span class="monopoly-player-seat-status"><i class="monopoly-player-ready" :class="{ ready: isMonopolyPlayerReady(player.deviceId) }" :title="isMonopolyPlayerReady(player.deviceId) ? '已准备' : '未准备'">{{ isMonopolyPlayerReady(player.deviceId) ? '✓' : '…' }}</i><i class="monopoly-player-online" :class="{ offline: !isMonopolyPlayerOnline(player.deviceId) }"></i></span></div>
-                        <div class="monopoly-player-seat-main"><span class="monopoly-virtual-avatar" :class="monopolyVirtualAvatarTone(player)" aria-hidden="true"></span><div><strong>{{ player.isBot ? `${player.nickname} · 机器人` : player.deviceId === myDeviceId ? `我 · ${player.nickname}` : player.nickname }}</strong><small>{{ monopolyPropertyCount(player.deviceId) }} 地块 · {{ player.cards.length }} 道具</small></div></div>
-                        <div v-if="monopolyPlayerEffects(player).length" class="monopoly-player-effects"><span v-for="effect in monopolyPlayerEffects(player)" :key="effect.key" :class="effect.tone">{{ effect.label }}<em v-if="effect.remainingTurns > 0">{{ effect.remainingTurns }}回合</em></span></div>
-                        <small class="monopoly-player-seat-coins">{{ player.coins }} 金币</small>
-                        <span v-if="player.eliminated" class="monopoly-player-bankrupt">破</span>
-                        <span v-if="player.jailTurns > 0" class="monopoly-player-jail-chains" aria-label="监狱中">
-                          <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-                            <line class="monopoly-player-jail-chain-rail" x1="0" y1="0" x2="100" y2="100" />
-                            <line class="monopoly-player-jail-chain-rail" x1="100" y1="0" x2="0" y2="100" />
-                            <line class="monopoly-player-jail-chain-links" x1="0" y1="0" x2="100" y2="100" />
-                            <line class="monopoly-player-jail-chain-links" x1="100" y1="0" x2="0" y2="100" />
-                          </svg>
-                          <b class="monopoly-player-jail-lock">锁</b>
-                        </span>
-                        <button v-if="activeMonopolyState?.phase === 'lobby' && isRoomHost() && player.deviceId !== myDeviceId" class="monopoly-player-remove" type="button" title="移除玩家" @click.stop="removeMonopolyMember(player.deviceId)">×</button>
-                      </article>
-                    </aside>
-                    <div class="monopoly-board" :class="{ 'monopoly-board-3d': monopolyViewMode === '3d' }" aria-label="大富翁棋盘">
-                    <MonopolyBoard3D v-show="monopolyViewMode === '3d'" :tiles="monopoly3DTiles" :announcement="activeMonopolyState?.phase !== 'ended' ? activeMonopolyAnnouncements[activeMonopolyAnnouncements.length - 1]?.text : undefined" @select="handleMonopolyTileClick">
-                      <template #announcement>
-                      <div v-for="announcement in activeMonopolyAnnouncements.slice(-1)" :key="announcement.id" class="monopoly-announcement" :class="announcement.kind" :style="monopolyAnnouncementStyle(announcement)">
-                        <span v-if="announcement.kind === 'event'" class="monopoly-event-reel">🎰</span>
-                        <strong><template v-for="(part, partIndex) in monopolyAnnouncementParts(announcement)" :key="`${announcement.id}-${partIndex}`"><span v-if="part.player" class="monopoly-announcement-entity"><span class="monopoly-virtual-avatar monopoly-virtual-avatar-small monopoly-announcement-inline-avatar" :class="monopolyVirtualAvatarTone(part.player)" aria-hidden="true"></span><span>{{ part.text }}</span></span><span v-else-if="part.god" class="monopoly-announcement-entity"><span class="monopoly-god-avatar monopoly-announcement-inline-avatar" :class="monopolyGodAvatarTone(part.god)" aria-hidden="true">{{ monopolyGodAvatarGlyph(part.god) }}</span><span>{{ part.text }}</span></span><span v-else>{{ part.text }}</span></template></strong>
-                      </div>
-                      </template>
-                    </MonopolyBoard3D>
-                    <button
-                      v-for="tile in monopolyBoardTiles"
-                      v-show="monopolyViewMode === 'flat'"
-                      :key="tile.index"
-                      class="monopoly-tile"
-                      :class="[tile.kind, tile.kind === 'corner' ? tile.corner : '', { owned: !!activeMonopolyState?.game.properties[tile.index]?.ownerDeviceId, selected: selectedMonopolyTargetIndex === tile.index, airportTarget: canMonopolyAirportTarget(tile.index), cardTarget: canMonopolyCardTargetTile(monopolyCardTargeting, tile.index), 'monopoly-tile-focused': monopolyFocusedTileIndex === tile.index }]"
-                      :style="monopolyTileStyle(tile.index)"
-                      type="button"
-                      :title="monopolyTileTitle(tile.index)"
-                      @click="handleMonopolyTileClick(tile.index)"
-                    >
-                      <strong v-if="tile.kind === 'corner' && tile.corner !== 'price_double'">{{ monopolyTileTitle(tile.index) }}</strong>
-                      <small v-if="tile.kind === 'corner'">{{ monopolyTileMeta(tile.index) }}</small>
-                      <span v-if="tile.kind === 'corner'" class="monopoly-corner-landmark" :class="`monopoly-corner-${tile.corner}`" aria-hidden="true"></span>
-                      <span v-if="tile.kind === 'property'" class="monopoly-property-building" :class="[`monopoly-building-${monopolyPropertyLevel(tile.index)}`, `monopoly-building-${monopolyBuildingTone(tile.index)}`]" :style="monopolyBuildingStyle(tile.index)" :title="monopolyTileMeta(tile.index)"><span v-if="monopolyPropertyLevel(tile.index) === 'empty'" class="monopoly-empty-lot"></span></span>
-                      <span v-if="tile.kind === 'property' && monopolyPropertyTollAmount(tile.index) > 0" class="monopoly-tile-toll" :class="{ sealed: activeMonopolyState?.game.properties[tile.index]?.sealedTurns > 0 }">{{ monopolyPropertyTollAmount(tile.index) }}</span>
-                      <span v-if="tile.kind === 'property' && monopolyPropertyLevelBars(tile.index).length" class="monopoly-building-level-signal" :aria-label="`${monopolyPropertyLevelLabel(monopolyPropertyLevel(tile.index))}等级`"><i v-for="bar in monopolyPropertyLevelBars(tile.index)" :key="bar" :style="{ '--monopoly-signal-length': bar, '--monopoly-signal-color': monopolyPropertySignalColor(tile.index) }"></i></span>
-                      <img v-if="tile.kind === 'event'" class="monopoly-event-slot-machine" src="/games/monopoly/events/slot-machine.png" alt="随机事件摇奖机" />
-                      <span v-if="monopolyTileStatusMarkers(tile.index).length" class="monopoly-tile-statuses">
-                        <i v-for="marker in monopolyTileStatusMarkers(tile.index)" :key="`${marker.kind}-${marker.label}`" :class="marker.kind" :title="marker.title"><span v-if="marker.god" class="monopoly-god-avatar monopoly-tile-god-avatar" :class="monopolyGodAvatarTone(marker.god)" aria-hidden="true">{{ monopolyGodAvatarGlyph(marker.god) }}</span><template v-else>{{ marker.label }}</template></i>
-                      </span>
-                      <span class="monopoly-player-tokens">
-                        <i v-for="player in monopolyPlayersAt(tile.index)" :key="player.deviceId" :class="[monopolyVirtualAvatarTone(player), { mine: player.deviceId === myDeviceId, 'monopoly-token-moving': isMonopolyTokenMoving(player.deviceId), 'monopoly-token-focused': monopolyFocusedPlayerId === player.deviceId }]" :style="monopolyPlayerStyle(player.deviceId)" :title="player.nickname"></i>
-                      </span>
-                    </button>
-                    <div
-                      v-for="tile in monopolyBoardTiles.filter((item) => item.kind === 'property')"
-                      v-show="monopolyViewMode === 'flat'"
-                      :key="`city-ring-${tile.index}`"
-                      class="monopoly-city-ring"
-                      :class="monopolyTileInnerEdge(tile.index)"
-                      :style="monopolyCityRingStyle(tile.index)"
-                    >
-                      <span class="monopoly-city-name" :class="`monopoly-city-level-${monopolyPropertyLevel(tile.index)}`">{{ monopolyPropertyCityName(tile.index) }}</span>
-                    </div>
-                    <div class="monopoly-center-column" :class="{ settlement: activeMonopolyState?.phase === 'ended' }">
-                    <div v-if="monopolyViewMode === 'flat' && activeMonopolyState?.phase !== 'ended' && activeMonopolyAnnouncements.length" class="monopoly-announcement-stack">
-                      <div v-for="announcement in activeMonopolyAnnouncements" :key="announcement.id" class="monopoly-announcement" :class="announcement.kind" :style="monopolyAnnouncementStyle(announcement)">
-                        <span v-if="announcement.kind === 'event'" class="monopoly-event-reel">🎰</span>
-                        <strong><template v-for="(part, partIndex) in monopolyAnnouncementParts(announcement)" :key="`${announcement.id}-${partIndex}`"><span v-if="part.player" class="monopoly-announcement-entity"><span class="monopoly-virtual-avatar monopoly-virtual-avatar-small monopoly-announcement-inline-avatar" :class="monopolyVirtualAvatarTone(part.player)" aria-hidden="true"></span><span>{{ part.text }}</span></span><span v-else-if="part.god" class="monopoly-announcement-entity"><span class="monopoly-god-avatar monopoly-announcement-inline-avatar" :class="monopolyGodAvatarTone(part.god)" aria-hidden="true">{{ monopolyGodAvatarGlyph(part.god) }}</span><span>{{ part.text }}</span></span><span v-else>{{ part.text }}</span></template></strong>
-                      </div>
-                    </div>
-                    <section class="monopoly-center-panel" :class="{ settlement: activeMonopolyState?.phase === 'ended' && monopolyViewMode === 'flat' }">
-                      <template v-if="activeMonopolyState?.phase === 'ended' && monopolyViewMode === 'flat'">
-                        <div class="monopoly-center-settlement">
-                          <span class="monopoly-center-settlement-kicker">现金结算</span>
-                          <h3>{{ monopolySettlementRows[0]?.nickname ?? '本局' }} 获胜</h3>
-                          <div class="monopoly-center-settlement-list">
-                            <div v-for="(player, index) in monopolySettlementRows" :key="player.deviceId" :class="{ winner: index === 0 }">
-                              <span>{{ index + 1 }}</span>
-                              <span class="monopoly-virtual-avatar monopoly-virtual-avatar-small" :class="monopolyVirtualAvatarTone(player)" aria-hidden="true"></span>
-                              <strong>{{ player.deviceId === myDeviceId ? `我 · ${player.nickname}` : player.nickname }}</strong>
-                              <em>{{ player.coins }} 金币</em>
-                            </div>
-                          </div>
-                          <div class="monopoly-center-actions monopoly-center-settlement-actions"><NButton v-if="isRoomHost()" type="primary" @click="roomPrimaryAction">再来一局</NButton><NButton secondary @click="leaveRoom">退出房间</NButton></div>
-                        </div>
-                      </template>
-                      <template v-else>
-                      <div class="monopoly-center-overview">
-                        <div v-if="monopolyCurrentPlayer" class="monopoly-turn-summary">
-                          <span class="monopoly-turn-round">第 <b class="monopoly-turn-round-current">{{ (activeMonopolyState?.game.completedRounds ?? 0) + 1 }}</b> / {{ activeMonopolyState?.game.maxRounds ?? 20 }} 回合</span>
-                          <div class="monopoly-current-action">
-                            <span>当前行动</span>
-                            <strong>{{ monopolyCurrentPlayer.isBot ? `${monopolyCurrentPlayer.nickname} · 机器人` : monopolyCurrentPlayer.deviceId === myDeviceId ? `我 · ${monopolyCurrentPlayer.nickname}` : monopolyCurrentPlayer.nickname }}</strong>
-                            <small>{{ activeMonopolyState?.turnRolled ? '正在结算落点' : '正在选择道具或投骰' }}</small>
-                          </div>
-                          <span v-if="activeMonopolyState?.phase === 'playing'" class="turn-countdown">{{ activeMonopolyTurnRemainingSeconds }}s</span>
-                        </div>
-                        <div class="monopoly-center-player">
-                          <span class="monopoly-virtual-avatar monopoly-virtual-avatar-center" :class="monopolyVirtualAvatarTone(monopolyMyPlayer)" aria-hidden="true"></span>
-                          <div class="monopoly-center-player-copy">
-                            <strong>{{ monopolyMyPlayer ? `我 · ${monopolyMyPlayer.nickname}` : myMonopolySpectator ? `观战 · ${myMonopolySpectator.nickname}` : '等待加入房间' }}</strong>
-                            <small v-if="monopolyMyPlayer && activeMonopolyState?.phase === 'lobby'">等待开局后随机分配颜色与骰序</small>
-                            <small v-else-if="monopolyMyPlayer">第 {{ monopolyPlayerOrder(monopolyMyPlayer.deviceId) }} 顺位 · 当前位置 {{ monopolyMyPlayer.position }} · {{ monopolyMyPlayer.direction === 'clockwise' ? '顺时针' : '逆时针' }}前进</small>
-                            <small v-else>{{ myMonopolySpectator ? '观战中，不参与投骰与地产操作' : '加入后可查看自己的资产' }}</small>
-                          </div>
-                          <div class="monopoly-center-cash"><span>金币</span><strong>{{ monopolyMyPlayer?.coins ?? activeMonopolyState?.game.startingCoins ?? 0 }}</strong></div>
-                        </div>
-                        <div class="monopoly-center-inventory">
-                          <div class="monopoly-center-assets">
-                            <div><strong>{{ monopolyMyPlayer ? monopolyPropertyCount(monopolyMyPlayer.deviceId) : 0 }}</strong><small>我的地块</small></div>
-                            <div><strong>{{ monopolyMyPlayer?.god ? '附身中' : '无' }}</strong><small>神明状态</small></div>
-                            <div><strong>{{ monopolyMyPlayer?.cards.length ?? 0 }} / 3</strong><small>背包道具</small></div>
-                          </div>
-                          <div class="monopoly-center-cards">
-                            <button v-for="(card, cardIndex) in monopolyMyPlayer?.cards ?? []" :key="`${card}-${cardIndex}`" class="monopoly-card" :class="[`monopoly-card-${card}`, { selected: selectedMonopolyCard === card }]" type="button" :disabled="!isMyMonopolyTurn || !!activeMonopolyState?.turnRolled" :title="monopolyCardTooltip(card)" @click="selectMonopolyCard(card)" @contextmenu.prevent="discardMonopolyCardAction(card)"><b>{{ monopolyCardSymbol(card) }}</b><span>{{ monopolyCardLabel(card) }}</span></button>
-                            <span v-if="!(monopolyMyPlayer?.cards.length)">暂无道具</span>
-                          </div>
-                        </div>
-                        <div v-if="(activeMonopolyState?.lastDice && monopolyDiceResultVisible) || monopolyDiceRolling" class="monopoly-dice-result" :class="{ twelve: activeMonopolyState?.lastDice?.total === 12 && monopolyDiceResultVisible, rolling: monopolyDiceRolling }">
-                          <span>{{ monopolyDiceRolling ? '骰子滚动中' : '骰子结果' }}</span>
-                          <span class="monopoly-dice-cubes" :class="{ rolling: monopolyDiceRolling }"><i v-for="(face, index) in monopolyDiceFaces" :key="index" class="monopoly-dice-cube">{{ face }}</i></span>
-                          <template v-if="!monopolyDiceRolling && activeMonopolyState?.lastDice">
-                            <strong>{{ activeMonopolyState.lastDice.total }}</strong><em>点</em>
-                            <small>{{ activeMonopolyState.lastDice.nickname }} · {{ activeMonopolyState.lastDice.fixed ? '指定骰' : activeMonopolyState.lastDice.values.join(' + ') }}</small>
-                          </template>
-                        </div>
-                        <div v-else class="monopoly-dice-placeholder" aria-hidden="true"></div>
-                        <strong class="monopoly-center-status">{{ activeMonopolyState?.phase === 'lobby' ? '准备后由房主开始' : monopolyPendingProperty ? '发现可购买地产' : activeMonopolyState?.pendingLanding?.kind === 'airport' ? '请选择传送地点' : activeMonopolyState?.extraRollAvailable && !activeMonopolyState?.turnRolled ? '12 点奖励：可使用道具后再次投骰' : activeMonopolyState?.turnRolled ? '正在结算当前地块' : myMonopolySpectator ? '正在观战' : '投骰前可使用道具' }}</strong>
-                      </div>
-                      <div class="monopoly-center-actions">
-                        <template v-if="activeMonopolyState?.phase === 'lobby'">
-                          <NButton type="primary" @click="roomPrimaryAction">{{ roomPrimaryLabel }}</NButton>
-                          <NButton v-if="isRoomHost() && activeMonopolyState.seats.length < 4" secondary @click="addMonopolyBot">添加机器人</NButton>
-                        </template>
-                        <template v-else-if="activeMonopolyState?.phase === 'playing' && !myMonopolySeat && !myMonopolySpectator">
-                          <NButton type="primary" @click="roomPrimaryAction">进入观战</NButton>
-                        </template>
-                        <template v-else-if="activeMonopolyState?.phase === 'playing' && isMyMonopolyTurn">
-                          <template v-if="selectedMonopolyCard">
-                            <NButton v-if="monopolyCardTargetKind(selectedMonopolyCard) !== 'passive'" type="primary" :disabled="!!monopolyCardTargeting" @click="prepareMonopolyCardUse">使用</NButton>
-                            <NButton secondary @click="cancelMonopolyCardSelection">取消</NButton>
-                            <NButton type="error" secondary @click="discardMonopolyCardAction(selectedMonopolyCard)">删除</NButton>
-                          </template>
-                          <NButton v-else type="primary" :disabled="activeMonopolyState.turnRolled || monopolyDiceRolling" @click="rollMonopolyDice">掷骰子</NButton>
-                          <NButton v-if="canMonopolyBuy()" type="success" @click="buyMonopolyLanding">购买 {{ monopolyPendingProperty?.level === 'empty' ? '小屋' : monopolyTileTitle(activeMonopolyState?.pendingLanding?.index ?? 0) }}</NButton>
-                          <NButton v-if="activeMonopolyState?.pendingLanding" secondary @click="skipMonopolyLanding">放弃</NButton>
-                        </template>
-                        <span v-else>{{ myMonopolySpectator ? '观战中' : '等待当前玩家操作' }}</span>
-                      </div>
-                      </template>
-                    </section>
-                    <section v-if="activeMonopolyState?.phase === 'ended' && monopolyViewMode === '3d'" class="monopoly-center-panel settlement monopoly-settlement-overlay-3d">
-                      <div class="monopoly-center-settlement">
-                        <span class="monopoly-center-settlement-kicker">现金结算</span>
-                        <h3>{{ monopolySettlementRows[0]?.nickname ?? '本局' }} 获胜</h3>
-                        <div class="monopoly-center-settlement-list">
-                          <div v-for="(player, index) in monopolySettlementRows" :key="player.deviceId" :class="{ winner: index === 0 }">
-                            <span>{{ index + 1 }}</span>
-                            <span class="monopoly-virtual-avatar monopoly-virtual-avatar-small" :class="monopolyVirtualAvatarTone(player)" aria-hidden="true"></span>
-                            <strong>{{ player.deviceId === myDeviceId ? `我 · ${player.nickname}` : player.nickname }}</strong>
-                            <em>{{ player.coins }} 金币</em>
-                          </div>
-                        </div>
-                        <div class="monopoly-center-actions monopoly-center-settlement-actions"><NButton v-if="isRoomHost()" type="primary" @click="roomPrimaryAction">再来一局</NButton><NButton secondary @click="leaveRoom">退出房间</NButton></div>
-                      </div>
-                    </section>
-                    </div>
-                    </div>
-                    <aside class="monopoly-player-side right" aria-label="投骰顺序右侧玩家">
-                      <aside class="game-room-panel monopoly-room-panel">
-                        <MonopolyRoomChat v-if="monopolyViewMode === '3d'" v-model:draft="roomChatDraft" :messages="activeRoomChatMessages" @send="sendRoomChat" @enter="handleRoomChatEnter" />
-                        <div v-else class="room-chat-panel">
-                          <div class="room-chat-head">房间聊天</div>
-                          <div class="room-chat-body">
-                            <div ref="roomChatPane" class="room-chat-list">
-                              <div v-for="item in activeRoomChatMessages" :key="item.id" class="room-chat-msg" :class="{ mine: item.mine }"><div class="room-chat-name">{{ item.sender }}</div><div class="room-chat-bubble">{{ item.content }}</div></div>
-                            </div>
-                            <div class="room-chat-composer"><NInput v-model:value="roomChatDraft" placeholder="房间聊天" @keydown.enter="handleRoomChatEnter" /><NButton class="monopoly-chat-send" size="small" type="primary" @click="sendRoomChat">发送</NButton></div>
-                          </div>
-                        </div>
-                      </aside>
-                      <article v-for="player in monopolyRightPlayers" :key="player.deviceId" class="monopoly-player-seat" :class="{ active: monopolyCurrentPlayer?.deviceId === player.deviceId, mine: player.deviceId === myDeviceId, bankrupt: player.eliminated, jailed: player.jailTurns > 0 }" :style="monopolyPlayerStyle(player.deviceId)" @click="focusMonopolyPlayer(player)">
-                        <div class="monopoly-player-seat-top"><span class="monopoly-player-order">{{ monopolyPlayerOrder(player.deviceId) ?? '待' }}</span><span class="monopoly-player-seat-status"><i class="monopoly-player-ready" :class="{ ready: isMonopolyPlayerReady(player.deviceId) }" :title="isMonopolyPlayerReady(player.deviceId) ? '已准备' : '未准备'">{{ isMonopolyPlayerReady(player.deviceId) ? '✓' : '…' }}</i><i class="monopoly-player-online" :class="{ offline: !isMonopolyPlayerOnline(player.deviceId) }"></i></span></div>
-                        <div class="monopoly-player-seat-main"><span class="monopoly-virtual-avatar" :class="monopolyVirtualAvatarTone(player)" aria-hidden="true"></span><div><strong>{{ player.isBot ? `${player.nickname} · 机器人` : player.deviceId === myDeviceId ? `我 · ${player.nickname}` : player.nickname }}</strong><small>{{ monopolyPropertyCount(player.deviceId) }} 地块 · {{ player.cards.length }} 道具</small></div></div>
-                        <div v-if="monopolyPlayerEffects(player).length" class="monopoly-player-effects"><span v-for="effect in monopolyPlayerEffects(player)" :key="effect.key" :class="effect.tone">{{ effect.label }}<em v-if="effect.remainingTurns > 0">{{ effect.remainingTurns }}回合</em></span></div>
-                        <small class="monopoly-player-seat-coins">{{ player.coins }} 金币</small>
-                        <span v-if="player.eliminated" class="monopoly-player-bankrupt">破</span>
-                        <span v-if="player.jailTurns > 0" class="monopoly-player-jail-chains" aria-label="监狱中">
-                          <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-                            <line class="monopoly-player-jail-chain-rail" x1="0" y1="0" x2="100" y2="100" />
-                            <line class="monopoly-player-jail-chain-rail" x1="100" y1="0" x2="0" y2="100" />
-                            <line class="monopoly-player-jail-chain-links" x1="0" y1="0" x2="100" y2="100" />
-                            <line class="monopoly-player-jail-chain-links" x1="100" y1="0" x2="0" y2="100" />
-                          </svg>
-                          <b class="monopoly-player-jail-lock">锁</b>
-                        </span>
-                        <button v-if="activeMonopolyState?.phase === 'lobby' && isRoomHost() && player.deviceId !== myDeviceId" class="monopoly-player-remove" type="button" title="移除玩家" @click.stop="removeMonopolyMember(player.deviceId)">×</button>
-                      </article>
-                    </aside>
-                  </div>
-                </main>
-              </div>
-              <div v-else-if="activeGameRoom?.gameType === 'xiangqi'" class="xiangqi-layout">
-                <main class="xiangqi-table">
-                  <div class="xiangqi-arena">
-                    <div class="xiangqi-player-card" :class="{ active: activeXiangqiState?.turnDeviceId === leftXiangqiSeat?.deviceId, winner: activeXiangqiState?.winnerDeviceId === leftXiangqiSeat?.deviceId }">
-                      <div class="xiangqi-side-mark" :class="leftXiangqiSide">{{ xiangqiSideShortLabel(leftXiangqiSide) }}</div>
-                      <div>
-                        <strong>{{ xiangqiSeatName(leftXiangqiSeat, leftXiangqiSide) }}</strong>
-                        <small>{{ xiangqiSeatStatus(leftXiangqiSeat, leftXiangqiSide) }}</small>
-                      </div>
-                    </div>
-
-                    <div class="xiangqi-board-shell">
-                      <div class="xiangqi-board" :class="{ 'black-perspective': xiangqiPerspectiveSide === 'black' }" aria-label="中国象棋棋盘">
-                        <div class="xiangqi-river">楚河　　　　汉界</div>
-                        <div v-if="activeXiangqiState?.checkSide" class="xiangqi-check-flash" :class="{ mine: isMyXiangqiChecked }">将</div>
-                        <div v-for="(row, displayY) in xiangqiDisplayRows" :key="`xiangqi-row-${displayY}`" class="xiangqi-row">
-                          <button
-                            v-for="point in row"
-                            :key="`xiangqi-cell-${point.x}-${point.y}`"
-                            class="xiangqi-cell"
-                            :class="{ selected: isSelectedXiangqiCell(point.x, point.y), playable: isXiangqiCellPlayable(point.x, point.y), target: canMoveSelectedXiangqiTo(point.x, point.y), opponentLast: isOpponentLastXiangqiCell(point.x, point.y), red: point.cell?.side === 'red', black: point.cell?.side === 'black' }"
-                            :disabled="!isXiangqiCellPlayable(point.x, point.y)"
-                            @click="clickXiangqiCell(point.x, point.y)"
-                          >
-                            <span v-if="point.cell" class="xiangqi-piece" :class="point.cell.side"><span>{{ xiangqiPieceLabel(point.cell) }}</span></span>
-                            <span v-else-if="canMoveSelectedXiangqiTo(point.x, point.y)" class="xiangqi-move-dot"></span>
-                            <span v-if="isOpponentLastXiangqiCell(point.x, point.y)" class="xiangqi-last-move-ring"></span>
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div class="xiangqi-player-card" :class="{ active: activeXiangqiState?.turnDeviceId === rightXiangqiSeat?.deviceId, winner: activeXiangqiState?.winnerDeviceId === rightXiangqiSeat?.deviceId }">
-                      <div class="xiangqi-side-mark" :class="rightXiangqiSide">{{ xiangqiSideShortLabel(rightXiangqiSide) }}</div>
-                      <div>
-                        <strong>{{ xiangqiSeatName(rightXiangqiSeat, rightXiangqiSide) }}</strong>
-                        <small>{{ xiangqiSeatStatus(rightXiangqiSeat, rightXiangqiSide) }}</small>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div class="xiangqi-action-strip">
-                    <template v-if="activeXiangqiState?.pendingUndo">
-                      <span class="undo-request-note">
-                        {{ activeXiangqiState.pendingUndo.requesterId === myDeviceId ? '已发起悔棋，等待对方同意' : `${activeXiangqiState.pendingUndo.requesterName} 请求悔棋` }}
-                      </span>
-                      <NButton v-if="canRespondXiangqiUndo" size="small" type="primary" @click="respondXiangqiUndo(true)">同意</NButton>
-                      <NButton v-if="canRespondXiangqiUndo" size="small" secondary @click="respondXiangqiUndo(false)">拒绝</NButton>
-                    </template>
-                    <template v-else>
-                      <NButton size="small" secondary :disabled="!canRequestUndoXiangqi" @click="requestXiangqiUndo">悔棋</NButton>
-                      <NButton size="small" secondary type="error" :disabled="!canResignXiangqi" @click="resignXiangqi">投降</NButton>
-                    </template>
-                  </div>
-
-                  <div class="xiangqi-log-strip">
-                    <span v-for="move in activeXiangqiState?.moves.slice(-6) ?? []" :key="`${move.playerId}-${move.createdAt}`">
-                      {{ move.playerName }} {{ move.pieceLabel }} {{ move.from.x + 1 }},{{ move.from.y + 1 }} → {{ move.to.x + 1 }},{{ move.to.y + 1 }}{{ move.capturedLabel ? ` 吃${move.capturedLabel}` : '' }}
-                    </span>
-                  </div>
-                  <div v-if="activeXiangqiState?.phase === 'ended'" class="settlement-overlay xiangqi-settlement">
-                    <div class="settlement-panel">
-                      <div class="settlement-kicker">本局结算</div>
-                      <h3>{{ activeXiangqiState?.winnerName ? `${activeXiangqiState.winnerName} 获胜` : '本局结束' }}</h3>
-                      <div class="settlement-list">
-                        <div v-for="player in xiangqiSettlementRows" :key="player.deviceId" class="settlement-row" :class="{ winner: activeXiangqiState?.winnerDeviceId === player.deviceId }">
-                          <div class="settlement-player">
-                            <span class="xiangqi-mini-piece" :class="player.side">{{ player.side === 'black' ? '黑' : '红' }}</span>
-                            <span>{{ player.deviceId === myDeviceId ? `我 · ${player.nickname}` : player.nickname }}</span>
-                          </div>
-                          <NTag size="small" :bordered="false" :type="player.side === 'red' ? 'error' : 'default'">{{ xiangqiSideLabel(player.side) }}</NTag>
-                          <strong>{{ player.result }}</strong>
-                        </div>
-                      </div>
-                      <div class="settlement-actions">
-                        <NButton v-if="activeGameRoom && isRoomHost()" type="primary" @click="roomPrimaryAction">再来一局</NButton>
-                        <NButton secondary @click="leaveRoom">退出房间</NButton>
-                      </div>
-                    </div>
-                  </div>
-                </main>
-                <aside class="game-room-panel xiangqi-room-panel">
-                  <div class="room-chat-panel">
-                    <div class="room-chat-head">房间聊天</div>
-                    <div ref="roomChatPane" class="room-chat-list">
-                      <div v-for="item in activeRoomChatMessages" :key="item.id" class="room-chat-msg" :class="{ mine: item.mine }">
-                        <div class="room-chat-name">{{ item.sender }}</div>
-                        <div class="room-chat-bubble">{{ item.content }}</div>
-                      </div>
-                    </div>
-                    <div class="room-chat-composer">
-                      <div class="emoji-wrap">
-                        <button class="emoji-trigger" title="表情" @click="roomEmojiOpen = !roomEmojiOpen">☺</button>
-                        <div v-if="roomEmojiOpen" class="emoji-panel room-emoji-panel">
-                          <button v-for="emoji in emojiOptions" :key="emoji" @click="appendEmojiToRoomDraft(emoji)">{{ emoji }}</button>
-                        </div>
-                      </div>
-                      <NInput v-model:value="roomChatDraft" placeholder="房间聊天" @keydown.enter="handleRoomChatEnter" />
-                      <NButton type="primary" @click="sendRoomChat">发</NButton>
-                    </div>
-                  </div>
-                </aside>
-              </div>
-              <div v-else class="game-catalog-board">
-                <section class="game-catalog-hero">
-                  <div class="game-catalog-icon">{{ activeGameDefinition.icon }}</div>
-                  <div>
-                    <h3>{{ activeGameDefinition.name }}排行榜</h3>
-                    <p>{{ activeGameDefinition.description }}</p>
-                  </div>
-                  <NButton type="primary" @click="createRoomOpen = true">创建{{ activeGameDefinition.name }}房间</NButton>
-                </section>
-                <section class="game-catalog-leaderboard">
-                  <header class="game-catalog-leaderboard-head">
-                    <div><strong>排行榜</strong><small>本机与局域网同步战绩</small></div>
-                    <span>{{ activeGameDefinition.minPlayers }}-{{ activeGameDefinition.maxPlayers }} 人</span>
-                  </header>
-                  <NTabs
-                    v-if="activeGameDefinition.type === 'minesweeper'"
-                    v-model:value="selectedMinesweeperLeaderboardKey"
-                    type="segment"
-                    animated
-                    class="minesweeper-leaderboard-tabs"
-                  >
-                    <NTabPane
-                      v-for="difficulty in MINESWEEPER_DIFFICULTIES"
-                      :key="difficulty.key"
-                      :name="difficulty.key"
-                      :tab="`${difficulty.label} · ${difficulty.mines} 雷`"
-                    >
-                      <div class="leaderboard-list minesweeper-rank-list">
-                        <div class="leaderboard-table-head">
-                          <span>名次</span>
-                          <span>昵称</span>
-                          <span>耗时</span>
-                          <span>步数</span>
-                        </div>
-                        <div v-if="minesweeperLeaderboardRows.length === 0" class="leaderboard-empty">暂无记录</div>
-                        <div v-for="(record, index) in minesweeperLeaderboardRows" :key="record.id" class="leaderboard-row">
-                          <span class="leaderboard-rank">{{ index + 1 }}</span>
-                          <strong>{{ record.nickname }}</strong>
-                          <span>{{ formatMinesweeperElapsed(record.elapsedMs) }}</span>
-                          <small>{{ record.moves }} 步</small>
-                        </div>
-                      </div>
-                    </NTabPane>
-                  </NTabs>
-                  <div v-else class="leaderboard-list catalog-stats-list">
-                    <div v-if="activeGameStatsRows.length === 0" class="leaderboard-empty">暂无战绩，完成一局后会出现在这里</div>
-                    <div v-for="(record, index) in activeGameStatsRows" :key="record.id" class="leaderboard-row">
-                      <span class="leaderboard-rank">{{ index + 1 }}</span>
-                      <strong>{{ record.nickname }}</strong>
-                      <span>{{ record.totalGames }} 局</span>
-                      <small>{{ record.wins }} 胜 · 胜率 {{ formatWinRate(record) }}</small>
-                    </div>
-                  </div>
-                </section>
-              </div>
-              <footer v-if="activeGameRoom?.gameType === 'doudizhu'" class="hand-zone">
-                <div class="hand-actions">
-                  <template v-if="activeDdzState?.phase === 'bidding'">
-                    <NButton secondary :disabled="!isMyDdzTurn" @click="bidLandlord(false)">不叫</NButton>
-                    <NButton type="primary" :disabled="!isMyDdzTurn" @click="bidLandlord(true)">叫地主</NButton>
-                  </template>
-                  <template v-else>
-                    <NButton secondary :disabled="!canPassDdz" @click="passTurn">不要</NButton>
-                    <NButton type="primary" :disabled="!canPlaySelectedCards" @click="playSelectedCards">出牌</NButton>
-                  </template>
-                </div>
-                <div class="hand-cards">
-                  <div
-                    v-for="card in myDdzHand"
-                    :key="card.id"
-                    class="poker-card hand-card"
-                    :class="{ red: card.red, selected: selectedCardIds.includes(card.id) }"
-                    @click="toggleCard(card.id)"
-                  >
-                    {{ card.label }}
-                  </div>
-                </div>
-              </footer>
             </section>
             <section v-else-if="activeSection === 'devices'" class="workspace-view device-address-book">
               <div class="workspace-header">
@@ -8823,52 +6698,6 @@ async function closeWindow() {
           <NPagination v-if="issuedAdminNotifications.length > ADMIN_NOTIFICATION_REVIEW_PAGE_SIZE" v-model:page="adminNotificationReviewPage" :page-count="adminNotificationReviewPageCount" :page-size="ADMIN_NOTIFICATION_REVIEW_PAGE_SIZE" />
         </div>
       </NModal>
-        <NModal v-model:show="createRoomOpen" preset="card" title="创建房间" class="create-room-modal">
-          <div class="create-room-form" @click="createRoomGameMenuOpen = false">
-            <div class="create-room-game-dropdown" @click.stop>
-              <button class="create-room-game-select" type="button" @click="createRoomGameMenuOpen = !createRoomGameMenuOpen">
-                <span class="create-room-game-icon">{{ selectedCreateRoomGame.icon }}</span>
-                <span class="create-room-game-copy">
-                  <strong>{{ selectedCreateRoomGame.name }}</strong>
-                  <small>{{ selectedCreateRoomGame.minPlayers }}-{{ selectedCreateRoomGame.maxPlayers }} 人 · {{ selectedCreateRoomGame.description }}</small>
-                </span>
-                <span class="create-room-caret" :class="{ open: createRoomGameMenuOpen }">⌄</span>
-              </button>
-              <div v-if="createRoomGameMenuOpen" class="create-room-game-menu">
-                <button
-                  v-for="game in availableGameRegistry"
-                  :key="game.type"
-                  class="create-room-game-option"
-                  :class="{ active: selectedGameType === game.type }"
-                  type="button"
-                  @click="selectCreateRoomGame(game.type)"
-                >
-                  <span class="create-room-game-icon">{{ game.icon }}</span>
-                  <span class="create-room-game-copy">
-                    <strong>{{ game.name }}</strong>
-                    <small>{{ game.minPlayers }}-{{ game.maxPlayers }} 人 · {{ game.description }}</small>
-                  </span>
-                </button>
-              </div>
-            </div>
-            <NInput v-model:value="roomNameDraft" size="medium" maxlength="24" placeholder="房间名称" />
-            <template v-if="selectedGameType === 'monopoly'">
-              <NFormItem label="开局金币" :show-feedback="false">
-                <NInputNumber v-model:value="monopolyStartingCoinsDraft" :min="5000" :max="50000" :step="1000" style="width: 100%" />
-              </NFormItem>
-              <NFormItem label="总回合数" :show-feedback="false">
-                <NInputNumber v-model:value="monopolyMaxRoundsDraft" :min="5" :max="50" :step="1" style="width: 100%" />
-              </NFormItem>
-              <NFormItem label="建筑样式" :show-feedback="false">
-                <NSwitch v-model:value="monopolyRandomBuildingVariantsDraft">
-                  <template #checked>每次随机</template>
-                  <template #unchecked>本局固定</template>
-                </NSwitch>
-              </NFormItem>
-            </template>
-            <NButton block type="primary" @click="createGameRoom">创建房间</NButton>
-          </div>
-        </NModal>
       <NModal v-model:show="superAdminAuthOpen" preset="card" title="超级管理员验证" class="super-admin-auth-modal">
           <NSpace vertical>
             <NFormItem label="密码" :show-feedback="false">
@@ -8893,7 +6722,7 @@ async function closeWindow() {
             <div class="recipient-scroll">
               <section class="recipient-picker-section">
                 <div class="recipient-section-head">
-                  <strong>{{ recipientPickerMode === 'gameInvite' ? '发送给设备' : '选择频道成员' }}</strong>
+                  <strong>选择频道成员</strong>
                   <span>{{ selectedRecipientPeerIds.length }} 已选</span>
                 </div>
                 <div v-if="pickerPeerOptions.length > 0" class="recipient-list">
@@ -8914,145 +6743,17 @@ async function closeWindow() {
                 </div>
                 <div v-else class="recipient-empty">暂无可选择的在线设备</div>
               </section>
-              <section v-if="recipientPickerMode === 'gameInvite'" class="recipient-picker-section">
-                <div class="recipient-section-head">
-                  <strong>发送到频道</strong>
-                  <span>{{ selectedRecipientConversationIds.length }} 已选</span>
-                </div>
-                <div v-if="pickerConversationOptions.length > 0" class="recipient-list">
-                  <button
-                    v-for="conversation in pickerConversationOptions"
-                    :key="conversation.id"
-                    class="recipient-list-row"
-                    :class="{ active: selectedRecipientConversationIds.includes(conversation.id) }"
-                    type="button"
-                    @click="toggleRecipientConversation(conversation.id)"
-                  >
-                    <span class="recipient-channel-icon">{{ conversation.is_private ? '私' : '局' }}</span>
-                    <span class="recipient-list-main">
-                      <strong>{{ conversation.title }}</strong>
-                      <small>{{ conversation.is_private ? '私有加密频道' : '局域网公开频道' }}</small>
-                    </span>
-                    <span class="recipient-list-check">{{ selectedRecipientConversationIds.includes(conversation.id) ? '✓' : '' }}</span>
-                  </button>
-                </div>
-                <div v-else class="recipient-empty">暂无可发送的频道</div>
-              </section>
             </div>
             <div class="recipient-picker-footer">
               <NText depth="3">
-                {{ recipientPickerMode === 'gameInvite' ? '游戏邀请会以卡片消息发送。' : '私有频道消息会广播投递，但只有持有频道密钥的成员能解密。' }}
+                私有频道消息会广播投递，但只有持有频道密钥的成员能解密。
               </NText>
               <NSpace justify="end">
                 <NButton secondary @click="recipientPickerOpen = false">取消</NButton>
                 <NButton type="primary" :disabled="recipientConfirmDisabled" @click="confirmRecipientPicker">
-                  {{ recipientPickerMode === 'gameInvite' ? '发送邀请' : recipientPickerMode === 'privateChannelCreate' ? '创建频道' : '邀请加入' }}
+                  {{ recipientPickerMode === 'privateChannelCreate' ? '创建频道' : '邀请加入' }}
                 </NButton>
               </NSpace>
-            </div>
-          </div>
-        </NModal>
-        <NModal v-model:show="gameRulesOpen" preset="card" :title="activeGameRuleBook.title" class="game-rules-modal">
-          <section class="game-rules-dialog">
-            <p class="game-rules-intro">{{ activeGameRuleBook.intro }}</p>
-            <NTabs v-model:value="gameRulesTab" type="segment" animated class="game-rules-tabs">
-              <NTabPane v-for="tab in activeGameRuleBook.tabs" :key="tab.key" :name="tab.key" :tab="tab.label">
-                <section class="game-rules-tab-panel">
-                  <header><strong>{{ tab.label }}</strong><span>{{ tab.summary }}</span></header>
-                  <ol>
-                    <li v-for="item in tab.items" :key="item">{{ item }}</li>
-                  </ol>
-                  <div v-if="activeGameDefinition.type === 'monopoly' && tab.key === 'buildings'" class="monopoly-rule-building-grid">
-                    <template v-for="building in MONOPOLY_RULE_BUILDINGS" :key="building.level">
-                      <article v-if="building.level === 'empty'" class="monopoly-rule-building">
-                        <span class="monopoly-property-building monopoly-rule-building-preview monopoly-building-empty" :style="monopolyRuleBuildingStyle(building.level)" aria-hidden="true"><span class="monopoly-empty-lot"></span></span>
-                        <div><strong>{{ building.label }}</strong><small>{{ building.appearance }}</small><p>{{ building.description }}</p></div>
-                      </article>
-                      <article v-for="variant in 3" v-else :key="`${building.level}-${variant}`" class="monopoly-rule-building">
-                        <span class="monopoly-property-building monopoly-rule-building-preview" :class="`monopoly-building-${building.level}`" :style="monopolyRuleBuildingStyle(building.level, variant)" aria-hidden="true"></span>
-                        <div><strong>{{ building.label }} · 款式 {{ variant }}</strong><small>{{ building.appearance }}</small><p>{{ building.description }}</p></div>
-                      </article>
-                    </template>
-                  </div>
-                  <div v-if="activeGameDefinition.type === 'monopoly' && tab.key === 'buildings'" class="monopoly-rule-special-grid">
-                    <article v-for="tile in MONOPOLY_RULE_SPECIAL_TILES" :key="tile.key" class="monopoly-rule-special">
-                      <img v-if="tile.key === 'event'" class="monopoly-rule-special-preview monopoly-rule-special-event" src="/games/monopoly/events/slot-machine.png" alt="" />
-                      <span v-else class="monopoly-rule-special-preview monopoly-rule-special-corner" :class="`monopoly-corner-${tile.key}`" aria-hidden="true"></span>
-                      <div><strong>{{ tile.label }}</strong><p>{{ tile.description }}</p></div>
-                    </article>
-                  </div>
-                  <div v-if="activeGameDefinition.type === 'monopoly' && tab.key === 'cards'" class="monopoly-rule-card-grid">
-                    <article v-for="ruleCard in MONOPOLY_RULE_CARDS" :key="ruleCard.card" class="monopoly-card monopoly-rule-card" :class="`monopoly-card-${ruleCard.card}`">
-                      <b>{{ monopolyCardSymbol(ruleCard.card) }}</b><span>{{ monopolyCardLabel(ruleCard.card) }}</span><small>{{ ruleCard.description }}</small>
-                    </article>
-                  </div>
-                  <div v-if="activeGameDefinition.type === 'monopoly' && tab.key === 'gods'" class="monopoly-rule-god-grid">
-                    <article v-for="ruleGod in MONOPOLY_RULE_GODS" :key="ruleGod.god" class="monopoly-rule-god">
-                      <span class="monopoly-god-avatar monopoly-rule-god-preview" :class="monopolyGodAvatarTone(ruleGod.god)" role="img" :aria-label="ruleGod.label"></span>
-                      <div><strong>{{ ruleGod.label }}</strong><p>{{ ruleGod.description }}</p></div>
-                    </article>
-                  </div>
-                </section>
-              </NTabPane>
-            </NTabs>
-          </section>
-        </NModal>
-        <NModal v-model:show="fixedDicePickerOpen" preset="card" title="指定骰子点数" class="fixed-dice-picker-modal">
-          <section class="fixed-dice-picker">
-            <p>选择下一次投骰的点数</p>
-            <div class="fixed-dice-options">
-              <NButton v-for="dice in 6" :key="dice" secondary @click="chooseMonopolyFixedDice(dice)">{{ dice }} 点</NButton>
-            </div>
-          </section>
-        </NModal>
-        <NModal v-model:show="monopolyCardTargetPickerOpen" preset="card" title="选择道具卡目标" class="monopoly-card-target-picker-modal" :style="{ width: 'min(300px, calc(100vw - 32px))' }">
-          <section class="monopoly-card-target-picker">
-            <p>请选择要使用 {{ selectedMonopolyCard ? monopolyCardLabel(selectedMonopolyCard) : '' }} 卡的玩家</p>
-            <button v-for="player in monopolyCardTargetPlayers" :key="player.deviceId" type="button" class="monopoly-card-target-player" :style="monopolyPlayerStyle(player.deviceId)" :title="`选择 ${player.nickname}`" @click="chooseMonopolyCardPlayer(player.deviceId)">
-              <span class="monopoly-virtual-avatar monopoly-virtual-avatar-target" :class="monopolyVirtualAvatarTone(player)" aria-hidden="true"></span>
-              <span><strong>{{ player.nickname }}</strong><small>{{ player.coins }} 金币 · {{ monopolyPropertyCount(player.deviceId) }} 地块</small></span>
-            </button>
-            <NButton secondary block @click="monopolyCardTargetPickerOpen = false">取消</NButton>
-          </section>
-        </NModal>
-        <NModal v-model:show="leaderboardOpen" preset="card" :title="leaderboardTitle" class="leaderboard-modal">
-          <NTabs
-            v-if="activeGameRoom?.gameType === 'minesweeper'"
-            v-model:value="selectedMinesweeperLeaderboardKey"
-            type="segment"
-            animated
-            class="minesweeper-leaderboard-tabs"
-          >
-            <NTabPane
-              v-for="difficulty in MINESWEEPER_DIFFICULTIES"
-              :key="difficulty.key"
-              :name="difficulty.key"
-              :tab="`${difficulty.label} · ${difficulty.mines} 雷`"
-            >
-              <div class="leaderboard-list minesweeper-rank-list">
-                <div class="leaderboard-table-head">
-                  <span>名次</span>
-                  <span>昵称</span>
-                  <span>耗时</span>
-                  <span>步数</span>
-                </div>
-                <div v-if="minesweeperLeaderboardRows.length === 0" class="leaderboard-empty">暂无记录</div>
-                <div v-for="(record, index) in minesweeperLeaderboardRows" :key="record.id" class="leaderboard-row">
-                  <span class="leaderboard-rank">{{ index + 1 }}</span>
-                  <strong>{{ record.nickname }}</strong>
-                  <span>{{ formatMinesweeperElapsed(record.elapsedMs) }}</span>
-                  <small>{{ record.moves }} 步</small>
-                </div>
-              </div>
-            </NTabPane>
-          </NTabs>
-          <div v-else class="leaderboard-list">
-            <div v-if="activeGameStatsRows.length === 0" class="leaderboard-empty">暂无战绩，完成一局后会出现在这里</div>
-            <div v-for="(record, index) in activeGameStatsRows" :key="record.id" class="leaderboard-row">
-              <span class="leaderboard-rank">{{ index + 1 }}</span>
-              <strong>{{ record.nickname }}</strong>
-              <span>{{ record.totalGames }} 局</span>
-              <small>{{ record.wins }} 胜 · 胜率 {{ formatWinRate(record) }}</small>
             </div>
           </div>
         </NModal>
@@ -9061,80 +6762,3 @@ async function closeWindow() {
 </template>
 
 <style scoped src="./styles/app.css"></style>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-<style scoped src="./styles/monopoly3d-room.css"></style>

@@ -11,24 +11,16 @@ const protocol = await readFile("src-tauri/src/protocol.rs", "utf8");
 const network = await readFile("src-tauri/src/network.rs", "utf8");
 const lib = await readFile("src-tauri/src/lib.rs", "utf8");
 
-assert.match(appVue, /type RecipientPickerMode = "gameInvite" \| "privateChannelCreate" \| "privateChannelInvite"/, "应有复用接收人选择模式");
+assert.match(appVue, /type RecipientPickerMode = "privateChannelCreate" \| "privateChannelInvite"/, "应有复用接收人选择模式");
 assert.match(appVue, /class="recipient-picker-modal"/, "应有复用接收人选择弹窗");
 assert.match(appVue, /class="recipient-list-row"/, "接收人选择应使用通讯录列表行");
 assert.doesNotMatch(appVue, /class="recipient-card"/, "接收人选择不应再使用方卡片");
-assert.match(appVue, /createRoomGameMenuOpen = ref\(false\)/, "创建房间应使用自定义下拉开关状态");
-assert.match(appVue, /class="create-room-game-dropdown"/, "创建房间应使用自定义下拉容器");
-assert.match(appVue, /class="create-room-game-select"/, "创建房间应使用下拉选择入口");
-assert.match(appVue, /v-for="game in gameRegistry"[\s\S]*selectCreateRoomGame\(game\.type\)/, "创建房间下拉应以列表选择游戏");
-assert.doesNotMatch(appVue, /class="create-room-game-card"/, "创建房间不应再使用游戏卡片网格");
-assert.doesNotMatch(appVue, /createRoomGameOptions/, "创建房间不应再依赖 Naive 下拉 options 渲染大块内容");
-assert.doesNotMatch(appVue, /renderCreateRoomGameLabel/, "创建房间不应再通过 Naive render-label 渲染大块菜单项");
 assert.match(appVue, /const groupInspectorAvailable = computed\([\s\S]*kind === "group"/, "群聊应固定显示右侧群信息栏");
 assert.match(appVue, /<NLayoutSider v-if="groupInspectorAvailable" class="group-inspector"/, "群聊应渲染群成员和群公告栏");
 assert.match(appVue, /class="pane-resize-handle right-group"/, "群信息栏应支持拖动调节宽度");
 assert.doesNotMatch(appVue, /channelPaneExpanded = ref\(/, "群信息栏不应再依赖展开收起状态");
 assert.match(appVue, /class="message-avatar"/, "聊天消息应展示头像");
 assert.match(appVue, /class="message-meta"/, "聊天消息应展示昵称");
-assert.match(appVue, /openRecipientPicker\('gameInvite'\)/, "游戏邀请应打开选择弹窗");
 assert.match(appVue, /openRecipientPicker\('privateChannelCreate'\)/, "超管应能创建私有频道");
 assert.match(appVue, /openRecipientPicker\('privateChannelInvite'\)/, "群主应能邀请私有频道成员");
 assert.doesNotMatch(appVue, /privateChannelCreate"\) return !privateChannelTitleDraft\.value\.trim\(\) \|\| selectedRecipientPeerIds/, "创建私有频道不应强制选择成员");
@@ -41,7 +33,7 @@ assert.match(appVue, /deviceChannelConversations/, "设备列表应汇总公开�
 assert.match(appVue, /class="conversation-delete-button"[\s\S]*?requestDeleteDirectConversation\(conversation\)/, "聊天列表中的单聊应提供删除入口");
 assert.match(appVue, /v-model:show="deleteDirectConversationOpen"[\s\S]*?confirmDeleteDirectConversation/, "删除单聊前应显示确认弹窗");
 assert.match(appVue, /channel-category-list/, "设备列表应展示频道分类");
-assert.doesNotMatch(appVue, /<NDropdown[\s\S]{0,240}openRecipientPicker\('gameInvite'\)/, "游戏邀请不应再使用下拉菜单");
+assert.doesNotMatch(appVue, /gameInvite|GAME_INVITE_PREFIX/, "核心聊天不应保留旧版内置游戏邀请协议");
 
 assert.match(css, /\.recipient-picker-modal\.n-card/, "接收人选择弹窗应有独立样式");
 assert.match(css, /\.recipient-list-row/, "接收人列表行应有独立样式");
@@ -51,8 +43,6 @@ assert.match(css, /\.pane-resize-handle\.right-group/, "群信息栏应有右侧
 assert.match(css, /\.list-pane\s*>\s*\.n-layout-sider-scroll-container\s*\{[\s\S]*?overflow:\s*hidden;/, "聊天列表外层侧栏不应重复显示滚动条");
 assert.match(css, /\.list-pane\s+\.list-scroll\s*\{[\s\S]*?height:\s*100%;/, "聊天列表应保留原有内部滚动区域");
 assert.match(css, /\.channel-invite-card/, "私有频道邀请卡片应有独立样式");
-assert.match(css, /\.create-room-game-option/, "创建房间下拉项应有图文样式");
-assert.match(css, /\.create-room-game-menu/, "创建房间下拉菜单应有独立滚动样式");
 
 assert.match(api, /createPrivateChannel/, "前端 API 应暴露创建私有频道");
 assert.match(api, /invitePrivateChannelMembers/, "前端 API 应暴露邀请私有频道成员");
