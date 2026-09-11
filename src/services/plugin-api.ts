@@ -3,6 +3,7 @@ import type { PluginManifestV1 } from "../plugin-host/contracts/manifest";
 
 export interface InstalledPluginRecord {
   pluginId: string;
+  displayName: string | null;
   activeVersion: string;
   previousVersion: string | null;
   enabled: boolean;

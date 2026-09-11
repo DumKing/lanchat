@@ -664,9 +664,29 @@ fn get_platform_info() -> PlatformInfo {
     platform_info_value()
 }
 
+fn hydrate_plugin_display_name(
+    state: &AppState,
+    mut record: InstalledPluginRecord,
+) -> InstalledPluginRecord {
+    let manifest = state
+        .plugin_storage
+        .version_install_path(&record.plugin_id, &record.active_version)
+        .ok()
+        .flatten()
+        .and_then(|install_path| std::fs::read(Path::new(&install_path).join("plugin.json")).ok())
+        .and_then(|bytes| parse_and_validate_manifest(&bytes, env!("CARGO_PKG_VERSION")).ok());
+    record.display_name = manifest.map(|value| value.name);
+    record
+}
+
 #[tauri::command]
 fn list_installed_plugins(state: State<'_, AppState>) -> Result<Vec<InstalledPluginRecord>, String> {
-    state.plugin_storage.list()
+    Ok(state
+        .plugin_storage
+        .list()?
+        .into_iter()
+        .map(|record| hydrate_plugin_display_name(&state, record))
+        .collect())
 }
 
 #[tauri::command]
@@ -712,10 +732,11 @@ fn install_plugin_package(
         let _ = state.plugin_repository.discard_version(&plugin_id, &version);
         return Err(error);
     }
-    state
+    let record = state
         .plugin_storage
         .get(&plugin_id)?
-        .ok_or_else(|| "插件安装状态未写入".to_string())
+        .ok_or_else(|| "插件安装状态未写入".to_string())?;
+    Ok(hydrate_plugin_display_name(&state, record))
 }
 
 #[tauri::command]
@@ -734,10 +755,11 @@ fn set_plugin_enabled(
             "reason": "disabled"
         }));
     }
-    state
+    let record = state
         .plugin_storage
         .get(&plugin_id)?
-        .ok_or_else(|| "插件尚未安装".to_string())
+        .ok_or_else(|| "插件尚未安装".to_string())?;
+    Ok(hydrate_plugin_display_name(&state, record))
 }
 
 #[tauri::command]
@@ -771,10 +793,11 @@ fn set_plugin_permissions(
         "pluginId": &plugin_id,
         "reason": "permissionsChanged"
     }));
-    state
+    let record = state
         .plugin_storage
         .get(&plugin_id)?
-        .ok_or_else(|| "插件尚未安装".to_string())
+        .ok_or_else(|| "插件尚未安装".to_string())?;
+    Ok(hydrate_plugin_display_name(&state, record))
 }
 
 #[tauri::command]
@@ -790,10 +813,11 @@ fn rollback_plugin(
         "pluginId": &plugin_id,
         "reason": "rollback"
     }));
-    state
+    let record = state
         .plugin_storage
         .get(&plugin_id)?
-        .ok_or_else(|| "插件尚未安装".to_string())
+        .ok_or_else(|| "插件尚未安装".to_string())?;
+    Ok(hydrate_plugin_display_name(&state, record))
 }
 
 #[tauri::command]

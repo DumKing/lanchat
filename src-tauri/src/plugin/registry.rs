@@ -40,10 +40,10 @@ mod tests {
         fs::create_dir_all(&enabled_path).unwrap();
         fs::create_dir_all(&disabled_path).unwrap();
         fs::write(enabled_path.join("plugin.json"), manifest("com.lanchat.gomoku", "0.8.0")).unwrap();
-        fs::write(disabled_path.join("plugin.json"), manifest("com.lanchat.vision", "0.8.0")).unwrap();
+        fs::write(disabled_path.join("plugin.json"), manifest("com.example.disabled", "0.8.0")).unwrap();
 
         register(&database, "com.lanchat.gomoku", &enabled_path, true);
-        register(&database, "com.lanchat.vision", &disabled_path, false);
+        register(&database, "com.example.disabled", &disabled_path, false);
 
         let manifests = load_enabled_plugin_manifests(&database, "0.8.0").unwrap();
         assert_eq!(manifests.len(), 1);

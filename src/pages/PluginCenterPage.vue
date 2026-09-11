@@ -42,16 +42,8 @@ const capabilityLabels: Record<string, string> = {
   "native.sidecar": "运行插件附带的本地程序",
 };
 
-function pluginName(pluginId: string) {
-  const names: Record<string, string> = {
-    "com.lanchat.gomoku": "五子棋",
-    "com.lanchat.xiangqi": "象棋",
-    "com.lanchat.minesweeper": "扫雷",
-    "com.lanchat.monopoly": "大富翁",
-    "com.lanchat.doudizhu": "斗地主",
-    "com.lanchat.vision": "视觉识别",
-  };
-  return names[pluginId] ?? pluginId;
+function pluginName(plugin: InstalledPluginRecord) {
+  return plugin.displayName?.trim() || plugin.pluginId;
 }
 
 function capabilityLabel(capability: string) {
@@ -85,7 +77,7 @@ async function installLocalPackage() {
     const installed = await pluginApi.installPackage(selected, false);
     await refresh();
     permissionTarget.value = installed;
-    successMessage.value = `${pluginName(installed.pluginId)} 已完成签名校验，请确认权限后启用。`;
+    successMessage.value = `${pluginName(installed)} 已完成签名校验，请确认权限后启用。`;
   } catch (error) {
     errorMessage.value = `安装失败：${String(error)}`;
   } finally {
@@ -102,7 +94,7 @@ async function enableAfterPermissionReview() {
     await pluginApi.setPermissions(target.pluginId, target.grantedCapabilities);
     await pluginApi.setEnabled(target.pluginId, true);
     permissionTarget.value = null;
-    successMessage.value = `${pluginName(target.pluginId)} 已启用。`;
+    successMessage.value = `${pluginName(target)} 已启用。`;
     await refresh();
     emit("changed");
   } catch (error) {
@@ -121,7 +113,7 @@ async function togglePlugin(plugin: InstalledPluginRecord, enabled: boolean) {
   errorMessage.value = "";
   try {
     await pluginApi.setEnabled(plugin.pluginId, false);
-    successMessage.value = `${pluginName(plugin.pluginId)} 已停用。`;
+    successMessage.value = `${pluginName(plugin)} 已停用。`;
     await refresh();
     emit("changed");
   } catch (error) {
@@ -136,7 +128,7 @@ async function rollback(plugin: InstalledPluginRecord) {
   errorMessage.value = "";
   try {
     await pluginApi.rollback(plugin.pluginId);
-    successMessage.value = `${pluginName(plugin.pluginId)} 已回滚，确认权限后可以重新启用。`;
+    successMessage.value = `${pluginName(plugin)} 已回滚，确认权限后可以重新启用。`;
     await refresh();
     emit("changed");
   } catch (error) {
@@ -159,7 +151,7 @@ async function confirmUninstall() {
   try {
     await pluginApi.uninstall(target.pluginId, deletePrivateData.value);
     uninstallTarget.value = null;
-    successMessage.value = `${pluginName(target.pluginId)} 已卸载。`;
+    successMessage.value = `${pluginName(target)} 已卸载。`;
     await refresh();
     emit("changed");
   } catch (error) {
@@ -192,10 +184,10 @@ onMounted(refresh);
       <div v-if="sortedPlugins.length" class="plugin-card-grid">
         <NCard v-for="plugin in sortedPlugins" :key="plugin.pluginId" size="small" class="plugin-card">
           <div class="plugin-card-main">
-            <div class="plugin-card-icon">{{ pluginName(plugin.pluginId).slice(0, 1) }}</div>
+            <div class="plugin-card-icon">{{ pluginName(plugin).slice(0, 1) }}</div>
             <div class="plugin-card-copy">
               <div class="plugin-card-title">
-                <strong>{{ pluginName(plugin.pluginId) }}</strong>
+                <strong>{{ pluginName(plugin) }}</strong>
                 <NTag size="small" :type="plugin.enabled ? 'success' : 'default'">{{ plugin.enabled ? '已启用' : '已停用' }}</NTag>
                 <NTag v-if="plugin.signatureKeyId" size="small" type="info">签名已验证</NTag>
                 <NTag v-else size="small" type="warning">开发插件</NTag>
@@ -225,7 +217,7 @@ onMounted(refresh);
 
     <NModal :show="permissionTarget !== null" preset="card" title="确认插件权限" class="plugin-permission-modal" @update:show="(show) => { if (!show) permissionTarget = null; }">
       <template v-if="permissionTarget">
-        <p><strong>{{ pluginName(permissionTarget.pluginId) }}</strong> 申请以下能力：</p>
+        <p><strong>{{ pluginName(permissionTarget) }}</strong> 申请以下能力：</p>
         <ul class="permission-list">
           <li v-for="capability in permissionTarget.grantedCapabilities" :key="capability">
             <span>{{ capabilityLabel(capability) }}</span><code>{{ capability }}</code>
@@ -241,7 +233,7 @@ onMounted(refresh);
 
     <NModal :show="uninstallTarget !== null" preset="card" title="卸载插件" class="plugin-permission-modal" @update:show="(show) => { if (!show) uninstallTarget = null; }">
       <template v-if="uninstallTarget">
-        <p>确定卸载 <strong>{{ pluginName(uninstallTarget.pluginId) }}</strong>？插件会立即停止运行。</p>
+        <p>确定卸载 <strong>{{ pluginName(uninstallTarget) }}</strong>？插件会立即停止运行。</p>
         <NCheckbox v-model:checked="deletePrivateData">同时删除该插件的本地数据</NCheckbox>
         <div class="modal-actions">
           <NButton @click="uninstallTarget = null">取消</NButton>

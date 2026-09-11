@@ -8,6 +8,8 @@ use std::sync::Mutex;
 #[serde(rename_all = "camelCase")]
 pub struct InstalledPluginRecord {
     pub plugin_id: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
     pub active_version: String,
     pub previous_version: Option<String>,
     pub enabled: bool,
@@ -200,6 +202,7 @@ impl PluginStorage {
                     let capabilities: String = row.get(4)?;
                     Ok(InstalledPluginRecord {
                         plugin_id: row.get(0)?,
+                        display_name: None,
                         active_version: row.get(1)?,
                         previous_version: row.get(2)?,
                         enabled: row.get::<_, i64>(3)? != 0,
@@ -226,6 +229,7 @@ impl PluginStorage {
                 let capabilities: String = row.get(4)?;
                 Ok(InstalledPluginRecord {
                     plugin_id: row.get(0)?,
+                    display_name: None,
                     active_version: row.get(1)?,
                     previous_version: row.get(2)?,
                     enabled: row.get::<_, i64>(3)? != 0,
