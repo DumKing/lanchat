@@ -51,6 +51,7 @@ import MonopolyBoard3D, { type Board3DTile } from "./components/MonopolyBoard3D.
 import MonopolyRoomChat from "./components/MonopolyRoomChat.vue";
 import PluginCenterPage from "./pages/PluginCenterPage.vue";
 import PluginViewport from "./components/plugins/PluginViewport.vue";
+import PluginGamesSidebar from "./components/plugins/PluginGamesSidebar.vue";
 import AppNavigationRail from "./app/navigation/AppNavigationRail.vue";
 import { DEFAULT_GROUP_ID, useLanChatStore } from "./stores/lanchat";
 import { useDesktopPetStore } from "./stores/desktopPet";
@@ -1908,7 +1909,7 @@ function openPluginGame(gameId: string) {
   if (!enabledGamePlugins.value.some((item) => item.gameId === gameId)) return;
   activePluginGameId.value = gameId;
   activeSection.value = "games";
-  listPaneCollapsed.value = true;
+  listPaneCollapsed.value = false;
 }
 function handlePluginViewportError(message: string) {
   error.value = message;
@@ -7005,56 +7006,14 @@ async function closeWindow() {
             </NScrollbar>
             <button class="pane-resize-handle left-list" type="button" aria-label="拖动调整列表宽度" title="拖动调整宽度" @mousedown="startPaneResize('list', $event)"></button>
           </NLayoutSider>
-          <NLayoutSider v-else-if="activeSection === 'games' && !listPaneCollapsed" class="list-pane" :width="listPaneWidth" bordered>
-            <div class="pane-header">
-              <div class="pane-title-row">
-                <strong>游戏</strong>
-              </div>
-              <NInput size="small" clearable placeholder="搜索游戏或房间" />
-            </div>
-            <NScrollbar class="list-scroll">
-              <div class="section-label">已启用插件</div>
-              <div
-                v-for="game in enabledGamePlugins"
-                :key="game.pluginId"
-                class="game-list-card"
-                :class="{ active: activePluginGame?.gameId === game.gameId }"
-                @click="openPluginGame(game.gameId)"
-              >
-                <div class="game-list-icon">🎮</div>
-                <div>
-                  <div class="game-list-title">{{ game.pluginName }}</div>
-                  <div class="game-list-sub">{{ game.minPlayers }}-{{ game.maxPlayers }} 人房间 · 支持房间聊天</div>
-                </div>
-                <NTag size="small" :bordered="false" type="success">插件</NTag>
-              </div>
-              <div class="section-label">房间</div>
-              <div
-                v-for="room in gameRoomsState"
-                :key="room.roomId"
-                class="game-list-card"
-                :class="{ active: room.roomId === activeGameRoomId }"
-                @click="openGameRoom(room.roomId)"
-              >
-                <div class="game-list-icon">{{ gameDefinitionOf(room.gameType).icon }}</div>
-                <div>
-                  <div class="game-list-title">{{ room.roomName }}</div>
-                  <div class="game-list-sub">{{ gameDefinitionOf(room.gameType).name }} · {{ room.players.length }}/{{ gameDefinitionOf(room.gameType).maxPlayers }} 人</div>
-                </div>
-                <NTag size="small" :bordered="false">{{ room.hostDeviceId === profile?.device_id ? "我创建" : "可加入" }}</NTag>
-              </div>
-              <NEmpty v-if="gameRoomsState.length === 0" description="还没有游戏房间" class="list-empty">
-                <template #extra>
-                  <NText depth="3">点击创建后先选择游戏类型。</NText>
-                </template>
-              </NEmpty>
-              <div class="create-game-box">
-                <NButton block type="primary" @click="createRoomOpen = true">创建房间</NButton>
-                <NText depth="3">先选择游戏，再创建对应房间；不同游戏会进入不同交互界面。</NText>
-              </div>
-            </NScrollbar>
-            <button class="pane-resize-handle left-list" type="button" aria-label="拖动调整列表宽度" title="拖动调整宽度" @mousedown="startPaneResize('list', $event)"></button>
-          </NLayoutSider>
+          <PluginGamesSidebar
+            v-else-if="activeSection === 'games' && !listPaneCollapsed"
+            :width="listPaneWidth"
+            :games="enabledGamePlugins"
+            :active-game-id="activePluginGame?.gameId"
+            @select="openPluginGame"
+            @begin-resize="startPaneResize('list', $event)"
+          />
           <NLayoutSider v-else-if="activeSection === 'devices' && !listPaneCollapsed" class="list-pane" :width="listPaneWidth" bordered>
             <div class="pane-header">
               <div class="pane-title-row">
