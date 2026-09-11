@@ -318,8 +318,7 @@ export type DesktopPetRuntimeState = {
   pending_count: number;
   temperature: number;
   latest_alert_id?: string | null;
-  latest_alert_kind?: "quick_alert" | "camera_face" | string | null;
-  latest_alert_recognition_level?: "confirmed" | "suspected" | string | null;
+  latest_alert_kind?: string | null;
   latest_sender?: string | null;
   latest_sender_address?: string | null;
   latest_content?: string | null;

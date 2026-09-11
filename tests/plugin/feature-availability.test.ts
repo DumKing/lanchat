@@ -27,11 +27,10 @@ function manifest(input: {
 }
 
 describe("插件能力可见性", () => {
-  it("没有已启用插件时不提供游戏和视觉识别", () => {
+  it("没有已启用插件时不提供扩展能力", () => {
     const result = resolvePluginFeatures([]);
 
     expect(result.gameIds).toEqual([]);
-    expect(result.visionPluginId).toBeNull();
     expect(result.navigation).toEqual([]);
   });
 
@@ -48,28 +47,27 @@ describe("插件能力可见性", () => {
       {
         enabled: false,
         manifest: manifest({
-          id: "com.lanchat.vision",
-          navigation: [{ id: "vision", title: "视觉识别" }],
+          id: "com.example.disabled",
+          navigation: [{ id: "disabled-page", title: "未启用页面" }],
         }),
       },
     ]);
 
     expect(result.gameIds).toEqual(["gomoku"]);
-    expect(result.visionPluginId).toBeNull();
     expect(result.navigation.map((item) => item.id)).toEqual(["gomoku"]);
   });
 
-  it("视觉能力只能由启用的视觉插件提供", () => {
+  it("启用插件可以贡献标准导航入口", () => {
     const result = resolvePluginFeatures([
       {
         enabled: true,
         manifest: manifest({
-          id: "com.lanchat.vision",
-          navigation: [{ id: "vision", title: "视觉识别" }],
+          id: "com.example.toolbox",
+          navigation: [{ id: "toolbox", title: "工具箱" }],
         }),
       },
     ]);
 
-    expect(result.visionPluginId).toBe("com.lanchat.vision");
+    expect(result.navigation.map((item) => item.id)).toEqual(["toolbox"]);
   });
 });

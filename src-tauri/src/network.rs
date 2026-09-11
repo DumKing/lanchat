@@ -5,22 +5,18 @@ use crate::identity::normalize_device_id;
 use crate::protocol::{
     decode_frame, encode_frame, AckFrame, AdminAlertModeFrame, AdminAlertPushPolicyFrame,
     AdminChannelControlFrame, AdminDiscoModeFrame, AdminNicknameFrame, AdminRemoteUpdateFrame,
-    AdminRemoteUpdateProgressFrame, CallSignalFrame, CameraFaceAlertFeedbackFrame,
-    CameraFaceAlertFrame, ChannelMemberFrame, ChannelNoticeFrame, ChatMessageFrame,
-    FaceMonitorPolicyFrame, FacePersonPolicyFrame, GameFrame, HelloFrame, NudgeFrame,
+    AdminRemoteUpdateProgressFrame, CallSignalFrame, ChannelMemberFrame, ChannelNoticeFrame,
+    ChatMessageFrame, GameFrame, HelloFrame, NudgeFrame,
     PeerStatusFrame, PrivateChannelInviteFrame, QuickAlertFeedbackFrame, QuickAlertFrame,
     QuickAlertTrustResetFrame, WireFrame,
 };
 use crate::storage::{
     system_login_nickname, ChannelMemberSeed, Message, MessageStatus, MessageType, Peer, Profile,
-    Storage, VisionRemoteCommandReceipt, DEFAULT_GROUP_ID,
+    Storage, DEFAULT_GROUP_ID,
 };
-use crate::vision::protocol::{validate_policy_frame, VisionPolicyFrame};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use serde::{Deserialize, Serialize};
-use sha2::Digest;
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
@@ -32,71 +28,6 @@ use uuid::Uuid;
 const SERVICE_TYPE: &str = "_lanchat._tcp.local.";
 const PROTOCOL_VERSION: u16 = 1;
 
-async fn localize_face_reference_photo(
-    app: &AppHandle,
-    frame: &FacePersonPolicyFrame,
-) -> Result<FacePersonPolicyFrame, String> {
-    if frame.action != "upsert" {
-        return Ok(frame.clone());
-    }
-    let directory = app
-        .path()
-        .app_data_dir()
-        .map_err(|err| format!("读取应用数据目录失败：{err}"))?
-        .join("face-reference-library");
-    std::fs::create_dir_all(&directory).map_err(|err| format!("创建人员照片目录失败：{err}"))?;
-    let mut local = frame.clone();
-    let remote_urls = if frame.photo_urls.is_empty() {
-        frame.photo_url.iter().cloned().collect()
-    } else {
-        frame.photo_urls.clone()
-    };
-    let expected_hashes = if frame.photo_sha256s.is_empty() {
-        frame.photo_sha256.iter().cloned().collect()
-    } else {
-        frame.photo_sha256s.clone()
-    };
-    let mut local_urls = Vec::new();
-    let mut local_hashes = Vec::new();
-    for (index, url) in remote_urls.iter().take(12).enumerate() {
-        if !url.starts_with("http://") && !url.starts_with("https://") {
-            local_urls.push(url.clone());
-            continue;
-        }
-        let response = reqwest::get(url)
-            .await
-            .map_err(|err| format!("下载人员参考照片失败：{err}"))?;
-        if !response.status().is_success() {
-            return Err(format!("下载人员参考照片失败：HTTP {}", response.status()));
-        }
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|err| format!("读取人员参考照片失败：{err}"))?;
-        if bytes.is_empty() {
-            return Err("人员参考照片内容为空".to_string());
-        }
-        image::load_from_memory(&bytes).map_err(|err| format!("人员参考照片无法解码：{err}"))?;
-        let actual = hex::encode(sha2::Sha256::digest(&bytes));
-        if let Some(expected) = expected_hashes.get(index) {
-            if !actual.eq_ignore_ascii_case(expected) {
-                return Err("人员参考照片校验失败".to_string());
-            }
-        }
-        let target: PathBuf = directory.join(format!(
-            "{}-v{}-{}.jpg",
-            frame.person_id, frame.version, index
-        ));
-        std::fs::write(&target, &bytes).map_err(|err| format!("保存人员参考照片失败：{err}"))?;
-        local_urls.push(target.to_string_lossy().to_string());
-        local_hashes.push(actual);
-    }
-    local.photo_url = local_urls.first().cloned();
-    local.photo_urls = local_urls;
-    local.photo_sha256 = local_hashes.first().cloned();
-    local.photo_sha256s = local_hashes;
-    Ok(local)
-}
 const BUILD_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
     "+",
@@ -715,66 +646,6 @@ impl Network {
         Ok(frame)
     }
 
-    pub async fn send_face_person_policy(
-        &self,
-        app: AppHandle,
-        target_device_id: &str,
-        frame: FacePersonPolicyFrame,
-    ) -> Result<bool, String> {
-        let target = normalize_device_id(target_device_id);
-        let delivered = self
-            .send_direct_frame(app.clone(), &target, WireFrame::FacePersonPolicy(frame))
-            .await?;
-        emit_debug_log(
-            &app,
-            if delivered { "info" } else { "warn" },
-            "face-monitor",
-            "人员照片规则已下发",
-            Some(target),
-        );
-        Ok(delivered)
-    }
-
-    pub async fn send_face_monitor_policy(
-        &self,
-        app: AppHandle,
-        target_device_id: &str,
-        frame: FaceMonitorPolicyFrame,
-    ) -> Result<bool, String> {
-        let target = normalize_device_id(target_device_id);
-        let delivered = self
-            .send_direct_frame(app.clone(), &target, WireFrame::FaceMonitorPolicy(frame))
-            .await?;
-        emit_debug_log(
-            &app,
-            if delivered { "info" } else { "warn" },
-            "face-monitor",
-            "摄像头识别策略已下发",
-            Some(target),
-        );
-        Ok(delivered)
-    }
-
-    pub async fn send_vision_policy(
-        &self,
-        app: AppHandle,
-        target_device_id: &str,
-        frame: VisionPolicyFrame,
-    ) -> Result<bool, String> {
-        let target = normalize_device_id(target_device_id);
-        let delivered = self
-            .send_direct_frame(app.clone(), &target, WireFrame::VisionPolicy(frame))
-            .await?;
-        emit_debug_log(
-            &app,
-            if delivered { "info" } else { "warn" },
-            "vision-policy",
-            "视觉策略已下发",
-            Some(target),
-        );
-        Ok(delivered)
-    }
-
     pub async fn send_admin_remote_update(
         &self,
         app: AppHandle,
@@ -953,53 +824,6 @@ impl Network {
             "alert",
             "快捷告警已广播",
             Some(format!("{} delivered={delivered}", frame.alert_id)),
-        );
-        Ok(())
-    }
-
-    pub async fn broadcast_camera_face_alert(
-        &self,
-        app: AppHandle,
-        frame: CameraFaceAlertFrame,
-    ) -> Result<(), String> {
-        let wire = WireFrame::CameraFaceAlert(frame.clone());
-        let senders = self
-            .senders
-            .lock()
-            .map_err(|_| "连接表已损坏".to_string())?;
-        let delivered = senders
-            .values()
-            .filter(|sender| sender.sender.try_send(wire.clone()).is_ok())
-            .count();
-        emit_debug_log(
-            &app,
-            if delivered > 0 { "info" } else { "warn" },
-            "face-monitor",
-            "自动识别告警已广播",
-            Some(format!("{} delivered={delivered}", frame.alert_id)),
-        );
-        Ok(())
-    }
-
-    pub async fn broadcast_camera_face_alert_feedback(
-        &self,
-        app: AppHandle,
-        frame: CameraFaceAlertFeedbackFrame,
-    ) -> Result<(), String> {
-        let wire = WireFrame::CameraFaceAlertFeedback(frame.clone());
-        let senders = self
-            .senders
-            .lock()
-            .map_err(|_| "连接表已损坏".to_string())?;
-        for sender in senders.values() {
-            let _ = sender.sender.try_send(wire.clone());
-        }
-        emit_debug_log(
-            &app,
-            "info",
-            "face-monitor",
-            "自动识别告警反馈已广播",
-            Some(frame.alert_id),
         );
         Ok(())
     }
@@ -1771,18 +1595,6 @@ impl Network {
                                 .ok();
                         }
                     }
-                    Ok(WireFrame::CameraFaceAlert(frame)) => {
-                        if let Ok(record) = read_storage.upsert_camera_face_alert(&frame) {
-                            read_app.emit("camera_face_alert_received", record).ok();
-                        }
-                    }
-                    Ok(WireFrame::CameraFaceAlertFeedback(frame)) => {
-                        if let Ok(record) = read_storage.upsert_camera_face_alert_feedback(&frame) {
-                            read_app
-                                .emit("camera_face_alert_feedback_received", record)
-                                .ok();
-                        }
-                    }
                     Ok(WireFrame::AdminRemoteUpdate(frame)) => {
                         emit_debug_log(
                             &read_app,
@@ -1800,147 +1612,6 @@ impl Network {
                         read_app
                             .emit("admin_remote_update_progress_received", frame)
                             .ok();
-                    }
-                    Ok(WireFrame::FacePersonPolicy(frame)) => {
-                        let frame = match localize_face_reference_photo(&read_app, &frame).await {
-                            Ok(frame) => frame,
-                            Err(err) => {
-                                emit_debug_log(
-                                    &read_app,
-                                    "error",
-                                    "face-monitor",
-                                    "处理人员参考照片失败",
-                                    Some(err),
-                                );
-                                continue;
-                            }
-                        };
-                        match read_storage.upsert_face_person(&frame) {
-                            Ok(person) => {
-                                emit_debug_log(
-                                    &read_app,
-                                    "info",
-                                    "face-monitor",
-                                    "收到指定人员规则",
-                                    Some(format!("{} v{}", person.display_name, person.version)),
-                                );
-                                read_app.emit("face_person_policy_received", person).ok();
-                            }
-                            Err(err) => emit_debug_log(
-                                &read_app,
-                                "error",
-                                "face-monitor",
-                                "保存指定人员规则失败",
-                                Some(err),
-                            ),
-                        }
-                    }
-                    Ok(WireFrame::VisionPolicy(frame)) => {
-                        if frame.target_device_id == "*"
-                            || normalize_device_id(&frame.target_device_id) == local_device_id
-                        {
-                            let now = chrono::Utc::now().timestamp_millis();
-                            if let Err(error) = validate_policy_frame(&frame, now) {
-                                emit_debug_log(
-                                    &read_app,
-                                    "warn",
-                                    "vision-policy",
-                                    "已拒绝视觉策略帧",
-                                    Some(error),
-                                );
-                                continue;
-                            }
-                            let intent = match serde_json::to_string(&frame) {
-                                Ok(intent) => intent,
-                                Err(error) => {
-                                    emit_debug_log(
-                                        &read_app,
-                                        "error",
-                                        "vision-policy",
-                                        "序列化视觉策略意图失败",
-                                        Some(error.to_string()),
-                                    );
-                                    continue;
-                                }
-                            };
-                            match read_storage.accept_vision_remote_policy_command(
-                                &frame.issued_by_device_id,
-                                &frame.target_device_id,
-                                &frame.command_id,
-                                &frame.nonce,
-                                frame.revision,
-                                frame.expires_at,
-                                now,
-                                &intent,
-                            ) {
-                                Ok(receipt) if receipt.should_schedule() => {
-                                    emit_debug_log(
-                                        &read_app,
-                                        "info",
-                                        "vision-policy",
-                                        "收到视觉策略并已持久化执行意图",
-                                        Some(format!("{} r{}", frame.operation, frame.revision)),
-                                    );
-                                    // 仅在事务提交后通知运行时；下载、激活和重算由后续
-                                    // VisionRuntime 任务调度器异步执行。
-                                    read_app.emit("vision_policy_received", frame).ok();
-                                }
-                                Ok(VisionRemoteCommandReceipt::Duplicate { .. }) => {
-                                    emit_debug_log(
-                                        &read_app,
-                                        "info",
-                                        "vision-policy",
-                                        "忽略重复视觉策略",
-                                        Some(frame.command_id),
-                                    );
-                                }
-                                Ok(VisionRemoteCommandReceipt::Stale) => {
-                                    emit_debug_log(
-                                        &read_app,
-                                        "info",
-                                        "vision-policy",
-                                        "忽略陈旧视觉策略",
-                                        Some(format!("r{}", frame.revision)),
-                                    );
-                                }
-                                Ok(VisionRemoteCommandReceipt::Accepted { .. }) => unreachable!(),
-                                Err(error) => emit_debug_log(
-                                    &read_app,
-                                    "warn",
-                                    "vision-policy",
-                                    "保存视觉策略失败",
-                                    Some(error),
-                                ),
-                            }
-                        }
-                    }
-                    Ok(WireFrame::FaceMonitorPolicy(frame)) => {
-                        if frame.target_device_id == "*"
-                            || normalize_device_id(&frame.target_device_id) == local_device_id
-                        {
-                            match read_storage.upsert_face_monitor_policy(&frame) {
-                                Ok(policy) => {
-                                    emit_debug_log(
-                                        &read_app,
-                                        "info",
-                                        "face-monitor",
-                                        "收到摄像头识别策略",
-                                        Some(format!(
-                                            "{} v{}",
-                                            policy.target_device_id, policy.version
-                                        )),
-                                    );
-                                    read_app.emit("face_monitor_policy_received", policy).ok();
-                                }
-                                Err(err) => emit_debug_log(
-                                    &read_app,
-                                    "error",
-                                    "face-monitor",
-                                    "保存摄像头识别策略失败",
-                                    Some(err),
-                                ),
-                            }
-                        }
                     }
                     Ok(WireFrame::AdminNickname(frame)) => {
                         if normalize_device_id(&frame.target_device_id) == local_device_id {

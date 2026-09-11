@@ -50,8 +50,6 @@
     ],
     "resources": [
       "resources/desktop-pets/**/*",
-      "resources/object-models/**/*",
-      "resources/openvino-runtime/**/*",
       "resources/plugin-trusted-keys.json",
       "resources/plugin-catalog.json"
     ],

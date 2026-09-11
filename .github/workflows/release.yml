@@ -55,78 +55,6 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Setup Python for official vision model profiles
-        if: matrix.os == 'windows-latest'
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Prepare official vision model profile sources
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          Set-StrictMode -Version Latest
-          $ErrorActionPreference = "Stop"
-          $PSNativeCommandUseErrorActionPreference = $true
-          python -m pip install --disable-pip-version-check "openvino-dev==2024.6.0"
-          Get-Command omz_downloader -ErrorAction Stop | Out-Null
-          function Invoke-WithRetry([string] $label, [scriptblock] $action) {
-            for ($attempt = 1; $attempt -le 3; $attempt++) {
-              try {
-                & $action
-                return
-              } catch {
-                if ($attempt -eq 3) { throw "${label} 连续 $attempt 次失败：$($_.Exception.Message)" }
-                Start-Sleep -Seconds (10 * $attempt)
-              }
-            }
-          }
-          foreach ($model in @("face-detection-retail-0004", "face-reidentification-retail-0095", "person-detection-0203", "person-reidentification-retail-0288", "person-reidentification-retail-0286")) {
-            Invoke-WithRetry "下载 $model" { omz_downloader --name $model --precisions FP16 --output_dir .model-cache/openvino }
-          }
-          node scripts/prepare-omz-model-profiles.mjs .model-cache/openvino
-          Invoke-WithRetry "下载 InsightFace buffalo_sc" { Invoke-WebRequest -Uri "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip" -OutFile ".model-cache/buffalo_sc.zip" }
-          Expand-Archive -Path ".model-cache/buffalo_sc.zip" -DestinationPath ".model-cache/buffalo_sc" -Force
-          node scripts/prepare-insightface-arcface-profile.mjs .model-cache/buffalo_sc
-          foreach ($profile in @("office-omz-retail-0288", "office-omz-retail-0286", "office-arcface-buffalo-sc")) {
-            $manifest = Join-Path "src-tauri/resources/model-profiles/$profile" "manifest.v4.json"
-            if (-not (Test-Path -LiteralPath $manifest)) {
-              throw "模型 Profile $profile 未生成 manifest.v4.json"
-            }
-          }
-
-          # openvino-rs 0.11 需要 OpenVINO 2025.1+ 的 C API；模型下载仍可复用
-          # 2024.6 的 OMZ 工具。仅升级 Runtime，随后把官方 CPU 插件完整带入安装包。
-          python -m pip install --disable-pip-version-check --upgrade --no-deps "openvino==2025.1.0"
-          $openvinoLibDir = python -c "import openvino, pathlib; print(pathlib.Path(openvino.__file__).resolve().parent / 'libs')"
-          if (-not (Test-Path -LiteralPath $openvinoLibDir)) {
-            throw "未找到 OpenVINO Runtime 目录：$openvinoLibDir"
-          }
-          $runtimeTarget = "src-tauri/resources/openvino-runtime/windows-x86_64"
-          if (Test-Path -LiteralPath $runtimeTarget) { Remove-Item -LiteralPath $runtimeTarget -Recurse -Force }
-          New-Item -ItemType Directory -Force $runtimeTarget | Out-Null
-          Copy-Item -Path (Join-Path $openvinoLibDir "*") -Destination $runtimeTarget -Recurse -Force
-          # Python wheel 的 2025.1 Runtime 不再携带 plugins.xml；CPU 插件会由
-          # Runtime 自身发现，因此只校验实际参与装载的核心 DLL 与 CPU 插件。
-          foreach ($requiredRuntimeFile in @("openvino_c.dll", "openvino.dll", "openvino_intel_cpu_plugin.dll")) {
-            if (-not (Test-Path -LiteralPath (Join-Path $runtimeTarget $requiredRuntimeFile))) {
-              throw "OpenVINO Runtime 中缺少 $requiredRuntimeFile"
-            }
-          }
-          Get-ChildItem -LiteralPath $runtimeTarget -Filter "*.dll" | Select-Object -ExpandProperty Name | Sort-Object
-
-      - name: Smoke test packaged OpenVINO CPU profiles
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        env:
-          LANCHAT_OMZ_SMOKE_PROFILE: office-omz-retail-0288
-        run: |
-          $modelDir = "src-tauri/resources/model-profiles/$env:LANCHAT_OMZ_SMOKE_PROFILE"
-          if (-not (Test-Path -LiteralPath $modelDir)) {
-            throw "OpenVINO smoke Profile 不存在：$modelDir"
-          }
-          cargo test --manifest-path src-tauri/Cargo.toml --features openvino-runtime packaged_omz_profile_compiles_all_components_on_cpu
-
       - name: Build external desktop pet packages
         if: matrix.os == 'windows-latest'
         shell: pwsh
@@ -141,28 +69,6 @@ jobs:
             }
           }
 
-      - name: Build vision model profile packages
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          Set-StrictMode -Version Latest
-          $ErrorActionPreference = "Stop"
-          $PSNativeCommandUseErrorActionPreference = $true
-          node scripts/test-vision-model-catalog.mjs
-          node scripts/test-vision-package-distinctness.mjs
-          $output = "release-assets/vision-models"
-          $staging = Join-Path $output "staging"
-          New-Item -ItemType Directory -Force $output | Out-Null
-          node scripts/build-vision-model-packages.mjs $staging
-          $profiles = Get-Content scripts/vision-model-profiles.json -Raw | ConvertFrom-Json
-          foreach ($profile in $profiles.profiles) {
-            $source = Join-Path $staging $profile.profileId
-            $target = Join-Path $output $profile.assetName
-            if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force }
-            Compress-Archive -Path (Join-Path $source "*") -DestinationPath $target -Force
-          }
-          Remove-Item -LiteralPath $staging -Recurse -Force
-
       - name: Build Tauri bundle
         shell: pwsh
         env:
@@ -170,13 +76,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          $arguments = @("run", "tauri", "build", "--", "--bundles", "${{ matrix.bundle }}")
-          if ($env:RUNNER_OS -eq "Windows") {
-            $arguments += @("--features", "openvino-runtime")
-          }
-          & npm @arguments
+          npm run tauri -- build --bundles "${{ matrix.bundle }}"
 
-      - name: Preserve Full bundle assets
+      - name: Preserve core bundle assets
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force release-assets/bundles/full | Out-Null
@@ -212,18 +114,6 @@ jobs:
           "@ | Set-Content -Encoding UTF8 (Join-Path $portableRoot "README.txt")
           Compress-Archive -Path "$portableRoot/*" -DestinationPath "release-assets/portable/lanchat-windows-portable.zip" -Force
 
-      - name: Verify packaged OpenVINO Runtime layout
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          $runtimeDir = "release-assets/portable/lanchat-windows-portable/resources/openvino-runtime/windows-x86_64"
-          foreach ($runtimeFile in @("openvino_c.dll", "openvino.dll", "openvino_intel_cpu_plugin.dll")) {
-            $runtimePath = Join-Path $runtimeDir $runtimeFile
-            if (-not (Test-Path -LiteralPath $runtimePath)) {
-              throw "绿色包缺少 OpenVINO Runtime 文件：$runtimePath"
-            }
-          }
-
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -235,8 +125,6 @@ jobs:
             release-assets/bundles/**/*.dmg
             release-assets/portable/*.zip
             release-assets/desktop-pets/*.zip
-            release-assets/vision-models/*.zip
-            release-assets/vision-models/model-diff.json
 
   publish:
     name: Publish GitHub Release
@@ -252,51 +140,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: release-downloads
-
-      - name: Setup Rust for vision catalog signing
-        uses: dtolnay/rust-toolchain@stable
-
-      # 签名/验签工具复用主程序的可信目录解析代码，编译时需要 Tauri 的 Linux 原生依赖。
-      - name: Install native dependencies for vision catalog tools
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            pkg-config \
-            libglib2.0-dev \
-            libgtk-3-dev \
-            libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libxdo-dev \
-            libssl-dev
-
-      - name: Generate signed vision model catalog
-        shell: bash
-        env:
-          VISION_CATALOG_SIGNING_KEY: ${{ secrets.VISION_CATALOG_SIGNING_KEY }}
-        run: |
-          if [ -z "${VISION_CATALOG_SIGNING_KEY}" ]; then
-            echo "缺少 VISION_CATALOG_SIGNING_KEY Secret，无法发布受信任的视觉模型目录。"
-            exit 1
-          fi
-          TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
-          VISION_DIR="release-downloads/vision-models"
-          mkdir -p "${VISION_DIR}"
-          while IFS= read -r package; do
-            destination="${VISION_DIR}/$(basename "${package}")"
-            if [ "$(realpath "${package}")" != "$(realpath -m "${destination}")" ]; then
-              cp "${package}" "${destination}"
-            fi
-          done < <(find release-downloads -type f -name 'lanchat-vision-*.zip')
-          test "$(find "${VISION_DIR}" -maxdepth 1 -name 'lanchat-vision-*.zip' | wc -l)" -ge 3
-          node scripts/write-vision-catalog.mjs "${VISION_DIR}" "${TAG}" "${VISION_DIR}/vision-catalog.unsigned.json"
-          cargo run --manifest-path src-tauri/Cargo.toml --quiet --bin sign_vision_catalog -- \
-            "${VISION_DIR}/vision-catalog.unsigned.json" "${VISION_DIR}/vision-catalog.json"
-          cargo run --manifest-path src-tauri/Cargo.toml --quiet --bin verify_vision_catalog -- \
-            "${VISION_DIR}/vision-catalog.json"
-          rm "${VISION_DIR}/vision-catalog.unsigned.json"
 
       - name: Create update metadata
         shell: bash

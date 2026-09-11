@@ -8,7 +8,6 @@ import {
 export interface PluginFeatureAvailability {
   navigation: PluginNavigationItem[];
   gameIds: string[];
-  visionPluginId: string | null;
 }
 
 export function resolvePluginFeatures(
@@ -19,15 +18,9 @@ export function resolvePluginFeatures(
     (item): item is PluginNavigationItem => item.source === "plugin",
   );
   const gameIds = uniqueGameIds(enabledPlugins.map((plugin) => plugin.manifest));
-  const visionPlugin = enabledPlugins.find(
-    (plugin) => plugin.manifest.id === "com.lanchat.vision"
-      && plugin.manifest.contributes?.navigation?.some((item) => item.id === "vision"),
-  );
-
   return {
     navigation,
     gameIds,
-    visionPluginId: visionPlugin?.manifest.id ?? null,
   };
 }
 

@@ -90,8 +90,6 @@ pub struct DesktopPetRuntimeState {
     pub latest_alert_id: Option<String>,
     #[serde(default)]
     pub latest_alert_kind: Option<String>,
-    #[serde(default)]
-    pub latest_alert_recognition_level: Option<String>,
     pub latest_sender: Option<String>,
     pub latest_sender_address: Option<String>,
     pub latest_content: Option<String>,
@@ -150,7 +148,6 @@ fn merge_runtime_state(
     {
         incoming.latest_alert_id = previous.latest_alert_id.clone();
         incoming.latest_alert_kind = previous.latest_alert_kind.clone();
-        incoming.latest_alert_recognition_level = previous.latest_alert_recognition_level.clone();
         incoming.latest_sender = previous.latest_sender.clone();
         incoming.latest_sender_address = previous.latest_sender_address.clone();
         incoming.latest_content = previous.latest_content.clone();
@@ -167,9 +164,6 @@ fn merge_runtime_state(
     }
     if incoming.latest_alert_kind.is_none() {
         incoming.latest_alert_kind = previous.latest_alert_kind.clone();
-    }
-    if incoming.latest_alert_recognition_level.is_none() {
-        incoming.latest_alert_recognition_level = previous.latest_alert_recognition_level.clone();
     }
     if is_missing_alert_detail(incoming.latest_sender_address.as_ref()) {
         incoming.latest_sender_address = previous.latest_sender_address.clone();
@@ -1179,15 +1173,7 @@ impl DesktopPetApp {
         let muted_color = Color32::from_rgb(116, 126, 138);
         let sender = state.latest_sender.as_deref().unwrap_or("告警");
         let sender_address = state.latest_sender_address.as_deref().unwrap_or("未知 IP");
-        let alert_kind = if state.latest_alert_kind.as_deref() == Some("camera_face") {
-            if state.latest_alert_recognition_level.as_deref() == Some("suspected") {
-                ("◇ 人体", Color32::from_rgb(224, 104, 36))
-            } else {
-                ("◉ 人脸", Color32::from_rgb(28, 170, 106))
-            }
-        } else {
-            ("[手动]", Color32::from_rgb(38, 112, 206))
-        };
+        let alert_kind = ("[手动]", Color32::from_rgb(38, 112, 206));
         let sender_line = format!("{}：{}", sender, sender_address);
         let created_at = Self::format_alert_time(state.latest_created_at);
         let title = state.latest_content.as_deref().unwrap_or("");

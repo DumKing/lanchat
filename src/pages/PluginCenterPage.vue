@@ -32,6 +32,7 @@ const capabilityLabels: Record<string, string> = {
   "rooms.write": "创建和更新游戏房间",
   "leaderboard.read": "读取排行榜",
   "leaderboard.write": "提交排行榜成绩",
+  "storage.private": "读写插件私有数据",
   "theme.read": "读取当前主题",
   "ui.notify": "显示软件通知",
   "ui.filePicker": "选择本地文件",
@@ -47,6 +48,7 @@ function pluginName(pluginId: string) {
     "com.lanchat.xiangqi": "象棋",
     "com.lanchat.minesweeper": "扫雷",
     "com.lanchat.monopoly": "大富翁",
+    "com.lanchat.doudizhu": "斗地主",
     "com.lanchat.vision": "视觉识别",
   };
   return names[pluginId] ?? pluginId;
