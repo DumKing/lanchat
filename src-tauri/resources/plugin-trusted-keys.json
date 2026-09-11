@@ -1,5 +1,10 @@
 {
   "schemaVersion": 1,
-  "keys": [],
+  "keys": [
+    {
+      "keyId": "lanchat-official-2026-v1",
+      "publicKey": "0eecd7c4c927b1b221314df1fbff5a99167b2a6dba7edc2df80b1ec8c344c420"
+    }
+  ],
   "revokedKeyIds": []
 }

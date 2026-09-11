@@ -52,6 +52,7 @@ import MonopolyRoomChat from "./components/MonopolyRoomChat.vue";
 import VisionModelCenter from "./components/VisionModelCenter.vue";
 import VisionPeoplePanel from "./components/VisionPeoplePanel.vue";
 import VisionRuntimeStatus from "./components/VisionRuntimeStatus.vue";
+import PluginCenterPage from "./pages/PluginCenterPage.vue";
 import { DEFAULT_GROUP_ID, useLanChatStore } from "./stores/lanchat";
 import { useDesktopPetStore } from "./stores/desktopPet";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, ExternalPushConfig, ExternalPushKind, PetPackageSource, PetStateKind, PetStatePlaybackConfig } from "./types/desktop-pet";
@@ -755,7 +756,7 @@ const adminNotificationTargetOptions = computed(() => onlinePeers.value.map((pee
 })));
 const UPDATE_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
 const activeSection = ref<MainSection>("chat");
-const settingsCategory = ref<"basic" | "pet" | "admin">("basic");
+const settingsCategory = ref<"basic" | "pet" | "plugins" | "admin">("basic");
 const listPaneCollapsed = ref(false);
 type ResizePaneKind = "list" | "group";
 type PaneResizeState = { kind: ResizePaneKind; startX: number; startWidth: number };
@@ -9079,6 +9080,14 @@ async function closeWindow() {
                     {{ t("settings.pet") }}
                   </button>
                   <button
+                    type="button"
+                    :class="{ active: settingsCategory === 'plugins' }"
+                    :aria-current="settingsCategory === 'plugins' ? 'page' : undefined"
+                    @click="settingsCategory = 'plugins'"
+                  >
+                    插件中心
+                  </button>
+                  <button
                     v-if="superAdminEnabled"
                     type="button"
                     :class="{ active: settingsCategory === 'admin' }"
@@ -9093,9 +9102,10 @@ async function closeWindow() {
                     <div class="settings-heading-row">
                       <h2 class="settings-title">设置<button class="settings-secret-trigger" type="button" aria-label="设置" @click="handleSuperAdminTap">✦</button></h2>
                     </div>
-                    <p>{{ settingsCategory === 'basic' ? '管理本机资料、网络、主题和语言。' : settingsCategory === 'pet' ? '管理桌宠资源、行为与告警能力。' : '集中管理通知、桌宠告警、识别策略和设备更新。' }}</p>
+                    <p>{{ settingsCategory === 'basic' ? '管理本机资料、网络、主题和语言。' : settingsCategory === 'pet' ? '管理桌宠资源、行为与告警能力。' : settingsCategory === 'plugins' ? '安装、授权、启停和卸载独立插件。' : '集中管理通知、桌宠告警、识别策略和设备更新。' }}</p>
                   </div>
                   <div class="settings-grid" :class="{ 'basic-settings-grid': settingsCategory === 'basic', 'admin-settings-grid': settingsCategory === 'admin' }">
+                <PluginCenterPage v-if="settingsCategory === 'plugins'" @changed="initializePluginFeatures" />
                 <NCard v-if="settingsCategory === 'basic' && profile" title="本机资料" size="small">
                   <NSpace vertical>
                     <NFormItem label="昵称" :show-feedback="false">
