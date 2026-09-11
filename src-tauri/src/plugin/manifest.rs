@@ -94,7 +94,13 @@ pub fn parse_and_validate_manifest(bytes: &[u8], host_version: &str) -> Result<P
         return Err("插件名称长度无效".to_string());
     }
     Version::parse(&manifest.version).map_err(|_| "插件版本不是合法 SemVer".to_string())?;
-    let api = Version::parse(&manifest.api_version).map_err(|_| "API 版本不是合法 SemVer".to_string())?;
+    let normalized_api_version = if manifest.api_version.matches('.').count() == 1 {
+        format!("{}.0", manifest.api_version)
+    } else {
+        manifest.api_version.clone()
+    };
+    let api = Version::parse(&normalized_api_version)
+        .map_err(|_| "API 版本不是合法 SemVer".to_string())?;
     if api.major != SUPPORTED_API_MAJOR {
         return Err("宿主不支持此插件 API 主版本".to_string());
     }
@@ -136,7 +142,7 @@ mod tests {
             "id": "com.lanchat.gomoku",
             "name": "五子棋",
             "version": "1.0.0",
-            "apiVersion": "1.0.0",
+            "apiVersion": "1.0",
             "minHostVersion": "0.8.0",
             "type": "web",
             "entry": "dist/index.html",

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { PluginManifestV1 } from "../plugin-host/contracts/manifest";
 
 export interface InstalledPluginRecord {
   pluginId: string;
@@ -15,6 +16,7 @@ export interface InstalledPluginRecord {
 
 export const pluginApi = {
   listInstalled: () => invoke<InstalledPluginRecord[]>("list_installed_plugins"),
+  listEnabledManifests: () => invoke<PluginManifestV1[]>("list_enabled_plugin_manifests"),
   installPackage: (packagePath: string, allowUnsignedDevelopment = false) =>
     invoke<InstalledPluginRecord>("install_plugin_package", {
       packagePath,

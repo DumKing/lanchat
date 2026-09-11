@@ -38,7 +38,8 @@ use protocol::{
     QuickAlertFrame, QuickAlertTrustResetFrame, SimulationMeta,
 };
 use protocol::{CallSignalFrame, GameFrame};
-use plugin::manifest::parse_and_validate_manifest;
+use plugin::manifest::{parse_and_validate_manifest, PluginManifest};
+use plugin::registry::load_enabled_plugin_manifests;
 use plugin::repository::PluginRepository;
 use plugin::signature::PluginKeyring;
 use plugin::storage::{InstalledPluginRecord, PluginStorage};
@@ -798,6 +799,11 @@ fn get_platform_info() -> PlatformInfo {
 #[tauri::command]
 fn list_installed_plugins(state: State<'_, AppState>) -> Result<Vec<InstalledPluginRecord>, String> {
     state.plugin_storage.list()
+}
+
+#[tauri::command]
+fn list_enabled_plugin_manifests(state: State<'_, AppState>) -> Result<Vec<PluginManifest>, String> {
+    load_enabled_plugin_manifests(&state.plugin_storage, env!("CARGO_PKG_VERSION"))
 }
 
 #[tauri::command]
@@ -5919,6 +5925,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_platform_info,
             list_installed_plugins,
+            list_enabled_plugin_manifests,
             install_plugin_package,
             set_plugin_enabled,
             set_plugin_permissions,

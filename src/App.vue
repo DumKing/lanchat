@@ -44,6 +44,7 @@ import {
 } from "naive-ui";
 import { storeToRefs } from "pinia";
 import { api } from "./services/tauri-api";
+import { pluginApi } from "./services/plugin-api";
 import { cameraMediaCoordinator } from "./services/cameraMediaCoordinator";
 import ChatComposerInput from "./components/ChatComposerInput.vue";
 import MonopolyBoard3D, { type Board3DTile } from "./components/MonopolyBoard3D.vue";
@@ -72,6 +73,8 @@ import { peerDisplayName, peerOriginalName, sameDeviceId, sortPeersForDisplay } 
 import { DEFAULT_CAMERA_MONITOR_SETTINGS, type CameraFaceAlert, type CameraMonitorSettings, type CameraMonitorStatus, type FaceMonitorPolicy, type FaceMonitorRuntimeStatus, type FacePersonPolicy, type ReferencePhotoCandidate } from "./types/face-monitor";
 import type { VisionFrameSample, VisionProfileSummary, VisionRuntimeDiagnostics, VisionRuntimeSnapshot } from "./types/vision";
 import { dateLocale, effectiveLocale, installUiTranslation, languagePreference, naiveLocale, setLanguagePreference, t } from "./i18n";
+import type { PluginManifestV1 } from "./plugin-host/contracts/manifest";
+import { resolvePluginFeatures } from "./plugin-host/registry/featureAvailability";
 
 const MONOPOLY_CARD_SYMBOLS: Record<MonopolyCard, string> = {
   acquittal: "赦", seize: "夺", frame: "囚", double: "倍", fixed_dice: "骰",
@@ -802,6 +805,13 @@ const petDiscoDurationMs = computed(() =>
   Math.max(10, Math.min(3_600, desktopPetSettings.value?.discoDurationSeconds ?? 60)) * 1_000,
 );
 const selectedGameType = ref<GameType>("doudizhu");
+const enabledPluginManifests = ref<PluginManifestV1[]>([]);
+const pluginFeatures = computed(() => resolvePluginFeatures(
+  enabledPluginManifests.value.map((manifest) => ({ manifest, enabled: true })),
+));
+const availableGameRegistry = computed(() => gameRegistry.filter((game) => pluginFeatures.value.gameIds.includes(game.type)));
+const gamesFeatureAvailable = computed(() => availableGameRegistry.value.length > 0);
+const visionFeatureAvailable = computed(() => pluginFeatures.value.visionPluginId !== null);
 const roomNameDraft = ref("午休娱乐局");
 const monopolyStartingCoinsDraft = ref(5000);
 const monopolyMaxRoundsDraft = ref(20);
@@ -1940,12 +1950,24 @@ async function openReleasePage() {
     store.error = stringifyError(err);
   }
 }
+async function initializePluginFeatures() {
+  enabledPluginManifests.value = await pluginApi.listEnabledManifests().catch(() => []);
+  const firstGame = availableGameRegistry.value[0];
+  if (firstGame && !availableGameRegistry.value.some((game) => game.type === selectedGameType.value)) {
+    selectedGameType.value = firstGame.type;
+  }
+  if ((activeSection.value === "games" && !gamesFeatureAvailable.value)
+    || (activeSection.value === "vision" && !visionFeatureAvailable.value)) {
+    activeSection.value = "chat";
+  }
+}
 onMounted(async () => {
   stopUiTranslation = installUiTranslation();
   void initializeAutostart();
   platformInfo.value = await api.getPlatformInfo().catch(() => null);
   appVersionInfo.value = await api.getAppVersionInfo().catch(() => null);
   updateGithubTokenInfo.value = await api.getUpdateGithubTokenInfo().catch(() => null);
+  await initializePluginFeatures();
   await store.initialize();
   await initializeLeaderboardPersistence();
   await restoreSavedSuperAdminSession();
@@ -1960,7 +1982,7 @@ onMounted(async () => {
   nicknameDraft.value = profile.value?.nickname ?? "";
   portDraft.value = profile.value?.listen_port ?? 18145;
   avatarDraft.value = profile.value?.avatar ?? "";
-  await initializeFaceMonitor();
+  if (visionFeatureAvailable.value) await initializeFaceMonitor();
   scheduleAutomaticUpdateChecks();
   await api.setDesktopPetEnabled(petAlertEnabled.value).catch(() => undefined);
   await registerDesktopPetSendHotkey();
@@ -2772,6 +2794,7 @@ function selectCreateRoomGame(type: GameType) {
   createRoomGameMenuOpen.value = false;
 }
 function openBuiltinGame(type: GameType) {
+  if (!availableGameRegistry.value.some((game) => game.type === type)) return;
   selectedGameType.value = type;
   activeGameRoomId.value = "";
   selectedCardIds.value = [];
@@ -4080,7 +4103,7 @@ async function sendRoomChat() {
 }
 function processGameFrame(frame: GameFrame) {
   if (frame.sender_device_id === profile.value?.device_id) return;
-  if (!gameRegistry.some((game) => game.type === frame.game)) return;
+  if (!availableGameRegistry.value.some((game) => game.type === frame.game)) return;
   if (frame.kind === "leaderboard_sync") {
     applyLeaderboardSync(frame.payload as LeaderboardSyncPayload);
     return;
@@ -5822,6 +5845,11 @@ function alertProbabilityLabel(alert?: AlertRecord | null) {
   return score.feedbackCount === 0 ? `${alertDisplayTemperature(alert)}°C` : `${score.probability}%`;
 }
 function openSection(section: MainSection) {
+  if ((section === "games" && !gamesFeatureAvailable.value)
+    || (section === "vision" && !visionFeatureAvailable.value)) {
+    activeSection.value = "chat";
+    return;
+  }
   if (section === "alerts" && !petAlertEnabled.value) {
     activeSection.value = "settings";
     return;
@@ -7665,6 +7693,7 @@ async function closeWindow() {
                 <span v-if="navExpanded" class="nav-label">{{ t("nav.devices") }}</span>
               </button>
               <button
+                v-if="gamesFeatureAvailable"
                 class="rail-action"
                 :class="{ active: activeSection === 'games' }"
                 title="游戏"
@@ -7685,6 +7714,7 @@ async function closeWindow() {
                 <span v-if="navExpanded" class="nav-label">狼来了</span>
               </button>
               <button
+                v-if="visionFeatureAvailable"
                 class="rail-action"
                 :class="{ active: activeSection === 'vision' }"
                 :title="t('nav.vision')"
@@ -7802,9 +7832,9 @@ async function closeWindow() {
               <NInput size="small" clearable placeholder="搜索游戏或房间" />
             </div>
             <NScrollbar class="list-scroll">
-              <div class="section-label">内置游戏</div>
+              <div class="section-label">已启用插件</div>
               <div
-                v-for="game in gameRegistry"
+                v-for="game in availableGameRegistry"
                 :key="game.type"
                 class="game-list-card"
                 :class="{ active: selectedGameType === game.type }"
@@ -9912,7 +9942,7 @@ async function closeWindow() {
               </button>
               <div v-if="createRoomGameMenuOpen" class="create-room-game-menu">
                 <button
-                  v-for="game in gameRegistry"
+                  v-for="game in availableGameRegistry"
                   :key="game.type"
                   class="create-room-game-option"
                   :class="{ active: selectedGameType === game.type }"
