@@ -54,17 +54,7 @@ import AppNavigationRail from "./app/navigation/AppNavigationRail.vue";
 import { DEFAULT_GROUP_ID, useLanChatStore } from "./stores/lanchat";
 import { useDesktopPetStore } from "./stores/desktopPet";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, ExternalPushConfig, ExternalPushKind, PetPackageSource, PetStateKind, PetStatePlaybackConfig } from "./types/desktop-pet";
-import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AdminRemoteUpdate, AdminRemoteUpdateDispatchTarget, AdminRemoteUpdateProgress, AppVersionInfo, CallSignal, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Nudge, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, SimulationMeta, TrayAttentionItem, UpdateCheckResult, UpdateGithubTokenInfo } from "./types/lanchat";
-import { DDZ_TURN_TIMEOUT_MS, canBeat, dealHands, evaluatePlay, isTurnTimedOut, playLabel, sortCards, turnRemainingSeconds, type DdzCard, type DdzPhase, type DdzPlay } from "./games/doudizhu";
-import { GOMOKU_TURN_TIMEOUT_MS, chooseAutoGomokuPoint, cloneGomokuBoard, createGomokuBoard, gomokuStoneLabel, gomokuTurnRemainingSeconds, isGomokuTurnTimedOut, placeGomokuStone, type GomokuBoard, type GomokuPhase, type GomokuPoint, type GomokuStone } from "./games/gomoku";
-import { cloneXiangqiBoard, createXiangqiBoard, moveXiangqiPiece, otherXiangqiSide, resignXiangqiSide, undoXiangqiMove, xiangqiPieceLabel, xiangqiSideLabel, type XiangqiBoard, type XiangqiPhase, type XiangqiPiece, type XiangqiPoint, type XiangqiSide } from "./games/xiangqi";
-import { chordRevealMinesweeperCell, cloneMinesweeperBoard, createMinesweeperBoard, getMinesweeperProgress, revealMinesweeperCell, toggleMinesweeperFlag, type MinesweeperBoard, type MinesweeperPhase, type MinesweeperPoint } from "./games/minesweeper";
-import { createMinesweeperLeaderboardRecord, minesweeperDifficultyLabel, upsertMinesweeperLeaderboardRecords, type MinesweeperLeaderboardRecord } from "./games/minesweeperLeaderboard";
-import { incrementGameStats, qualifyingRankedPlayers, upsertGameStatsRecords, type GameStatsRecord, type RankedGameType } from "./games/gameLeaderboard";
-import { gameDefinitionOf, gameRegistry, type GameRoomShell, type GameType } from "./games/registry";
-import { isGameRoomHost, upsertGameRoomShell } from "./features/games/roomHostService";
-import { MONOPOLY_TURN_TIMEOUT_MS, monopolyTurnRemainingSeconds, type MonopolyPlayer } from "./games/monopoly";
-import { applyMonopolyRoomAction, planMonopolyBotAction, type MonopolyRoomAction, type MonopolyRoomAnnouncement, type MonopolyRoomState } from "./games/monopolyRoom";
+import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AdminRemoteUpdate, AdminRemoteUpdateDispatchTarget, AdminRemoteUpdateProgress, AppVersionInfo, CallSignal, ChannelMember, Conversation, DesktopPetRuntimeState, Message, Nudge, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, SimulationMeta, TrayAttentionItem, UpdateCheckResult, UpdateGithubTokenInfo } from "./types/lanchat";
 import { alertTemperature, alertTruthScore, senderCredibility } from "./utils/alertCredibility";
 import { detectMentionKind, trayConversationTitle, type MentionKind } from "./utils/messageMentions";
 import { peerDisplayName, peerOriginalName, sameDeviceId, sortPeersForDisplay } from "./utils/peerPresentation";
@@ -82,19 +72,6 @@ type UiThemeKey = "theme-dingtalk" | "theme-work" | "theme-lan" | "theme-light";
 type MainSection = "chat" | "devices" | "games" | "alerts" | "settings";
 type RecipientPickerMode = "privateChannelCreate" | "privateChannelInvite";
 type SimulationKind = "direct" | "channel" | "alert" | "disco";
-type UndoRequest = {
-  requesterId: string;
-  requesterName: string;
-  createdAt: number;
-};
-type RoomChatItem = {
-  id: string;
-  senderDeviceId: string;
-  sender: string;
-  content: string;
-  mine: boolean;
-  createdAt: number;
-};
 type AlertFeedbackResult = "real" | "false";
 type AlertFeedbackRecord = {
   responderDeviceId: string;
@@ -116,171 +93,6 @@ type AlertRecord = {
   localFeedback?: AlertFeedbackResult;
   feedbacks: AlertFeedbackRecord[];
 };
-type DdzSeat = {
-  deviceId: string;
-  nickname: string;
-  avatar?: string | null;
-  online: boolean;
-  ready: boolean;
-  role?: "landlord" | "farmer";
-  handCount: number;
-};
-type DdzTableState = {
-  roomId: string;
-  phase: DdzPhase;
-  players: DdzSeat[];
-  landlordCards: DdzCard[];
-  hands: Record<string, DdzCard[]>;
-  turnDeviceId?: string;
-  turnStartedAt?: number;
-  landlordDeviceId?: string;
-  bidOrder: string[];
-  bidIndex: number;
-  bids: Record<string, boolean>;
-  lastPlay: DdzPlay | null;
-  passCount: number;
-  winnerDeviceId?: string;
-  winnerName?: string;
-  chatMessages: RoomChatItem[];
-  logs: string[];
-  updatedAt: number;
-};
-type DdzActionPayload =
-  | { action: "join"; player: DdzSeat }
-  | { action: "ready"; playerId: string; ready: boolean }
-  | { action: "bid"; playerId: string; call: boolean }
-  | { action: "play"; playerId: string; cardIds: string[] }
-  | { action: "pass"; playerId: string }
-  | { action: "leave"; playerId: string }
-  | { action: "chat"; message: RoomChatItem };
-type GomokuSeat = {
-  deviceId: string;
-  nickname: string;
-  avatar?: string | null;
-  online: boolean;
-  ready: boolean;
-  stone?: GomokuStone;
-};
-type GomokuMove = GomokuPoint & {
-  playerId: string;
-  playerName: string;
-  stone: GomokuStone;
-  createdAt: number;
-};
-type GomokuTableState = {
-  roomId: string;
-  phase: GomokuPhase;
-  players: GomokuSeat[];
-  board: GomokuBoard;
-  moves: GomokuMove[];
-  turnDeviceId?: string;
-  turnStartedAt?: number;
-  winnerDeviceId?: string;
-  winnerName?: string;
-  winnerStone?: GomokuStone;
-  winLine: GomokuPoint[];
-  pendingUndo?: UndoRequest;
-  chatMessages: RoomChatItem[];
-  logs: string[];
-  updatedAt: number;
-};
-type GomokuActionPayload =
-  | { action: "join"; player: GomokuSeat }
-  | { action: "ready"; playerId: string; ready: boolean }
-  | { action: "move"; playerId: string; x: number; y: number }
-  | { action: "undo_request"; playerId: string }
-  | { action: "undo_response"; playerId: string; accepted: boolean }
-  | { action: "resign"; playerId: string }
-  | { action: "leave"; playerId: string }
-  | { action: "chat"; message: RoomChatItem };
-type MinesweeperSeat = {
-  deviceId: string;
-  nickname: string;
-  avatar?: string | null;
-  online: boolean;
-  ready: boolean;
-};
-type MinesweeperPlayerState = {
-  board: MinesweeperBoard;
-  status: "playing" | "won" | "lost";
-  moves: number;
-  startedAt: number;
-  finishedAt?: number;
-  revealedSafe: number;
-  totalSafe: number;
-  flagged: number;
-};
-type MinesweeperTableState = {
-  roomId: string;
-  phase: MinesweeperPhase;
-  players: MinesweeperSeat[];
-  width: number;
-  height: number;
-  mines: number;
-  seed: number;
-  boards: Record<string, MinesweeperPlayerState>;
-  winnerDeviceId?: string;
-  winnerName?: string;
-  chatMessages: RoomChatItem[];
-  logs: string[];
-  updatedAt: number;
-};
-type MinesweeperActionPayload =
-  | { action: "join"; player: MinesweeperSeat }
-  | { action: "ready"; playerId: string; ready: boolean }
-  | { action: "difficulty"; playerId: string; width: number; height: number; mines: number }
-  | { action: "reveal"; playerId: string; x: number; y: number }
-  | { action: "flag"; playerId: string; x: number; y: number }
-  | { action: "chord"; playerId: string; x: number; y: number }
-  | { action: "leave"; playerId: string }
-  | { action: "chat"; message: RoomChatItem };type XiangqiSeat = {
-  deviceId: string;
-  nickname: string;
-  avatar?: string | null;
-  online: boolean;
-  ready: boolean;
-  side?: XiangqiSide;
-};
-type XiangqiMove = {
-  from: XiangqiPoint;
-  to: XiangqiPoint;
-  playerId: string;
-  playerName: string;
-  side: XiangqiSide;
-  piece?: XiangqiPiece;
-  captured?: XiangqiPiece | null;
-  previousCheckSide?: XiangqiSide;
-  pieceLabel: string;
-  capturedLabel?: string;
-  createdAt: number;
-};
-type XiangqiTableState = {
-  roomId: string;
-  phase: XiangqiPhase;
-  players: XiangqiSeat[];
-  board: XiangqiBoard;
-  moves: XiangqiMove[];
-  turnDeviceId?: string;
-  turnStartedAt?: number;
-  winnerDeviceId?: string;
-  winnerName?: string;
-  winnerSide?: XiangqiSide;
-  checkSide?: XiangqiSide;
-  pendingUndo?: UndoRequest;
-  chatMessages: RoomChatItem[];
-  logs: string[];
-  updatedAt: number;
-};
-type XiangqiActionPayload =
-  | { action: "join"; player: XiangqiSeat }
-  | { action: "ready"; playerId: string; ready: boolean }
-  | { action: "move"; playerId: string; from: XiangqiPoint; to: XiangqiPoint }
-  | { action: "undo_request"; playerId: string }
-  | { action: "undo_response"; playerId: string; accepted: boolean }
-  | { action: "resign"; playerId: string }
-  | { action: "leave"; playerId: string }
-  | { action: "chat"; message: RoomChatItem };
-type GameActionPayload = DdzActionPayload | GomokuActionPayload | XiangqiActionPayload | MinesweeperActionPayload | MonopolyRoomAction;
 const PRIVATE_CHANNEL_INVITE_PREFIX = "LANCHAT_PRIVATE_CHANNEL_INVITE:";
 const DEFAULT_CHANNEL_NOTICE = "欢迎来到频道，公告可以由超管维护。";
 const QUICK_ALERT_TRUST_RESET_ALL_TARGET = "__all__";
@@ -339,8 +151,6 @@ const {
   draft,
 } = storeToRefs(store);
 const messagePane = ref<HTMLElement | null>(null);
-const roomChatPane = ref<HTMLElement | null>(null);
-const monopolyAnnouncementLogPane = ref<HTMLElement | null>(null);
 const mentionPickerOpen = ref(false);
 const mentionSearch = ref("");
 type MentionNotice = { messageId: string; kind: MentionKind; createdAt: number };
@@ -436,7 +246,6 @@ let recordingTimer: number | null = null;
 let turnTicker: number | null = null;
 let updateCheckTimer: number | null = null;
 let stopUiTranslation: (() => void) | null = null;
-let autoTurnRunning = false;
 let unlistenTrayOpenTarget: (() => void) | null = null;
 let unlistenDesktopPetAction: (() => void) | null = null;
 let unlistenDesktopPetStopHotkey: (() => void) | null = null;
@@ -655,9 +464,6 @@ const recipientPickerMode = ref<RecipientPickerMode>("privateChannelCreate");
 const selectedRecipientPeerIds = ref<string[]>([]);
 const privateChannelTitleDraft = ref("私有频道");
 const handledPrivateChannelInvites = ref<Record<string, "accepted" | "rejected">>(readSavedPrivateChannelInviteStates());
-const gameStatsRecords = ref<GameStatsRecord[]>(readSavedGameStatsRecords());
-const minesweeperLeaderboardRecords = ref<MinesweeperLeaderboardRecord[]>(readSavedMinesweeperLeaderboardRecords());
-const recordedGameResultIds = new Set<string>();
 const messageContextMenuOpen = ref(false);
 const messageContextMenuX = ref(0);
 const messageContextMenuY = ref(0);
@@ -676,14 +482,12 @@ const ALERT_SEND_COOLDOWN_MS = 20_000;
 const petDiscoDurationMs = computed(() =>
   Math.max(10, Math.min(3_600, desktopPetSettings.value?.discoDurationSeconds ?? 60)) * 1_000,
 );
-const selectedGameType = ref<GameType>("doudizhu");
 const enabledPluginManifests = ref<PluginManifestV1[]>([]);
 const activePluginGameId = ref("");
 const pluginFeatures = computed(() => resolvePluginFeatures(
   enabledPluginManifests.value.map((manifest) => ({ manifest, enabled: true })),
 ));
-const availableGameRegistry = computed(() => gameRegistry.filter((game) => pluginFeatures.value.gameIds.includes(game.type)));
-const gamesFeatureAvailable = computed(() => availableGameRegistry.value.length > 0);
+const gamesFeatureAvailable = computed(() => pluginFeatures.value.gameIds.length > 0);
 const enabledGamePlugins = computed(() => enabledPluginManifests.value.flatMap((manifest) =>
   (manifest.contributes?.games ?? []).map((game) => ({
     pluginId: manifest.id,
@@ -694,31 +498,6 @@ const enabledGamePlugins = computed(() => enabledPluginManifests.value.flatMap((
   })),
 ));
 const activePluginGame = computed(() => enabledGamePlugins.value.find((item) => item.gameId === activePluginGameId.value) ?? enabledGamePlugins.value[0] ?? null);
-const gameRoomsState = ref<GameRoomShell[]>([]);
-const activeGameRoomId = ref("");
-const selectedCardIds = ref<string[]>([]);
-const selectedXiangqiPoint = ref<XiangqiPoint | null>(null);
-const monopolyDiceRolling = ref(false);
-const monopolyDiceResultVisible = ref(false);
-const monopolyDiceFaces = ref<number[]>([1, 1]);
-const monopolyAnnouncementQueue = ref<MonopolyRoomAnnouncement[]>([]);
-const monopolyDelayedAnnouncements = ref<MonopolyRoomAnnouncement[]>([]);
-const activeMonopolyAnnouncements = ref<MonopolyRoomAnnouncement[]>([]);
-const seenMonopolyAnnouncementIds = new Set<string>();
-const monopolyAnimatedPositions = ref<Record<string, number>>({});
-const monopolyMovingPlayerIds = ref<string[]>([]);
-const monopolyKnownPositions = new Map<string, number>();
-let monopolyPlaybackRoomId = "";
-let monopolyDiceRollTimer: ReturnType<typeof setInterval> | undefined;
-let monopolyDiceSettleTimer: ReturnType<typeof setTimeout> | undefined;
-const monopolyAnnouncementTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const monopolyMovementTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const monopolyBotTurnTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const doudizhuRooms = ref<Record<string, DdzTableState>>({});
-const gomokuRooms = ref<Record<string, GomokuTableState>>({});
-const xiangqiRooms = ref<Record<string, XiangqiTableState>>({});
-const minesweeperRooms = ref<Record<string, MinesweeperTableState>>({});
-const monopolyRooms = ref<Record<string, MonopolyRoomState>>({});
 const emojiOptions = ["😀", "😄", "😂", "😉", "👍", "👏", "🎉", "🔥", "❤️", "👌", "😎", "🤝", "🍵", "🃏", "💣", "🚀"];
 const navExpanded = ref(readSavedNavExpanded());
 const themeOptions: Array<{ label: string; key: UiThemeKey; accent: string; hover: string; pressed: string }> = [
@@ -987,17 +766,6 @@ const composerPlaceholder = computed(() => {
   if (activeConversation.value?.kind === "direct" && peer && !peerSupportsFullFeatures(peer)) return "该设备不支持聊天发送";
   return activeConversation.value?.kind === "direct" ? "对方已离线，暂不能发送私聊消息" : "当前不可发送消息";
 });
-const activeGameRoom = computed(() => gameRoomsState.value.find((room) => room.roomId === activeGameRoomId.value) ?? null);
-const activeDdzState = computed(() => doudizhuRooms.value[activeGameRoomId.value] ?? null);
-const activeGomokuState = computed(() => gomokuRooms.value[activeGameRoomId.value] ?? null);
-const activeXiangqiState = computed(() => xiangqiRooms.value[activeGameRoomId.value] ?? null);
-const activeMinesweeperState = computed(() => minesweeperRooms.value[activeGameRoomId.value] ?? null);
-const activeMonopolyState = computed(() => monopolyRooms.value[activeGameRoomId.value] ?? null);
-const myDeviceId = computed(() => profile.value?.device_id ?? "");
-const myDdzHand = computed(() => sortCards(activeDdzState.value?.hands[myDeviceId.value] ?? []));
-const isMyDdzTurn = computed(() => activeDdzState.value?.turnDeviceId === myDeviceId.value);
-const isDdzLeading = computed(() => !activeDdzState.value?.lastPlay || activeDdzState.value.lastPlay.playerId === myDeviceId.value);
-const canPassDdz = computed(() => activeDdzState.value?.phase === "playing" && isMyDdzTurn.value && !isDdzLeading.value);
 const pendingAlertCount = computed(() => alertRecords.value.filter((item) => item.incoming && !item.handled && item.senderDeviceId !== profile.value?.device_id).length);
 const adminDeviceOptions = computed(() => {
   const local = profile.value
@@ -1099,65 +867,9 @@ function adminRemoteUpdateProgressPercent(row: AdminRemoteUpdateDispatchTarget) 
 }
 const petAlertProbability = computed(() => alertDisplayTemperature(activePetAlert.value));
 const discoModeActive = computed(() => discoModeUntil.value > nowTick.value);
-const activeRoomChatMessages = computed(() => {
-  if (activeGameRoom.value?.gameType === "gomoku") return activeGomokuState.value?.chatMessages ?? [];
-  if (activeGameRoom.value?.gameType === "xiangqi") return activeXiangqiState.value?.chatMessages ?? [];
-  if (activeGameRoom.value?.gameType === "minesweeper") return activeMinesweeperState.value?.chatMessages ?? [];
-  if (activeGameRoom.value?.gameType === "monopoly") return activeMonopolyState.value?.chatMessages ?? [];
-  return activeDdzState.value?.chatMessages ?? [];
-});
-const activeTurnRemainingSeconds = computed(() => {
-  const state = activeDdzState.value;
-  if (!state || !state.turnDeviceId || (state.phase !== "bidding" && state.phase !== "playing")) return 0;
-  return turnRemainingSeconds(state.turnStartedAt, nowTick.value, DDZ_TURN_TIMEOUT_MS);
-});
-const activeGomokuTurnRemainingSeconds = computed(() => {
-  const state = activeGomokuState.value;
-  if (!state || !state.turnDeviceId || state.phase !== "playing" || state.pendingUndo) return 0;
-  return gomokuTurnRemainingSeconds(state.turnStartedAt, nowTick.value, GOMOKU_TURN_TIMEOUT_MS);
-});
-const activeMonopolyTurnRemainingSeconds = computed(() => {
-  const state = activeMonopolyState.value;
-  if (!state || state.phase !== "playing") return 0;
-  return monopolyTurnRemainingSeconds(state.game.turnStartedAt, nowTick.value, MONOPOLY_TURN_TIMEOUT_MS);
-});
 // Local presentation only: changing the view never sends a room action.
 const listPaneAvailable = computed(() => ["chat", "devices", "games"].includes(activeSection.value));
 const listPaneToggleTitle = computed(() => listPaneCollapsed.value ? "展开列表栏" : "收起列表栏");
-const isGameStarted = computed(() => {
-  if (activeGameRoom.value?.gameType === "gomoku") return activeGomokuState.value?.phase === "playing";
-  if (activeGameRoom.value?.gameType === "xiangqi") return activeXiangqiState.value?.phase === "playing";
-  if (activeGameRoom.value?.gameType === "minesweeper") return activeMinesweeperState.value?.phase === "playing";
-  if (activeGameRoom.value?.gameType === "monopoly") return activeMonopolyState.value?.phase === "playing";
-  return activeDdzState.value?.phase === "bidding" || activeDdzState.value?.phase === "playing";
-});
-const gameAttentionCount = computed(() => {
-  const deviceId = myDeviceId.value;
-  if (!deviceId) return 0;
-  let count = 0;
-  for (const state of Object.values(doudizhuRooms.value)) {
-    if ((state.phase === "bidding" || state.phase === "playing") && state.turnDeviceId === deviceId) count += 1;
-  }
-  for (const state of Object.values(gomokuRooms.value)) {
-    if (state.phase !== "playing") continue;
-    const shouldRemind = state.turnDeviceId === deviceId || (!!state.pendingUndo && state.pendingUndo.requesterId !== deviceId);
-    if (shouldRemind) count += 1;
-  }
-  for (const state of Object.values(monopolyRooms.value)) {
-    if (state.phase === "playing" && state.game.currentPlayerId === deviceId) count += 1;
-  }
-  for (const state of Object.values(xiangqiRooms.value)) {
-    if (state.phase !== "playing") continue;
-    const shouldRemind = state.turnDeviceId === deviceId || (!!state.pendingUndo && state.pendingUndo.requesterId !== deviceId);
-    if (shouldRemind) count += 1;
-  }
-  return count;
-});
-function gameRoomTrayTitle(roomId: string) {
-  const room = gameRoomsState.value.find((item) => item.roomId === roomId);
-  if (!room) return "游戏房间";
-  return `${room.roomName} · ${gameDefinitionOf(room.gameType).name}`;
-}
 function buildTrayAttentionItems(): TrayAttentionItem[] {
   const chatItems = sortedConversations.value
     .map((conversation) => ({
@@ -1167,33 +879,7 @@ function buildTrayAttentionItems(): TrayAttentionItem[] {
       count: unreadByConversation.value[conversation.id] ?? 0,
     }))
     .filter((item) => item.count > 0);
-  const deviceId = myDeviceId.value;
-  const gameItems: TrayAttentionItem[] = [];
-  if (deviceId) {
-    for (const state of Object.values(doudizhuRooms.value)) {
-      if ((state.phase === "bidding" || state.phase === "playing") && state.turnDeviceId === deviceId) {
-        gameItems.push({ id: state.roomId, kind: "game", title: gameRoomTrayTitle(state.roomId), count: 1 });
-      }
-    }
-    for (const state of Object.values(gomokuRooms.value)) {
-      if (state.phase !== "playing") continue;
-      if (state.turnDeviceId === deviceId || (!!state.pendingUndo && state.pendingUndo.requesterId !== deviceId)) {
-        gameItems.push({ id: state.roomId, kind: "game", title: gameRoomTrayTitle(state.roomId), count: 1 });
-      }
-    }
-    for (const state of Object.values(xiangqiRooms.value)) {
-      if (state.phase !== "playing") continue;
-      if (state.turnDeviceId === deviceId || (!!state.pendingUndo && state.pendingUndo.requesterId !== deviceId)) {
-        gameItems.push({ id: state.roomId, kind: "game", title: gameRoomTrayTitle(state.roomId), count: 1 });
-      }
-    }
-    for (const state of Object.values(monopolyRooms.value)) {
-      if (state.phase === "playing" && state.game.currentPlayerId === deviceId) {
-        gameItems.push({ id: state.roomId, kind: "game", title: gameRoomTrayTitle(state.roomId), count: 1 });
-      }
-    }
-  }
-  return [...chatItems, ...gameItems].slice(0, 12);
+  return chatItems.slice(0, 12);
 }
 async function syncTrayAttention() {
   try {
@@ -1217,15 +903,11 @@ async function scrollActiveChatToBottom() {
   }
 }
 async function openTrayTarget(target: TrayAttentionItem) {
-  if (target.kind === "game") {
-    openGameRoom(target.id);
-  } else {
-    activeSection.value = "chat";
-    await store.selectConversation(target.id);
-  }
+  if (target.kind !== "chat") return;
+  activeSection.value = "chat";
+  await store.selectConversation(target.id);
   await syncTrayAttention();
 }
-const showGameAttention = computed(() => activeSection.value !== "games" && gameAttentionCount.value > 0);
 const shortDeviceId = computed(() => {
   const id = profile.value?.device_id ?? "";
   if (id.length <= 18) return id;
@@ -1585,10 +1267,6 @@ async function initializePluginFeatures() {
   if (!enabledGamePlugins.value.some((item) => item.gameId === activePluginGameId.value)) {
     activePluginGameId.value = enabledGamePlugins.value[0]?.gameId ?? "";
   }
-  const firstGame = availableGameRegistry.value[0];
-  if (firstGame && !availableGameRegistry.value.some((game) => game.type === selectedGameType.value)) {
-    selectedGameType.value = firstGame.type;
-  }
   if (activeSection.value === "games" && !gamesFeatureAvailable.value) {
     activeSection.value = "chat";
   }
@@ -1611,7 +1289,6 @@ onMounted(async () => {
   updateGithubTokenInfo.value = await api.getUpdateGithubTokenInfo().catch(() => null);
   await initializePluginFeatures();
   await store.initialize();
-  await initializeLeaderboardPersistence();
   await restoreSavedSuperAdminSession();
   previewMediaCacheInfo.value = await api.getPreviewMediaCacheInfo().catch(() => null);
   await refreshMemoryDiagnostic();
@@ -1672,8 +1349,6 @@ onMounted(async () => {
 onUnmounted(() => {
   stopUiTranslation?.();
   stopUiTranslation = null;
-  monopolyAnnouncementTimers.forEach((timer) => window.clearTimeout(timer));
-  monopolyAnnouncementTimers.clear();
   store.stopRuntime();
   Object.values(avatarBlobUrls.value).forEach((url) => URL.revokeObjectURL(url));
   imagePreviewBlobUrls.forEach((url) => URL.revokeObjectURL(url));
@@ -1710,12 +1385,6 @@ onUnmounted(() => {
     window.clearTimeout(mentionHighlightTimer);
     mentionHighlightTimer = null;
   }
-  if (monopolyDiceRollTimer) window.clearInterval(monopolyDiceRollTimer);
-  if (monopolyDiceSettleTimer) window.clearTimeout(monopolyDiceSettleTimer);
-  monopolyMovementTimers.forEach((timer) => window.clearTimeout(timer));
-  monopolyMovementTimers.clear();
-  monopolyBotTurnTimers.forEach((timer) => window.clearTimeout(timer));
-  monopolyBotTurnTimers.clear();
 });
 watch(profile, (next) => {
   nicknameDraft.value = next?.nickname ?? "";
@@ -1764,12 +1433,6 @@ watch(activeSection, (section) => {
     void scrollActiveChatToBottom();
   }
 });
-watch(activeRoomChatMessages, async () => {
-  await nextTick();
-  if (roomChatPane.value) {
-    roomChatPane.value.scrollTop = roomChatPane.value.scrollHeight;
-  }
-});
 watch(selectedTheme, (next) => {
   if (typeof window !== "undefined") {
     window.localStorage.setItem("lanchat-ui-theme", next);
@@ -1801,50 +1464,6 @@ watch(latestIncomingMessage, async (message) => {
   }
   await notifyIncomingActivity();
 });
-watch(activeTurnRemainingSeconds, async (remaining) => {
-  const state = activeDdzState.value;
-  if (!state || remaining > 0 || autoTurnRunning) return;
-  await handleTurnTimeout(state);
-});
-watch(activeGomokuTurnRemainingSeconds, async (remaining) => {
-  const state = activeGomokuState.value;
-  if (!state || remaining > 0 || autoTurnRunning) return;
-  await handleGomokuTurnTimeout(state);
-});
-watch(activeMonopolyTurnRemainingSeconds, async (remaining) => {
-  const state = activeMonopolyState.value;
-  if (!state || remaining > 0 || autoTurnRunning) return;
-  await handleMonopolyTurnTimeout(state);
-});
-watch(
-  () => activeMonopolyState.value?.lastDice?.rolledAt,
-  (rolledAt) => {
-    const dice = activeMonopolyState.value?.lastDice;
-    if (!rolledAt || !dice) return;
-    playMonopolyDiceAnimation(dice.values);
-  },
-);
-watch(
-  () => (activeMonopolyState.value?.announcements ?? []).map((announcement) => announcement.id).join("|"),
-  async () => {
-    const state = activeMonopolyState.value;
-    for (const announcement of state?.announcements ?? []) enqueueMonopolyAnnouncement(announcement);
-    await nextTick();
-    if (monopolyAnnouncementLogPane.value) {
-      monopolyAnnouncementLogPane.value.scrollTop = monopolyAnnouncementLogPane.value.scrollHeight;
-    }
-  },
-);
-watch(
-  () => {
-    const state = activeMonopolyState.value;
-    return state ? `${state.roomId}:${state.game.players.map((player) => `${player.deviceId}:${player.position}:${player.direction}`).join("|")}` : "";
-  },
-  () => syncMonopolyTokenPlayback(),
-  // 在渲染前写入上一格坐标，避免服务端状态到达时棋子先瞬移到终点一帧。
-  { flush: "sync" },
-);
-watch(monopolyRooms, () => scheduleMonopolyBotTurns(), { deep: true });
 watch(latestGameFrame, (frame) => {
   if (!frame) return;
   void pluginRoomService.receive(frame);
@@ -1964,11 +1583,6 @@ watch(latestAdminRemoteUpdateProgress, (progress: AdminRemoteUpdateProgress | nu
     }
   }
 });
-watch(isGameStarted, (started) => {
-  if (activeSection.value === "games" && started) {
-    listPaneCollapsed.value = true;
-  }
-});
 watch(navExpanded, (next) => {
   if (typeof window !== "undefined") {
     window.localStorage.setItem("lanchat-nav-expanded", String(next));
@@ -2012,7 +1626,7 @@ watch(petStopHotkey, (next) => {
 });
 watch(alertRecords, saveAlertRecords, { deep: true });
 watch(
-  [unreadByConversation, conversations, gameRoomsState, doudizhuRooms, gomokuRooms, xiangqiRooms, monopolyRooms],
+  [unreadByConversation, conversations],
   () => {
     void syncTrayAttention();
   },
@@ -2140,56 +1754,6 @@ function stopPaneResize() {
   paneResizeState.value = null;
   if (typeof document !== "undefined") {
     document.body.classList.remove("pane-resizing");
-  }
-}
-function readSavedGameStatsRecords(): GameStatsRecord[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem("lanchat-game-stats-v1");
-    return raw ? upsertGameStatsRecords([], JSON.parse(raw) as GameStatsRecord[]) : [];
-  } catch {
-    return [];
-  }
-}
-function saveGameStatsRecords() {
-  void api.upsertGameStats(gameStatsRecords.value)
-    .then((records) => { gameStatsRecords.value = upsertGameStatsRecords([], records); })
-    .catch((err) => { store.error = stringifyError(err); });
-}
-function readSavedMinesweeperLeaderboardRecords(): MinesweeperLeaderboardRecord[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem("lanchat-minesweeper-leaderboard-v1");
-    return raw ? upsertMinesweeperLeaderboardRecords([], JSON.parse(raw) as MinesweeperLeaderboardRecord[]) : [];
-  } catch {
-    return [];
-  }
-}
-function saveMinesweeperLeaderboardRecords() {
-  void api.upsertMinesweeperLeaderboard(minesweeperLeaderboardRecords.value)
-    .then((records) => { minesweeperLeaderboardRecords.value = upsertMinesweeperLeaderboardRecords([], records); })
-    .catch((err) => { store.error = stringifyError(err); });
-}
-async function initializeLeaderboardPersistence() {
-  const legacyGameStats = gameStatsRecords.value;
-  const legacyMinesweeper = minesweeperLeaderboardRecords.value;
-  try {
-    const persistedGameStats = await api.listGameStats();
-    const persistedMinesweeper = await api.listMinesweeperLeaderboard();
-    gameStatsRecords.value = upsertGameStatsRecords(persistedGameStats, legacyGameStats);
-    minesweeperLeaderboardRecords.value = upsertMinesweeperLeaderboardRecords(persistedMinesweeper, legacyMinesweeper);
-    if (legacyGameStats.length > 0) {
-      gameStatsRecords.value = upsertGameStatsRecords([], await api.upsertGameStats(gameStatsRecords.value));
-    }
-    if (legacyMinesweeper.length > 0) {
-      minesweeperLeaderboardRecords.value = upsertMinesweeperLeaderboardRecords([], await api.upsertMinesweeperLeaderboard(minesweeperLeaderboardRecords.value));
-    }
-    if (typeof window !== "undefined") {
-      window.localStorage.removeItem("lanchat-game-stats-v1");
-      window.localStorage.removeItem("lanchat-minesweeper-leaderboard-v1");
-    }
-  } catch {
-    // 浏览器预览或旧版本后端没有排行榜命令时，继续使用已读取的本地数据。
   }
 }
 function readSavedPrivateChannelInviteStates(): Record<string, "accepted" | "rejected"> {
@@ -2406,979 +1970,6 @@ function selectLanguage(key: string | number) {
   setLanguagePreference(key);
 }
 
-function openGameRoom(roomId: string) {
-  activeGameRoomId.value = roomId;
-  selectedCardIds.value = [];
-  selectedXiangqiPoint.value = null;
-  activeSection.value = "games";
-}
-function isRoomHost(room = activeGameRoom.value) {
-  return isGameRoomHost(room, myDeviceId.value);
-}
-function upsertGameRoom(room: GameRoomShell) {
-  gameRoomsState.value = upsertGameRoomShell(gameRoomsState.value, room);
-}
-function updateRoomFromState(roomId: string, state: { players: Array<{ deviceId: string; nickname: string; avatar?: string | null; isBot?: boolean; online: boolean; ready: boolean }>; updatedAt: number }) {
-  const room = gameRoomsState.value.find((item) => item.roomId === roomId);
-  if (!room) return;
-  const updated: GameRoomShell = {
-    ...room,
-    players: state.players.map((player) => ({
-      deviceId: player.deviceId,
-      nickname: player.nickname,
-      avatar: player.avatar,
-      isBot: player.isBot,
-      online: player.online,
-      ready: player.ready,
-    })),
-    updatedAt: state.updatedAt,
-  };
-  upsertGameRoom(updated);
-}
-function makeGameFrame(kind: string, payload: unknown, roomId = activeGameRoomId.value, game: GameType = activeGameRoom.value?.gameType ?? selectedGameType.value): GameFrame {
-  return {
-    frame_id: `game-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    game,
-    room_id: roomId,
-    sender_device_id: profile.value?.device_id ?? "",
-    sender_nickname: profile.value?.nickname ?? "局域网用户",
-    kind,
-    payload,
-    created_at: Date.now(),
-  };
-}
-async function broadcastGameFrame(kind: string, payload: unknown, roomId = activeGameRoomId.value) {
-  const room = gameRoomsState.value.find((item) => item.roomId === roomId);
-  const onlyLocalPlayers = !!room && room.players.every((player) => player.isBot || player.deviceId === myDeviceId.value);
-  await store.sendGameFrame(null, makeGameFrame(kind, payload, roomId), onlyLocalPlayers);
-}
-async function sendRoomAction(action: GameActionPayload) {
-  const room = activeGameRoom.value;
-  if (!room) return;
-  if (isRoomHost(room)) {
-    const changed = applyRoomAction(room.roomId, action);
-    if (changed) await broadcastSnapshot(room.roomId);
-    return;
-  }
-  await store.sendGameFrame(room.hostDeviceId, makeGameFrame("room_action", { roomId: room.roomId, action }, room.roomId, room.gameType));
-}
-async function broadcastSnapshot(roomId: string) {
-  const room = gameRoomsState.value.find((item) => item.roomId === roomId);
-  const state = roomStateForSnapshot(roomId);
-  if (!room || !state) return;
-  maybeRecordGameResult(room, state);
-  await broadcastGameFrame("room_snapshot", { room, state }, roomId);
-}
-function roomStateForSnapshot(roomId: string) {
-  const room = gameRoomsState.value.find((item) => item.roomId === roomId);
-  if (!room) return null;
-  if (room.gameType === "gomoku") return gomokuRooms.value[roomId] ?? null;
-  if (room.gameType === "xiangqi") return xiangqiRooms.value[roomId] ?? null;
-  if (room.gameType === "minesweeper") return minesweeperRooms.value[roomId] ?? null;
-  if (room.gameType === "monopoly") return monopolyRooms.value[roomId] ?? null;
-  return doudizhuRooms.value[roomId] ?? null;
-}
-function applyRoomAction(roomId: string, action: GameActionPayload) {
-  const room = gameRoomsState.value.find((item) => item.roomId === roomId);
-  if (!room) return false;
-  if (room.gameType === "gomoku") return applyGomokuAction(roomId, action as GomokuActionPayload);
-  if (room.gameType === "xiangqi") return applyXiangqiAction(roomId, action as XiangqiActionPayload);
-  if (room.gameType === "minesweeper") return applyMinesweeperAction(roomId, action as MinesweeperActionPayload);
-  if (room.gameType === "monopoly") return applyMonopolyAction(roomId, action as MonopolyRoomAction);
-  return applyDdzAction(roomId, action as DdzActionPayload);
-}
-function applyMonopolyAction(roomId: string, action: MonopolyRoomAction) {
-  const current = monopolyRooms.value[roomId];
-  if (!current) return false;
-  const next = applyMonopolyRoomAction(current, action);
-  if (next === current || JSON.stringify(next) === JSON.stringify(current)) return false;
-  monopolyRooms.value = { ...monopolyRooms.value, [roomId]: next };
-  updateRoomFromState(roomId, { players: next.seats, updatedAt: next.updatedAt });
-  return true;
-}
-function applyDdzAction(roomId: string, action: DdzActionPayload) {
-  const current = doudizhuRooms.value[roomId];
-  if (!current) return false;
-  const state: DdzTableState = cloneDdzState(current);
-  if (action.action === "join") {
-    if (state.players.length >= 3 || state.players.some((player) => player.deviceId === action.player.deviceId)) return false;
-    state.players.push(action.player);
-    state.logs.push(`${action.player.nickname} 加入房间`);
-  }
-  if (action.action === "ready") {
-    state.players = state.players.map((player) => player.deviceId === action.playerId ? { ...player, ready: action.ready } : player);
-    const player = state.players.find((item) => item.deviceId === action.playerId);
-    state.logs.push(`${player?.nickname ?? "玩家"}${action.ready ? "已准备" : "取消准备"}`);
-  }
-  if (action.action === "bid") {
-    applyBidAction(state, action.playerId, action.call);
-  }
-  if (action.action === "play") {
-    const ok = applyPlayAction(state, action.playerId, action.cardIds);
-    if (!ok) return false;
-  }
-  if (action.action === "pass") {
-    const ok = applyPassAction(state, action.playerId);
-    if (!ok) return false;
-  }
-  if (action.action === "leave") {
-    const leaving = state.players.find((player) => player.deviceId === action.playerId);
-    state.players = state.players.filter((player) => player.deviceId !== action.playerId);
-    delete state.hands[action.playerId];
-    state.logs.push(`${leaving?.nickname ?? "玩家"} 退出房间`);
-    if (state.phase === "bidding" || state.phase === "playing") {
-      state.phase = "ended";
-      state.turnDeviceId = undefined;
-      state.turnStartedAt = undefined;
-      state.winnerName = "房间人数不足，本局结束";
-    }
-  }
-  if (action.action === "chat") {
-    state.chatMessages.push(action.message);
-  }
-  state.updatedAt = Date.now();
-  maybeAutoStartDdz(state);
-  doudizhuRooms.value = { ...doudizhuRooms.value, [roomId]: state };
-  updateRoomFromState(roomId, state);
-  return true;
-}
-function cloneDdzState(state: DdzTableState): DdzTableState {
-  return {
-    ...state,
-    players: state.players.map((player) => ({ ...player })),
-    landlordCards: [...state.landlordCards],
-    hands: Object.fromEntries(Object.entries(state.hands).map(([id, cards]) => [id, [...cards]])),
-    bids: { ...state.bids },
-    lastPlay: state.lastPlay ? { ...state.lastPlay, cards: [...state.lastPlay.cards] } : null,
-    chatMessages: state.chatMessages.map((item) => ({ ...item })),
-    logs: [...state.logs],
-  };
-}
-function applyMinesweeperAction(roomId: string, action: MinesweeperActionPayload) {
-  const current = minesweeperRooms.value[roomId];
-  if (!current) return false;
-  const state = cloneMinesweeperState(current);
-  if (action.action === "join") {
-    if (state.phase !== "lobby" || state.players.length >= 6 || state.players.some((player) => player.deviceId === action.player.deviceId)) return false;
-    state.players.push({ ...action.player });
-    state.logs.push(`${action.player.nickname} 加入房间`);
-  }
-  if (action.action === "ready") {
-    state.players = state.players.map((player) => player.deviceId === action.playerId ? { ...player, ready: action.ready } : player);
-    const player = state.players.find((item) => item.deviceId === action.playerId);
-    state.logs.push(`${player?.nickname ?? "玩家"}${action.ready ? "已准备" : "取消准备"}`);
-  }
-  if (action.action === "difficulty") {
-    const room = gameRoomsState.value.find((item) => item.roomId === roomId);
-    const allowed = state.phase === "lobby" && room?.hostDeviceId === action.playerId;
-    if (!allowed) return false;
-    state.width = action.width;
-    state.height = action.height;
-    state.mines = action.mines;
-    state.seed = Date.now();
-    state.boards = {};
-    state.players = state.players.map((player) => ({ ...player, ready: false }));
-    state.logs.push(`难度切换为 ${minesweeperDifficultyLabel(action.width, action.height, action.mines)}，${action.mines} 雷`);
-  }
-  if (action.action === "reveal") {
-    const ok = applyMinesweeperBoardAction(state, action.playerId, "reveal", { x: action.x, y: action.y });
-    if (!ok) return false;
-  }
-  if (action.action === "flag") {
-    const ok = applyMinesweeperBoardAction(state, action.playerId, "flag", { x: action.x, y: action.y });
-    if (!ok) return false;
-  }
-  if (action.action === "chord") {
-    const ok = applyMinesweeperBoardAction(state, action.playerId, "chord", { x: action.x, y: action.y });
-    if (!ok) return false;
-  }
-  if (action.action === "leave") {
-    const leaving = state.players.find((player) => player.deviceId === action.playerId);
-    state.players = state.players.filter((player) => player.deviceId !== action.playerId);
-    delete state.boards[action.playerId];
-    state.logs.push(`${leaving?.nickname ?? "玩家"} 退出房间`);
-    if (state.phase === "playing" && !state.winnerDeviceId && state.players.filter((player) => state.boards[player.deviceId]?.status === "playing").length <= 1) {
-      const survivor = state.players.find((player) => state.boards[player.deviceId]?.status === "playing");
-      if (survivor) finishMinesweeperWithWinner(state, survivor.deviceId);
-    }
-  }
-  if (action.action === "chat") {
-    state.chatMessages.push(action.message);
-  }
-  state.updatedAt = Date.now();
-  maybeAutoStartMinesweeper(state);
-  minesweeperRooms.value = { ...minesweeperRooms.value, [roomId]: state };
-  updateRoomFromState(roomId, state);
-  return true;
-}
-function cloneMinesweeperState(state: MinesweeperTableState): MinesweeperTableState {
-  return {
-    ...state,
-    players: state.players.map((player) => ({ ...player })),
-    boards: Object.fromEntries(Object.entries(state.boards).map(([id, boardState]) => [id, {
-      ...boardState,
-      board: cloneMinesweeperBoard(boardState.board),
-    }])),
-    chatMessages: state.chatMessages.map((item) => ({ ...item })),
-    logs: [...state.logs],
-  };
-}
-function maybeAutoStartMinesweeper(state: MinesweeperTableState) {
-  if (state.phase !== "lobby" || state.players.length < 1 || !state.players.every((player) => player.ready)) return;
-  const seed = Date.now();
-  state.seed = seed;
-  state.phase = "playing";
-  state.winnerDeviceId = undefined;
-  state.winnerName = undefined;
-  state.boards = Object.fromEntries(state.players.map((player) => [player.deviceId, createMinesweeperPlayerState(state, seed)]));
-  state.logs.push(`扫雷竞速开始：${state.width}x${state.height}，${state.mines} 颗雷`);
-}
-function createMinesweeperPlayerState(state: MinesweeperTableState, seed = state.seed): MinesweeperPlayerState {
-  const board = createMinesweeperBoard({ width: state.width, height: state.height, mines: state.mines, seed });
-  const progress = getMinesweeperProgress(board);
-  return {
-    board,
-    status: "playing",
-    moves: 0,
-    startedAt: Date.now(),
-    revealedSafe: progress.revealedSafe,
-    totalSafe: progress.totalSafe,
-    flagged: progress.flagged,
-  };
-}
-function applyMinesweeperBoardAction(state: MinesweeperTableState, playerId: string, action: "reveal" | "flag" | "chord", point: MinesweeperPoint) {
-  if (state.phase !== "playing") return false;
-  const player = state.players.find((item) => item.deviceId === playerId);
-  const boardState = state.boards[playerId];
-  if (!player || !boardState || boardState.status !== "playing") return false;
-  const result = action === "reveal"
-    ? revealMinesweeperCell(boardState.board, point)
-    : action === "flag"
-      ? toggleMinesweeperFlag(boardState.board, point)
-      : chordRevealMinesweeperCell(boardState.board, point);
-  if (!result.ok || !result.changed) return false;
-  const progress = getMinesweeperProgress(result.board);
-  state.boards[playerId] = {
-    ...boardState,
-    board: result.board,
-    moves: boardState.moves + 1,
-    status: result.lost ? "lost" : result.won ? "won" : "playing",
-    finishedAt: result.lost || result.won ? Date.now() : boardState.finishedAt,
-    revealedSafe: progress.revealedSafe,
-    totalSafe: progress.totalSafe,
-    flagged: progress.flagged,
-  };
-  if (result.lost) {
-    state.logs.push(`${player.nickname} 踩雷出局`);
-    maybeFinishMinesweeperBySurvivor(state);
-    return true;
-  }
-  if (result.won) {
-    finishMinesweeperWithWinner(state, playerId);
-    return true;
-  }
-  return true;
-}
-function maybeFinishMinesweeperBySurvivor(state: MinesweeperTableState) {
-  const playing = state.players.filter((player) => state.boards[player.deviceId]?.status === "playing");
-  if (playing.length === 1) finishMinesweeperWithWinner(state, playing[0]!.deviceId);
-  if (playing.length === 0 && !state.winnerDeviceId) {
-    state.phase = "ended";
-    state.winnerName = "全部失败，本局结束";
-  }
-}
-function finishMinesweeperWithWinner(state: MinesweeperTableState, winnerId: string) {
-  const winner = state.players.find((player) => player.deviceId === winnerId);
-  if (!winner) return;
-  const boardState = state.boards[winnerId];
-  if (boardState) {
-    state.boards[winnerId] = { ...boardState, status: "won", finishedAt: boardState.finishedAt ?? Date.now() };
-  }
-  state.phase = "ended";
-  state.winnerDeviceId = winnerId;
-  state.winnerName = winner.nickname;
-  state.logs.push(`${winner.nickname} 完成扫雷，获得胜利`);
-}
-function applyGomokuAction(roomId: string, action: GomokuActionPayload) {
-  const current = gomokuRooms.value[roomId];
-  if (!current) return false;
-  const state = cloneGomokuState(current);
-  if (action.action === "join") {
-    if (state.phase !== "lobby" || state.players.length >= 2 || state.players.some((player) => player.deviceId === action.player.deviceId)) return false;
-    state.players.push({ ...action.player, stone: undefined });
-    state.logs.push(`${action.player.nickname} 加入房间`);
-  }
-  if (action.action === "ready") {
-    state.players = state.players.map((player) => player.deviceId === action.playerId ? { ...player, ready: action.ready } : player);
-    const player = state.players.find((item) => item.deviceId === action.playerId);
-    state.logs.push(`${player?.nickname ?? "玩家"}${action.ready ? "已准备" : "取消准备"}`);
-  }
-  if (action.action === "move") {
-    const ok = applyGomokuMoveAction(state, action.playerId, action.x, action.y);
-    if (!ok) return false;
-  }
-  if (action.action === "undo_request") {
-    const ok = applyGomokuUndoRequestAction(state, action.playerId);
-    if (!ok) return false;
-  }
-  if (action.action === "undo_response") {
-    const ok = applyGomokuUndoResponseAction(state, action.playerId, action.accepted);
-    if (!ok) return false;
-  }
-  if (action.action === "resign") {
-    const ok = applyGomokuResignAction(state, action.playerId);
-    if (!ok) return false;
-  }
-  if (action.action === "leave") {
-    const leaving = state.players.find((player) => player.deviceId === action.playerId);
-    state.players = state.players.filter((player) => player.deviceId !== action.playerId);
-    state.logs.push(`${leaving?.nickname ?? "玩家"} 退出房间`);
-    if (state.phase === "playing") {
-      state.phase = "ended";
-      state.turnDeviceId = undefined;
-      state.turnStartedAt = undefined;
-      state.winnerName = "对方退出，本局结束";
-    }
-  }
-  if (action.action === "chat") {
-    state.chatMessages.push(action.message);
-  }
-  state.updatedAt = Date.now();
-  maybeAutoStartGomoku(state);
-  gomokuRooms.value = { ...gomokuRooms.value, [roomId]: state };
-  updateRoomFromState(roomId, state);
-  return true;
-}
-function cloneGomokuState(state: GomokuTableState): GomokuTableState {
-  return {
-    ...state,
-    players: state.players.map((player) => ({ ...player })),
-    board: cloneGomokuBoard(state.board),
-    moves: state.moves.map((move) => ({ ...move })),
-    winLine: state.winLine.map((point) => ({ ...point })),
-    pendingUndo: state.pendingUndo ? { ...state.pendingUndo } : undefined,
-    chatMessages: state.chatMessages.map((item) => ({ ...item })),
-    logs: [...state.logs],
-  };
-}
-function maybeAutoStartGomoku(state: GomokuTableState) {
-  if (state.phase !== "lobby" || state.players.length !== 2 || !state.players.every((player) => player.ready)) return;
-  state.board = createGomokuBoard();
-  state.moves = [];
-  state.winLine = [];
-  state.winnerDeviceId = undefined;
-  state.winnerName = undefined;
-  state.winnerStone = undefined;
-  state.pendingUndo = undefined;
-  state.players = state.players.map((player, index) => ({ ...player, stone: index === 0 ? "black" : "white" }));
-  state.phase = "playing";
-  setGomokuTurn(state, state.players[0]?.deviceId);
-  state.logs.push(`${state.players[0]?.nickname ?? "玩家"} 执黑先行`);
-}
-function applyGomokuMoveAction(state: GomokuTableState, playerId: string, x: number, y: number) {
-  if (state.phase !== "playing" || state.turnDeviceId !== playerId || state.pendingUndo) return false;
-  const player = state.players.find((item) => item.deviceId === playerId);
-  if (!player?.stone) return false;
-  const result = placeGomokuStone(state.board, { x, y }, player.stone);
-  if (!result.ok) return false;
-  state.board = result.board;
-  state.moves.push({ x, y, playerId, playerName: player.nickname, stone: player.stone, createdAt: Date.now() });
-  state.logs.push(`${player.nickname} 落 ${gomokuStoneLabel(player.stone)} (${x + 1}, ${y + 1})`);
-  if (result.winner) {
-    state.phase = "ended";
-    state.turnDeviceId = undefined;
-    state.turnStartedAt = undefined;
-    state.winnerDeviceId = playerId;
-    state.winnerName = player.nickname;
-    state.winnerStone = result.winner;
-    state.winLine = result.winLine ?? [];
-    state.logs.push(`${player.nickname} 五连获胜`);
-    return true;
-  }
-  if (result.draw) {
-    state.phase = "ended";
-    state.turnDeviceId = undefined;
-    state.turnStartedAt = undefined;
-    state.winnerName = undefined;
-    state.winLine = [];
-    state.logs.push("棋盘已满，本局平局");
-    return true;
-  }
-  setGomokuTurn(state, nextGomokuPlayerId(state, playerId));
-  return true;
-}
-function applyGomokuUndoRequestAction(state: GomokuTableState, playerId: string) {
-  if (state.phase !== "playing" || state.pendingUndo || state.moves.length === 0) return false;
-  const player = state.players.find((item) => item.deviceId === playerId);
-  if (!player) return false;
-  state.pendingUndo = { requesterId: playerId, requesterName: player.nickname, createdAt: Date.now() };
-  state.logs.push(`${player.nickname} 请求悔棋`);
-  return true;
-}
-function applyGomokuUndoResponseAction(state: GomokuTableState, playerId: string, accepted: boolean) {
-  if (state.phase !== "playing" || !state.pendingUndo || state.pendingUndo.requesterId === playerId) return false;
-  const responder = state.players.find((item) => item.deviceId === playerId);
-  const requesterName = state.pendingUndo.requesterName;
-  const lastMove = state.moves[state.moves.length - 1];
-  state.pendingUndo = undefined;
-  if (!accepted) {
-    state.logs.push(`${responder?.nickname ?? "玩家"} 拒绝 ${requesterName} 的悔棋请求`);
-    return true;
-  }
-  if (!lastMove) return false;
-  state.moves = state.moves.slice(0, -1);
-  let board = createGomokuBoard();
-  let winLine: GomokuPoint[] = [];
-  let winner: GomokuStone | null = null;
-  for (const move of state.moves) {
-    const placed = placeGomokuStone(board, { x: move.x, y: move.y }, move.stone);
-    if (placed.ok) {
-      board = placed.board;
-      winner = placed.winner ?? null;
-      winLine = placed.winLine ?? [];
-    }
-  }
-  state.board = board;
-  state.winnerDeviceId = undefined;
-  state.winnerName = undefined;
-  state.winnerStone = winner ?? undefined;
-  state.winLine = winLine;
-  setGomokuTurn(state, lastMove.playerId);
-  state.logs.push(`${responder?.nickname ?? "玩家"} 同意悔棋，撤回 ${lastMove.playerName} 的落子`);
-  return true;
-}
-function applyGomokuResignAction(state: GomokuTableState, playerId: string) {
-  if (state.phase !== "playing") return false;
-  const player = state.players.find((item) => item.deviceId === playerId);
-  const winner = state.players.find((item) => item.deviceId !== playerId);
-  if (!player || !winner) return false;
-  state.phase = "ended";
-  state.turnDeviceId = undefined;
-  state.turnStartedAt = undefined;
-  state.pendingUndo = undefined;
-  state.winnerDeviceId = winner.deviceId;
-  state.winnerName = winner.nickname;
-  state.winnerStone = winner.stone;
-  state.logs.push(`${player.nickname} 投降，${winner.nickname} 获胜`);
-  return true;
-}
-function setGomokuTurn(state: GomokuTableState, playerId?: string) {
-  state.turnDeviceId = playerId;
-  state.turnStartedAt = playerId ? Date.now() : undefined;
-}
-function nextGomokuPlayerId(state: GomokuTableState, currentId: string) {
-  const index = state.players.findIndex((player) => player.deviceId === currentId);
-  return state.players[(index + 1) % state.players.length]?.deviceId;
-}
-function applyXiangqiAction(roomId: string, action: XiangqiActionPayload) {
-  const current = xiangqiRooms.value[roomId];
-  if (!current) return false;
-  const state = cloneXiangqiState(current);
-  if (action.action === "join") {
-    if (state.phase !== "lobby" || state.players.length >= 2 || state.players.some((player) => player.deviceId === action.player.deviceId)) return false;
-    state.players.push({ ...action.player, side: undefined });
-    state.logs.push(`${action.player.nickname} 加入房间`);
-  }
-  if (action.action === "ready") {
-    state.players = state.players.map((player) => player.deviceId === action.playerId ? { ...player, ready: action.ready } : player);
-    const player = state.players.find((item) => item.deviceId === action.playerId);
-    state.logs.push(`${player?.nickname ?? "玩家"}${action.ready ? "已准备" : "取消准备"}`);
-  }
-  if (action.action === "move") {
-    const ok = applyXiangqiMoveAction(state, action.playerId, action.from, action.to);
-    if (!ok) return false;
-  }
-  if (action.action === "undo_request") {
-    const ok = applyXiangqiUndoRequestAction(state, action.playerId);
-    if (!ok) return false;
-  }
-  if (action.action === "undo_response") {
-    const ok = applyXiangqiUndoResponseAction(state, action.playerId, action.accepted);
-    if (!ok) return false;
-  }
-  if (action.action === "resign") {
-    const ok = applyXiangqiResignAction(state, action.playerId);
-    if (!ok) return false;
-  }
-  if (action.action === "leave") {
-    const leaving = state.players.find((player) => player.deviceId === action.playerId);
-    state.players = state.players.filter((player) => player.deviceId !== action.playerId);
-    state.logs.push(`${leaving?.nickname ?? "玩家"} 退出房间`);
-    if (state.phase === "playing") {
-      state.phase = "ended";
-      state.turnDeviceId = undefined;
-      state.turnStartedAt = undefined;
-      state.winnerName = "对方退出，本局结束";
-    }
-  }
-  if (action.action === "chat") {
-    state.chatMessages.push(action.message);
-  }
-  state.updatedAt = Date.now();
-  maybeAutoStartXiangqi(state);
-  xiangqiRooms.value = { ...xiangqiRooms.value, [roomId]: state };
-  updateRoomFromState(roomId, state);
-  return true;
-}
-function cloneXiangqiState(state: XiangqiTableState): XiangqiTableState {
-  return {
-    ...state,
-    players: state.players.map((player) => ({ ...player })),
-    board: cloneXiangqiBoard(state.board),
-    moves: state.moves.map((move) => ({ ...move, from: { ...move.from }, to: { ...move.to }, piece: move.piece ? { ...move.piece } : undefined, captured: move.captured ? { ...move.captured } : move.captured, previousCheckSide: move.previousCheckSide })),
-    pendingUndo: state.pendingUndo ? { ...state.pendingUndo } : undefined,
-    chatMessages: state.chatMessages.map((item) => ({ ...item })),
-    logs: [...state.logs],
-  };
-}
-function maybeAutoStartXiangqi(state: XiangqiTableState) {
-  if (state.phase !== "lobby" || state.players.length !== 2 || !state.players.every((player) => player.ready)) return;
-  state.board = createXiangqiBoard();
-  state.moves = [];
-  state.winnerDeviceId = undefined;
-  state.winnerName = undefined;
-  state.winnerSide = undefined;
-  state.checkSide = undefined;
-  state.pendingUndo = undefined;
-  state.players = state.players.map((player, index) => ({ ...player, side: index === 0 ? "red" : "black" }));
-  state.phase = "playing";
-  setXiangqiTurn(state, state.players.find((player) => player.side === "red")?.deviceId);
-  state.logs.push(`${state.players.find((player) => player.side === "red")?.nickname ?? "玩家"} 执红先行`);
-}
-function applyXiangqiMoveAction(state: XiangqiTableState, playerId: string, from: XiangqiPoint, to: XiangqiPoint) {
-  if (state.phase !== "playing" || state.turnDeviceId !== playerId || state.pendingUndo) return false;
-  const player = state.players.find((item) => item.deviceId === playerId);
-  if (!player?.side) return false;
-  const movingPiece = state.board[from.y]?.[from.x] ?? null;
-  if (!movingPiece || movingPiece.side !== player.side) return false;
-  const capturedPiece = state.board[to.y]?.[to.x] ?? null;
-  const result = moveXiangqiPiece(state.board, from, to, player.side);
-  if (!result.ok) return false;
-  state.board = result.board;
-  const capturedLabel = result.captured ? xiangqiPieceLabel(result.captured) : undefined;
-  state.moves.push({
-    from: { ...from },
-    to: { ...to },
-    playerId,
-    playerName: player.nickname,
-    side: player.side,
-    piece: { ...movingPiece },
-    captured: capturedPiece ? { ...capturedPiece } : null,
-    previousCheckSide: state.checkSide,
-    pieceLabel: xiangqiPieceLabel(movingPiece),
-    capturedLabel,
-    createdAt: Date.now(),
-  });
-  state.logs.push(`${player.nickname} ${xiangqiPieceLabel(movingPiece)} ${from.x + 1},${from.y + 1} → ${to.x + 1},${to.y + 1}${capturedLabel ? `，吃 ${capturedLabel}` : ""}`);
-  if (result.winner) {
-    state.phase = "ended";
-    state.turnDeviceId = undefined;
-    state.turnStartedAt = undefined;
-    state.winnerDeviceId = playerId;
-    state.winnerName = player.nickname;
-    state.winnerSide = result.winner;
-    state.checkSide = undefined;
-    state.logs.push(`${player.nickname} 获胜`);
-    return true;
-  }
-  state.checkSide = result.check ? otherXiangqiSide(player.side) : undefined;
-  setXiangqiTurn(state, nextXiangqiPlayerId(state, playerId));
-  return true;
-}
-function applyXiangqiUndoAction(state: XiangqiTableState, playerId: string) {
-  if (state.phase !== "playing" || !state.players.some((player) => player.deviceId === playerId)) return false;
-  const lastMove = state.moves[state.moves.length - 1];
-  if (!lastMove?.piece) return false;
-  state.board = undoXiangqiMove(state.board, {
-    from: lastMove.from,
-    to: lastMove.to,
-    piece: lastMove.piece,
-    captured: lastMove.captured ?? null,
-  });
-  state.moves = state.moves.slice(0, -1);
-  state.winnerDeviceId = undefined;
-  state.winnerName = undefined;
-  state.winnerSide = undefined;
-  state.checkSide = lastMove.previousCheckSide;
-  setXiangqiTurn(state, lastMove.playerId);
-  const operator = state.players.find((player) => player.deviceId === playerId)?.nickname ?? "玩家";
-  state.pendingUndo = undefined;
-  state.logs.push(`${operator} 悔棋，撤回 ${lastMove.playerName} 的 ${lastMove.pieceLabel}`);
-  return true;
-}
-function applyXiangqiUndoRequestAction(state: XiangqiTableState, playerId: string) {
-  if (state.phase !== "playing" || state.pendingUndo || state.moves.length === 0) return false;
-  const player = state.players.find((item) => item.deviceId === playerId);
-  if (!player) return false;
-  state.pendingUndo = { requesterId: playerId, requesterName: player.nickname, createdAt: Date.now() };
-  state.logs.push(`${player.nickname} 请求悔棋`);
-  return true;
-}
-function applyXiangqiUndoResponseAction(state: XiangqiTableState, playerId: string, accepted: boolean) {
-  if (state.phase !== "playing" || !state.pendingUndo || state.pendingUndo.requesterId === playerId) return false;
-  const responder = state.players.find((item) => item.deviceId === playerId);
-  const requesterId = state.pendingUndo.requesterId;
-  const requesterName = state.pendingUndo.requesterName;
-  if (!accepted) {
-    state.pendingUndo = undefined;
-    state.logs.push(`${responder?.nickname ?? "玩家"} 拒绝 ${requesterName} 的悔棋请求`);
-    return true;
-  }
-  const ok = applyXiangqiUndoAction(state, requesterId);
-  if (ok) state.logs.push(`${responder?.nickname ?? "玩家"} 同意 ${requesterName} 的悔棋请求`);
-  return ok;
-}
-function applyXiangqiResignAction(state: XiangqiTableState, playerId: string) {
-  if (state.phase !== "playing") return false;
-  const player = state.players.find((item) => item.deviceId === playerId);
-  if (!player?.side) return false;
-  const winnerSide = resignXiangqiSide(player.side);
-  const winner = state.players.find((item) => item.side === winnerSide);
-  state.phase = "ended";
-  state.turnDeviceId = undefined;
-  state.turnStartedAt = undefined;
-  state.winnerDeviceId = winner?.deviceId;
-  state.winnerName = winner?.nickname ?? xiangqiSideLabel(winnerSide);
-  state.winnerSide = winnerSide;
-  state.checkSide = undefined;
-  state.pendingUndo = undefined;
-  state.logs.push(`${player.nickname} 投降，${state.winnerName} 获胜`);
-  return true;
-}
-function setXiangqiTurn(state: XiangqiTableState, playerId?: string) {
-  state.turnDeviceId = playerId;
-  state.turnStartedAt = playerId ? Date.now() : undefined;
-}
-function nextXiangqiPlayerId(state: XiangqiTableState, currentId: string) {
-  const index = state.players.findIndex((player) => player.deviceId === currentId);
-  return state.players[(index + 1) % state.players.length]?.deviceId;
-}
-function maybeAutoStartDdz(state: DdzTableState) {
-  if (state.phase !== "lobby" || state.players.length !== 3 || !state.players.every((player) => player.ready)) return;
-  const { hands, landlordCards } = dealHands(state.players);
-  state.hands = hands;
-  state.landlordCards = landlordCards;
-  state.players = state.players.map((player) => ({ ...player, handCount: hands[player.deviceId]?.length ?? 0, role: undefined }));
-  state.phase = "bidding";
-  state.bidOrder = state.players.map((player) => player.deviceId);
-  state.bidIndex = 0;
-  state.bids = {};
-  setDdzTurn(state, state.bidOrder[0]);
-  state.lastPlay = null;
-  state.passCount = 0;
-  state.winnerDeviceId = undefined;
-  state.winnerName = undefined;
-  state.logs.push("三人已准备，开始叫地主");
-}
-function applyBidAction(state: DdzTableState, playerId: string, call: boolean) {
-  if (state.phase !== "bidding" || state.turnDeviceId !== playerId) return;
-  state.bids[playerId] = call;
-  const player = state.players.find((item) => item.deviceId === playerId);
-  state.logs.push(`${player?.nickname ?? "玩家"}${call ? "叫地主" : "不叫"}`);
-  if (call || state.bidIndex >= state.bidOrder.length - 1) {
-    const landlordId = call ? playerId : state.bidOrder[0];
-    state.landlordDeviceId = landlordId;
-    state.players = state.players.map((item) => ({ ...item, role: item.deviceId === landlordId ? "landlord" : "farmer" }));
-    state.hands[landlordId] = sortCards([...(state.hands[landlordId] ?? []), ...state.landlordCards]);
-    state.players = state.players.map((item) => ({ ...item, handCount: state.hands[item.deviceId]?.length ?? 0 }));
-    state.phase = "playing";
-    setDdzTurn(state, landlordId);
-    state.logs.push(`${state.players.find((item) => item.deviceId === landlordId)?.nickname ?? "玩家"} 成为地主`);
-    return;
-  }
-  state.bidIndex += 1;
-  setDdzTurn(state, state.bidOrder[state.bidIndex]);
-}
-function applyPlayAction(state: DdzTableState, playerId: string, cardIds: string[]) {
-  if (state.phase !== "playing" || state.turnDeviceId !== playerId) return false;
-  const hand = state.hands[playerId] ?? [];
-  const cards = sortCards(hand.filter((card) => cardIds.includes(card.id)));
-  if (cards.length !== cardIds.length) return false;
-  const leading = !state.lastPlay || state.lastPlay.playerId === playerId;
-  const evaluated = evaluatePlay(cards);
-  if (!evaluated || !canBeat(cards, leading ? null : state.lastPlay)) return false;
-  const player = state.players.find((item) => item.deviceId === playerId);
-  state.hands[playerId] = hand.filter((card) => !cardIds.includes(card.id));
-  state.lastPlay = { ...evaluated, playerId, playerName: player?.nickname ?? "玩家", cards };
-  state.passCount = 0;
-  state.players = state.players.map((item) => item.deviceId === playerId ? { ...item, handCount: state.hands[playerId].length } : item);
-  state.logs.push(`${player?.nickname ?? "玩家"} 打出 ${playLabel(evaluated)}`);
-  if (state.hands[playerId].length === 0) {
-    state.phase = "ended";
-    state.turnDeviceId = undefined;
-    state.turnStartedAt = undefined;
-    state.winnerDeviceId = playerId;
-    state.winnerName = player?.nickname ?? "玩家";
-    state.logs.push(`${state.winnerName} 获胜`);
-    return true;
-  }
-  setDdzTurn(state, nextDdzPlayerId(state, playerId));
-  return true;
-}
-function applyPassAction(state: DdzTableState, playerId: string) {
-  if (state.phase !== "playing" || state.turnDeviceId !== playerId || !state.lastPlay || state.lastPlay.playerId === playerId) return false;
-  const player = state.players.find((item) => item.deviceId === playerId);
-  state.logs.push(`${player?.nickname ?? "玩家"} 不要`);
-  state.passCount += 1;
-  if (state.passCount >= state.players.length - 1) {
-    setDdzTurn(state, state.lastPlay.playerId);
-    state.lastPlay = null;
-    state.passCount = 0;
-  } else {
-    setDdzTurn(state, nextDdzPlayerId(state, playerId));
-  }
-  return true;
-}
-function setDdzTurn(state: DdzTableState, playerId?: string) {
-  state.turnDeviceId = playerId;
-  state.turnStartedAt = playerId ? Date.now() : undefined;
-}
-async function handleTurnTimeout(state: DdzTableState) {
-  if (!profile.value || state.turnDeviceId !== profile.value.device_id || !isTurnTimedOut(state.turnStartedAt, nowTick.value, DDZ_TURN_TIMEOUT_MS)) return;
-  autoTurnRunning = true;
-  try {
-    if (state.phase === "bidding") {
-      await sendRoomAction({ action: "bid", playerId: profile.value.device_id, call: false });
-      return;
-    }
-    if (state.phase === "playing") {
-      if (canPassDdz.value) {
-        selectedCardIds.value = [];
-        await sendRoomAction({ action: "pass", playerId: profile.value.device_id });
-        return;
-      }
-      const fallbackCard = myDdzHand.value[0];
-      if (fallbackCard) {
-        selectedCardIds.value = [];
-        await sendRoomAction({ action: "play", playerId: profile.value.device_id, cardIds: [fallbackCard.id] });
-      }
-    }
-  } finally {
-    autoTurnRunning = false;
-  }
-}
-async function handleGomokuTurnTimeout(state: GomokuTableState) {
-  if (!profile.value || state.pendingUndo || state.turnDeviceId !== profile.value.device_id || !isGomokuTurnTimedOut(state.turnStartedAt, nowTick.value, GOMOKU_TURN_TIMEOUT_MS)) return;
-  const point = chooseAutoGomokuPoint(state.board);
-  if (!point) return;
-  autoTurnRunning = true;
-  try {
-    await sendRoomAction({ action: "move", playerId: profile.value.device_id, x: point.x, y: point.y });
-  } finally {
-    autoTurnRunning = false;
-  }
-}
-function nextDdzPlayerId(state: DdzTableState, currentId: string) {
-  const index = state.players.findIndex((player) => player.deviceId === currentId);
-  return state.players[(index + 1) % state.players.length]?.deviceId;
-}
-function monopolyAnnouncementAvatarPlayers(announcement: MonopolyRoomAnnouncement): MonopolyPlayer[] {
-  const players = activeMonopolyState.value?.game.players ?? [];
-  const matched = players.filter((player) => announcement.text.includes(player.nickname)).slice(0, 2);
-  return matched.sort((left, right) => announcement.text.indexOf(left.nickname) - announcement.text.indexOf(right.nickname));
-}
-function isMonopolyTokenMoving(playerId: string): boolean {
-  return monopolyMovingPlayerIds.value.includes(playerId);
-}
-function playMonopolyDiceAnimation(finalFaces: number[]): void {
-  if (monopolyDiceRollTimer) window.clearInterval(monopolyDiceRollTimer);
-  if (monopolyDiceSettleTimer) window.clearTimeout(monopolyDiceSettleTimer);
-  monopolyDiceResultVisible.value = false;
-  monopolyDiceRolling.value = true;
-  monopolyDiceFaces.value = finalFaces.map(() => Math.floor(Math.random() * 6) + 1);
-  monopolyDiceRollTimer = window.setInterval(() => {
-    monopolyDiceFaces.value = finalFaces.map(() => Math.floor(Math.random() * 6) + 1);
-  }, 86);
-  monopolyDiceSettleTimer = window.setTimeout(() => {
-    if (monopolyDiceRollTimer) window.clearInterval(monopolyDiceRollTimer);
-    monopolyDiceRollTimer = undefined;
-    monopolyDiceFaces.value = [...finalFaces];
-    monopolyDiceRolling.value = false;
-    monopolyDiceResultVisible.value = true;
-    monopolyDiceSettleTimer = undefined;
-  }, 620);
-}
-function showNextMonopolyAnnouncement(): void {
-  while (monopolyAnnouncementQueue.value.length > 0) {
-    const next = monopolyAnnouncementQueue.value.shift();
-    if (!next) return;
-    activeMonopolyAnnouncements.value = [...activeMonopolyAnnouncements.value, next].slice(-3);
-  }
-}
-function shouldDelayMonopolyAnnouncementUntilMovement(announcement: MonopolyRoomAnnouncement): boolean {
-  return /前进了|经过起点|踩中了|过路费|财神|穷鬼|天使|恶魔/.test(announcement.text);
-}
-function monopolyAnnouncementMovementPlayer(announcement: MonopolyRoomAnnouncement): MonopolyPlayer | null {
-  return monopolyAnnouncementAvatarPlayers(announcement)[0] ?? null;
-}
-function queueMonopolyAnnouncement(announcement: MonopolyRoomAnnouncement): void {
-  monopolyAnnouncementQueue.value = [...monopolyAnnouncementQueue.value, announcement];
-  showNextMonopolyAnnouncement();
-}
-function flushDelayedMonopolyAnnouncements(): void {
-  const delayed = monopolyDelayedAnnouncements.value;
-  if (!delayed.length) return;
-  const waiting: MonopolyRoomAnnouncement[] = [];
-  for (const announcement of delayed) {
-    const player = monopolyAnnouncementMovementPlayer(announcement);
-    if (player && shouldDelayMonopolyAnnouncementUntilMovement(announcement) && isMonopolyTokenMoving(player.deviceId)) waiting.push(announcement);
-    else queueMonopolyAnnouncement(announcement);
-  }
-  monopolyDelayedAnnouncements.value = waiting;
-}
-function enqueueMonopolyAnnouncement(announcement: MonopolyRoomAnnouncement): void {
-  if (seenMonopolyAnnouncementIds.has(announcement.id) || activeMonopolyAnnouncements.value.some((item) => item.id === announcement.id) || monopolyAnnouncementQueue.value.some((item) => item.id === announcement.id) || monopolyDelayedAnnouncements.value.some((item) => item.id === announcement.id)) return;
-  seenMonopolyAnnouncementIds.add(announcement.id);
-  const player = monopolyAnnouncementMovementPlayer(announcement);
-  if (player && shouldDelayMonopolyAnnouncementUntilMovement(announcement) && isMonopolyTokenMoving(player.deviceId)) {
-    monopolyDelayedAnnouncements.value = [...monopolyDelayedAnnouncements.value, announcement];
-    return;
-  }
-  queueMonopolyAnnouncement(announcement);
-}
-function monopolyMovementPath(from: number, to: number, direction: MonopolyPlayer["direction"]): number[] {
-  const path: number[] = [];
-  let cursor = from;
-  while (cursor !== to && path.length < 40) {
-    cursor = direction === "clockwise" ? (cursor + 1) % 40 : (cursor + 39) % 40;
-    path.push(cursor);
-  }
-  return path;
-}
-function playMonopolyTokenMovement(player: MonopolyPlayer, from: number, to: number, immediate = false): void {
-  const existingTimer = monopolyMovementTimers.get(player.deviceId);
-  if (existingTimer) window.clearTimeout(existingTimer);
-  if (immediate) {
-    monopolyAnimatedPositions.value = { ...monopolyAnimatedPositions.value, [player.deviceId]: to };
-    monopolyMovingPlayerIds.value = [...new Set([...monopolyMovingPlayerIds.value, player.deviceId])];
-    monopolyMovementTimers.set(player.deviceId, window.setTimeout(() => {
-      const { [player.deviceId]: _, ...rest } = monopolyAnimatedPositions.value;
-      monopolyAnimatedPositions.value = rest;
-      monopolyMovingPlayerIds.value = monopolyMovingPlayerIds.value.filter((item) => item !== player.deviceId);
-      monopolyMovementTimers.delete(player.deviceId);
-      flushDelayedMonopolyAnnouncements();
-    }, 260));
-    return;
-  }
-  const path = monopolyMovementPath(from, to, player.direction);
-  if (!path.length) return;
-  monopolyAnimatedPositions.value = { ...monopolyAnimatedPositions.value, [player.deviceId]: from };
-  monopolyMovingPlayerIds.value = [...new Set([...monopolyMovingPlayerIds.value, player.deviceId])];
-  let step = 0;
-  const advance = () => {
-    const nextPosition = path[step++];
-    if (nextPosition === undefined) {
-      const { [player.deviceId]: _, ...rest } = monopolyAnimatedPositions.value;
-      monopolyAnimatedPositions.value = rest;
-      monopolyMovingPlayerIds.value = monopolyMovingPlayerIds.value.filter((item) => item !== player.deviceId);
-      monopolyMovementTimers.delete(player.deviceId);
-      flushDelayedMonopolyAnnouncements();
-      return;
-    }
-    monopolyAnimatedPositions.value = { ...monopolyAnimatedPositions.value, [player.deviceId]: nextPosition };
-    monopolyMovementTimers.set(player.deviceId, window.setTimeout(advance, 145));
-  };
-  monopolyMovementTimers.set(player.deviceId, window.setTimeout(advance, 145));
-}
-function syncMonopolyTokenPlayback(): void {
-  const state = activeMonopolyState.value;
-  if (!state) {
-    monopolyMovementTimers.forEach((timer) => window.clearTimeout(timer));
-    monopolyMovementTimers.clear();
-    monopolyKnownPositions.clear();
-    monopolyPlaybackRoomId = "";
-    monopolyAnimatedPositions.value = {};
-    monopolyMovingPlayerIds.value = [];
-    monopolyDelayedAnnouncements.value = [];
-    return;
-  }
-  const restartedInSameRoom = state.phase === "lobby"
-    && state.game.players.every((player) => player.position === 0)
-    && [...monopolyKnownPositions.values()].some((position) => position !== 0);
-  if (monopolyPlaybackRoomId !== state.roomId || restartedInSameRoom) {
-    monopolyMovementTimers.forEach((timer) => window.clearTimeout(timer));
-    monopolyMovementTimers.clear();
-    monopolyPlaybackRoomId = state.roomId;
-    monopolyKnownPositions.clear();
-    monopolyAnimatedPositions.value = {};
-    monopolyMovingPlayerIds.value = [];
-    monopolyDelayedAnnouncements.value = [];
-  }
-  const playerIds = new Set(state.game.players.map((player) => player.deviceId));
-  for (const player of state.game.players) {
-    const previousPosition = monopolyKnownPositions.get(player.deviceId);
-    monopolyKnownPositions.set(player.deviceId, player.position);
-    if (previousPosition === undefined) continue;
-    if (previousPosition !== player.position) playMonopolyTokenMovement(player, previousPosition, player.position, shouldTeleportMonopolyToken(player, previousPosition));
-  }
-  for (const playerId of monopolyKnownPositions.keys()) {
-    if (!playerIds.has(playerId)) monopolyKnownPositions.delete(playerId);
-  }
-  flushDelayedMonopolyAnnouncements();
-}
-function shouldTeleportMonopolyToken(player: MonopolyPlayer, previousPosition: number): boolean {
-  return previousPosition === 10 || (player.position === 30 && player.jailTurns > 0);
-}
-async function handleMonopolyTurnTimeout(state: MonopolyRoomState) {
-  const room = activeGameRoom.value;
-  if (!room || !isRoomHost(room) || state.phase !== "playing" || activeMonopolyTurnRemainingSeconds.value > 0) return;
-  const playerId = state.game.currentPlayerId;
-  if (!playerId) return;
-  autoTurnRunning = true;
-  try {
-    if (!state.turnRolled) {
-      await sendRoomAction({ action: "roll", playerId });
-    }
-    let current = activeMonopolyState.value ?? state;
-    if (current.phase !== "playing" || current.game.currentPlayerId !== playerId) return;
-    if (current.pendingLanding?.playerId === playerId) {
-      if (current.pendingLanding.kind === "airport") {
-        await sendRoomAction({ action: "airport", playerId, targetIndex: 0 });
-      } else {
-        await sendRoomAction({ action: "skip_landing", playerId });
-      }
-    }
-    current = activeMonopolyState.value ?? current;
-    if (current.phase === "playing" && current.game.currentPlayerId === playerId && current.turnRolled && !current.pendingLanding) {
-      await sendRoomAction({ action: "end_turn", playerId });
-    }
-  } finally {
-    autoTurnRunning = false;
-  }
-}
-function scheduleMonopolyBotTurns() {
-  const activeRoomIds = new Set<string>();
-  for (const [roomId, state] of Object.entries(monopolyRooms.value)) {
-    const room = gameRoomsState.value.find((item) => item.roomId === roomId);
-    const currentPlayerId = state.game.currentPlayerId;
-    const currentSeat = state.seats.find((seat) => seat.deviceId === currentPlayerId);
-    const shouldRun = !!room && isRoomHost(room) && state.phase === "playing" && !!currentSeat?.isBot;
-    if (!shouldRun) continue;
-    activeRoomIds.add(roomId);
-    if (monopolyBotTurnTimers.has(roomId)) continue;
-    monopolyBotTurnTimers.set(roomId, window.setTimeout(() => {
-      monopolyBotTurnTimers.delete(roomId);
-      void runMonopolyBotTurn(roomId);
-    }, 700));
-  }
-  for (const [roomId, timer] of monopolyBotTurnTimers) {
-    if (activeRoomIds.has(roomId)) continue;
-    window.clearTimeout(timer);
-    monopolyBotTurnTimers.delete(roomId);
-  }
-}
-async function runMonopolyBotTurn(roomId: string) {
-  const room = gameRoomsState.value.find((item) => item.roomId === roomId);
-  const state = monopolyRooms.value[roomId];
-  if (!room || !state || !isRoomHost(room)) return;
-  const botId = state.game.currentPlayerId;
-  const action = planMonopolyBotAction(state, botId);
-  if (!action) return;
-  if (applyMonopolyAction(roomId, action)) await broadcastSnapshot(roomId);
-}
-function rankedGameTypeOf(game: GameType): RankedGameType | null {
-  return game === "doudizhu" || game === "gomoku" || game === "xiangqi" || game === "monopoly" ? game : null;
-}
 function encodePrivateChannelInvite(invite: PrivateChannelInvitePayload) {
   return `${PRIVATE_CHANNEL_INVITE_PREFIX}${JSON.stringify(invite)}`;
 }
@@ -3465,76 +2056,6 @@ async function confirmRecipientPicker() {
     await sendPrivateChannelInviteCards(activeConversation.value.id, selectedTargets);
   }
   recipientPickerOpen.value = false;
-}
-function maybeRecordGameResult(room: GameRoomShell, state: DdzTableState | GomokuTableState | XiangqiTableState | MinesweeperTableState | MonopolyRoomState) {
-  if (state.phase !== "ended") return;
-  if (room.gameType === "minesweeper") {
-    const table = state as MinesweeperTableState;
-    const winnerId = table.winnerDeviceId;
-    const boardState = winnerId ? table.boards[winnerId] : null;
-    if (!winnerId || !boardState?.startedAt || !boardState.finishedAt) return;
-    const key = `minesweeper:${room.roomId}:${winnerId}:${boardState.finishedAt}`;
-    if (recordedGameResultIds.has(key)) return;
-    recordedGameResultIds.add(key);
-    const winner = table.players.find((player) => player.deviceId === winnerId);
-    const record = createMinesweeperLeaderboardRecord({
-      deviceId: winnerId,
-      nickname: winner?.nickname ?? table.winnerName ?? "局域网玩家",
-      width: table.width,
-      height: table.height,
-      mines: table.mines,
-      elapsedMs: boardState.finishedAt - boardState.startedAt,
-      moves: boardState.moves,
-      finishedAt: boardState.finishedAt,
-    });
-    minesweeperLeaderboardRecords.value = upsertMinesweeperLeaderboardRecords(minesweeperLeaderboardRecords.value, [record]);
-    saveMinesweeperLeaderboardRecords();
-    return;
-  }
-  const game = rankedGameTypeOf(room.gameType);
-  if (!game) return;
-  const eligiblePlayers = qualifyingRankedPlayers(room.players);
-  if (eligiblePlayers.length === 0) return;
-  const eligibleDeviceIds = new Set(eligiblePlayers.map((player) => player.deviceId));
-  if (room.gameType === "monopoly") {
-    const table = state as MonopolyRoomState;
-    const key = `${game}:${room.roomId}:${table.updatedAt}:${table.winnerDeviceId ?? "draw"}`;
-    if (recordedGameResultIds.has(key)) return;
-    recordedGameResultIds.add(key);
-    let nextRecords = gameStatsRecords.value;
-    for (const player of table.seats.filter((item) => eligibleDeviceIds.has(item.deviceId))) {
-      nextRecords = incrementGameStats(nextRecords, {
-        game,
-        deviceId: player.deviceId,
-        nickname: player.nickname,
-        won: player.deviceId === table.winnerDeviceId,
-        updatedAt: table.updatedAt,
-      });
-    }
-    gameStatsRecords.value = upsertGameStatsRecords([], nextRecords);
-    saveGameStatsRecords();
-    return;
-  }
-  const rankedState = state as DdzTableState | GomokuTableState | XiangqiTableState;
-  const players = rankedState.players
-    .filter((player) => eligibleDeviceIds.has(player.deviceId))
-    .map((player) => ({ deviceId: player.deviceId, nickname: player.nickname }));
-  const winnerId = rankedState.winnerDeviceId;
-  const key = `${game}:${room.roomId}:${rankedState.updatedAt}:${winnerId ?? "draw"}`;
-  if (recordedGameResultIds.has(key)) return;
-  recordedGameResultIds.add(key);
-  let nextRecords = gameStatsRecords.value;
-  for (const player of players) {
-    nextRecords = incrementGameStats(nextRecords, {
-      game,
-      deviceId: player.deviceId,
-      nickname: player.nickname,
-      won: !!winnerId && player.deviceId === winnerId,
-      updatedAt: rankedState.updatedAt,
-    });
-  }
-  gameStatsRecords.value = upsertGameStatsRecords([], nextRecords);
-  saveGameStatsRecords();
 }
 async function notifyIncomingActivity() {
   await syncTrayAttention();
@@ -5504,8 +4025,8 @@ async function closeWindow() {
             :profile-avatar-label="avatarLabel(profile?.avatar, profile?.nickname)"
             :total-unread="totalUnread"
             :games-available="gamesFeatureAvailable"
-            :game-attention-count="gameAttentionCount"
-            :show-game-attention="showGameAttention"
+            :game-attention-count="0"
+            :show-game-attention="false"
             :pet-alert-enabled="petAlertEnabled"
             :pending-notification-count="pendingAdminNotificationCount"
             :update-available="visibleUpdateAvailable"
