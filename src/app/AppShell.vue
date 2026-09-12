@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
@@ -47,12 +47,7 @@ import { api } from "../services/tauri-api";
 import { pluginApi } from "../services/plugin-api";
 import { callMediaCoordinator } from "../services/callMediaCoordinator";
 import ChatComposerInput from "../components/ChatComposerInput.vue";
-import PluginCenterPage from "../pages/PluginCenterPage.vue";
 import PluginGamesSidebar from "../components/plugins/PluginGamesSidebar.vue";
-import GamesPage from "../pages/GamesPage.vue";
-import AlertsPage from "../pages/AlertsPage.vue";
-import DevicesPage from "../pages/DevicesPage.vue";
-import BasicSystemSettings from "../pages/settings/BasicSystemSettings.vue";
 import AppNavigationRail from "./navigation/AppNavigationRail.vue";
 import { DEFAULT_GROUP_ID, useLanChatStore } from "../stores/lanchat";
 import { useDesktopPetStore } from "../stores/desktopPet";
@@ -71,6 +66,12 @@ import { createPluginHostHandlers } from "../plugin-host/runtime/createHostHandl
 import { PluginRoomService } from "../plugin-host/services/PluginRoomService";
 import { PluginLeaderboardService } from "../plugin-host/services/PluginLeaderboardService";
 import type { AlertFeedbackResult, AlertRecord } from "../features/alerts/types";
+
+const PluginCenterPage = defineAsyncComponent(() => import("../pages/PluginCenterPage.vue"));
+const GamesPage = defineAsyncComponent(() => import("../pages/GamesPage.vue"));
+const AlertsPage = defineAsyncComponent(() => import("../pages/AlertsPage.vue"));
+const DevicesPage = defineAsyncComponent(() => import("../pages/DevicesPage.vue"));
+const BasicSystemSettings = defineAsyncComponent(() => import("../pages/settings/BasicSystemSettings.vue"));
 
 type UiThemeKey = "theme-dingtalk" | "theme-work" | "theme-lan" | "theme-light";
 type MainSection = "chat" | "devices" | "games" | "alerts" | "settings";

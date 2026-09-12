@@ -9,7 +9,7 @@ const sidebar = await readFile("src/components/plugins/PluginGamesSidebar.vue", 
 assert.match(source, /import PluginGamesSidebar from/, "主界面应使用独立的插件游戏导航组件");
 assert.match(root, /<AppShell\s*\/>/, "根组件应只挂载应用外壳");
 assert.ok(root.split(/\r?\n/).length < 30, "根组件不应重新承载页面业务");
-assert.match(source, /import GamesPage from/, "应用外壳应使用独立的插件游戏页面");
+assert.match(source, /const GamesPage = defineAsyncComponent/, "应用外壳应按需加载独立的插件游戏页面");
 assert.match(gamesPage, /import PluginViewport from/, "插件游戏页面应使用隔离的插件运行视图");
 assert.match(source, /<PluginGamesSidebar[\s\S]*@select="openPluginGame"/, "游戏入口应只列出已启用插件贡献的游戏");
 assert.match(source, /<GamesPage[\s\S]*:plugin-id="activePluginGame\.pluginId"/, "应用外壳应把当前游戏交给独立页面");
