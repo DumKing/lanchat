@@ -11,7 +11,7 @@ import type {
 } from "./types";
 
 export type * from "./types";
-export { PLUGIN_EVENTS, type PluginEventName } from "./events";
+export { PLUGIN_EVENTS, type PluginEventName } from "./events.js";
 
 export function createLanChatPluginClient(transport: PluginBridgeTransport): LanChatPluginApiV1 {
   const client: LanChatPluginApiV1 = {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { createLanChatPluginClient } from "../../packages/plugin-sdk/src/index";
+import { PLUGIN_EVENTS, createLanChatPluginClient } from "../../packages/plugin-sdk/src/index";
+import type { PluginEventName } from "../../packages/plugin-sdk/src/index";
 import type { PluginBridgeTransport, PluginUnsubscribe } from "../../packages/plugin-sdk/src/types";
 
 function createTransport() {
@@ -23,6 +24,12 @@ function createTransport() {
 }
 
 describe("createLanChatPluginClient", () => {
+  it("公开房间在线状态事件名", () => {
+    const eventName: PluginEventName = "room.presenceChanged";
+
+    expect(PLUGIN_EVENTS.roomPresenceChanged).toBe(eventName);
+  });
+
   it("暴露完整的 v1 标准 API 命名空间", () => {
     const { transport } = createTransport();
     const client = createLanChatPluginClient(transport);
