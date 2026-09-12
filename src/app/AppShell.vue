@@ -51,6 +51,7 @@ import PluginCenterPage from "../pages/PluginCenterPage.vue";
 import PluginGamesSidebar from "../components/plugins/PluginGamesSidebar.vue";
 import GamesPage from "../pages/GamesPage.vue";
 import AlertsPage from "../pages/AlertsPage.vue";
+import DevicesPage from "../pages/DevicesPage.vue";
 import AppNavigationRail from "./navigation/AppNavigationRail.vue";
 import { DEFAULT_GROUP_ID, useLanChatStore } from "../stores/lanchat";
 import { useDesktopPetStore } from "../stores/desktopPet";
@@ -4366,113 +4367,40 @@ async function closeWindow() {
                 :game-id="activePluginGame.gameId"
                 @error="handlePluginViewportError"
             />
-            <section v-else-if="activeSection === 'devices'" class="workspace-view device-address-book">
-              <div class="workspace-header">
-                <h2>设备通讯录</h2>
-                <p>左侧选择设备或频道，在这里查看详细信息和操作。</p>
-              </div>
-              <div class="device-detail-shell">
-                <div v-if="selectedPeerDetail" class="device-profile-panel">
-                  <div class="device-detail-head large">
-                    <img v-if="avatarImage(selectedPeerDetail.avatar)" class="avatar-image peer-avatar large-avatar" :src="avatarImage(selectedPeerDetail.avatar)" alt="设备头像" />
-                    <NAvatar v-else :size="56" class="peer-avatar">{{ firstLetter(peerDisplayName(selectedPeerDetail)) }}</NAvatar>
-                    <div>
-                      <h3>{{ peerDisplayName(selectedPeerDetail) }}</h3>
-                      <p><span class="presence-dot" :class="{ online: selectedPeerDetail.online }"></span>{{ selectedPeerDetail.online ? "在线" : "离线" }}</p>
-                    </div>
-                  </div>
-                  <div class="device-detail-grid wide">
-                    <span>IP 地址</span><strong>{{ selectedPeerDetail.address }}</strong>
-                    <span>端口</span><strong>{{ selectedPeerDetail.port }}</strong>
-                    <span>MAC 地址</span><strong>{{ selectedPeerDetail.device_id }}</strong>
-                    <span>昵称</span><strong>{{ selectedPeerDetail.nickname }}</strong>
-                    <span>昵称限制</span><strong>{{ selectedPeerDetail.nickname_locked ? "禁止本地修改" : "允许本地修改" }}</strong>
-                    <span>客户端</span><strong>{{ peerClientKindLabel(selectedPeerDetail) }}</strong>
-                    <span>软件版本</span><strong>{{ peerBuildVersionLabel(selectedPeerDetail) }}</strong>
-                    <span>构建时间</span><strong>{{ peerBuildTimeLabel(selectedPeerDetail) }}</strong>
-                    <span>支持能力</span><strong>{{ peerSupportsFullFeatures(selectedPeerDetail) ? "告警、聊天、频道、游戏、文件" : "桌宠告警" }}</strong>
-                    <span>最近在线</span><strong>{{ peerLastSeenLabel(selectedPeerDetail) }}</strong>
-                  </div>
-                  <div class="device-note-editor">
-                    <NFormItem label="设备备注" :show-feedback="false">
-                      <NInput v-model:value="peerNoteDraft" maxlength="32" clearable placeholder="仅保存在本机，用于识别设备" @keyup.enter="saveSelectedPeerNote" />
-                    </NFormItem>
-                    <NButton secondary type="primary" @click="saveSelectedPeerNote">保存备注</NButton>
-                  </div>
-                  <div v-if="superAdminEnabled" class="admin-rename-box">
-                    <NFormItem label="超管修改设备昵称">
-                      <NInput v-model:value="adminNicknameDraft" maxlength="24" clearable />
-                    </NFormItem>
-                    <NCheckbox v-model:checked="adminNicknameLockAfterIssue">
-                      下发后禁止对方本地修改昵称
-                    </NCheckbox>
-                    <NButton block type="warning" :disabled="!selectedPeerDetail.online || !adminNicknameDraft.trim()" @click="adminRenameSelectedPeer">
-                      下发昵称修改
-                    </NButton>
-                    <NButton block secondary type="primary" :disabled="!selectedPeerDetail.online" @click="adminUseSystemUsernameForSelectedPeer">
-                      改为电脑登录用户名
-                    </NButton>
-                    <NButton block secondary type="warning" :disabled="!selectedPeerDetail.online || !adminNicknameDraft.trim()" @click="adminUnlockSelectedPeerNickname">
-                      解除昵称修改限制
-                    </NButton>
-                    <NButton block type="warning" @click="openSimulationModal">超管模拟发送</NButton>
-                    <NText depth="3">目标设备在线时会立即更新本机昵称，并通过在线广播同步给局域网。</NText>
-                  </div>
-                  <div class="device-detail-actions">
-                    <NButton type="primary" :disabled="!selectedPeerDetail.online && peerSupportsFullFeatures(selectedPeerDetail)" @click="startDirectChat(selectedPeerDetail)">
-                      {{ peerSupportsFullFeatures(selectedPeerDetail) ? "发起单聊" : "查看历史" }}
-                    </NButton>
-                    <NButton secondary type="error" @click="deleteSelectedPeer">删除设备</NButton>
-                  </div>
-                </div>
-                <div v-else-if="selectedDeviceChannelDetail" class="device-profile-panel">
-                  <div class="device-detail-head large">
-                    <NAvatar :size="56" class="conversation-avatar">{{ selectedDeviceChannelDetail.is_private ? "私" : "局" }}</NAvatar>
-                    <div>
-                      <h3>{{ selectedDeviceChannelDetail.title }}</h3>
-                      <p>{{ selectedDeviceChannelDetail.is_private ? "私有加密频道" : "局域网公开频道" }}</p>
-                    </div>
-                  </div>
-                  <div class="device-detail-grid wide">
-                    <span>频道类型</span><strong>{{ selectedDeviceChannelDetail.is_private ? "私有频道" : "公开频道" }}</strong>
-                    <span>创建人</span><strong>{{ selectedDeviceChannelOwnerName }}</strong>
-                    <span>频道 ID</span><strong>{{ selectedDeviceChannelDetail.id }}</strong>
-                    <span>成员数量</span><strong>{{ selectedDeviceChannelMembers.length }}</strong>
-                    <span>更新时间</span><strong>{{ formatTime(selectedDeviceChannelDetail.updated_at) }}</strong>
-                  </div>
-                  <div class="channel-detail-members">
-                    <div class="channel-detail-title">
-                      <strong>频道成员</strong>
-                      <span>{{ selectedDeviceChannelMembers.length }} 人</span>
-                    </div>
-                    <NEmpty v-if="selectedDeviceChannelMembers.length === 0" description="暂无成员" class="list-empty compact" />
-                    <NList v-else hoverable clickable class="channel-member-list embedded">
-                      <NListItem v-for="member in selectedDeviceChannelMembers" :key="member.device_id" class="device-item" :class="{ 'is-offline': !sameDeviceId(member.device_id, profile?.device_id) && !member.online }" @click="openMemberDevice(member)">
-                        <NThing :title="memberDisplayName(member)" :description="memberSubtitle(member)">
-                          <template #avatar>
-                            <img v-if="avatarImage(member.avatar)" class="avatar-image peer-avatar" :src="avatarImage(member.avatar)" alt="成员头像" />
-                            <NAvatar v-else class="peer-avatar">{{ firstLetter(memberDisplayName(member)) }}</NAvatar>
-                          </template>
-                          <template #header-extra>
-                            <NTag v-if="'is_owner' in member && member.is_owner" size="small" :bordered="false" type="warning">群主</NTag>
-                          </template>
-                        </NThing>
-                      </NListItem>
-                    </NList>
-                  </div>
-                  <div class="device-detail-actions">
-                    <NButton secondary @click="enterSelectedDeviceChannel">进入频道</NButton>
-                    <NButton v-if="canManageSelectedDeviceChannel" type="primary" @click="inviteSelectedDeviceChannelMembers">邀请成员</NButton>
-                    <NButton v-if="canManageSelectedDeviceChannel" secondary type="error" @click="dissolveSelectedDeviceChannel">解散频道</NButton>
-                  </div>
-                </div>
-                <NEmpty v-else description="从左侧选择设备或频道" class="device-detail-empty">
-                  <template #extra>
-                    <NText depth="3">设备会自动发现；频道包含局域网公开频道和私有频道。</NText>
-                  </template>
-                </NEmpty>
-              </div>
-            </section>
+            <DevicesPage
+              v-else-if="activeSection === 'devices'"
+              v-model:peer-note-draft="peerNoteDraft"
+              v-model:admin-nickname-draft="adminNicknameDraft"
+              v-model:admin-nickname-lock-after-issue="adminNicknameLockAfterIssue"
+              :selected-peer="selectedPeerDetail"
+              :selected-channel="selectedDeviceChannelDetail"
+              :channel-owner-name="selectedDeviceChannelOwnerName"
+              :channel-members="selectedDeviceChannelMembers"
+              :profile-device-id="profile?.device_id"
+              :super-admin-enabled="superAdminEnabled"
+              :can-manage-channel="canManageSelectedDeviceChannel"
+              :avatar-image="avatarImage"
+              :first-letter="firstLetter"
+              :peer-client-kind-label="peerClientKindLabel"
+              :peer-build-version-label="peerBuildVersionLabel"
+              :peer-build-time-label="peerBuildTimeLabel"
+              :peer-supports-full-features="peerSupportsFullFeatures"
+              :peer-last-seen-label="peerLastSeenLabel"
+              :member-display-name="memberDisplayName"
+              :member-subtitle="memberSubtitle"
+              :format-time="formatTime"
+              @save-peer-note="saveSelectedPeerNote"
+              @admin-rename="adminRenameSelectedPeer"
+              @admin-use-system-username="adminUseSystemUsernameForSelectedPeer"
+              @admin-unlock-nickname="adminUnlockSelectedPeerNickname"
+              @open-simulation="openSimulationModal"
+              @start-direct-chat="startDirectChat"
+              @delete-peer="deleteSelectedPeer"
+              @open-member="openMemberDevice"
+              @enter-channel="enterSelectedDeviceChannel"
+              @invite-members="inviteSelectedDeviceChannelMembers"
+              @dissolve-channel="dissolveSelectedDeviceChannel"
+            />
             <AlertsPage
               v-else-if="activeSection === 'alerts'"
               v-model:quick-alert-draft="quickAlertDraft"
