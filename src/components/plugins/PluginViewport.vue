@@ -63,6 +63,17 @@ watch(() => props.visible, async (visible) => {
   if (instance && !stopped) await props.runtime.setVisible(instance.instanceId, visible);
 });
 
+watch(() => props.payload, async (payload, previous) => {
+  if (!instance || stopped || payload === previous) return;
+  await props.runtime.emit(instance.instanceId, "plugin.enter", {
+    featureCode: props.featureCode,
+    payload,
+    source: props.source,
+    instanceId: instance.instanceId,
+    hostVersion: props.hostVersion,
+  });
+});
+
 onMounted(() => {
   observer = new ResizeObserver(() => { void updateBounds(); });
   if (viewport.value) observer.observe(viewport.value);

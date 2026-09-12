@@ -40,6 +40,7 @@ export function createLanChatPluginClient(transport: PluginBridgeTransport): Lan
       leave: (input) => transport.request("rooms.leave", input),
       send: (input) => transport.request("rooms.send", input),
       snapshot: (input) => transport.request("rooms.snapshot", input),
+      invite: (input) => transport.request("rooms.invite", input),
     },
     leaderboard: {
       list: (input) => transport.request("leaderboard.list", input),

@@ -63,7 +63,7 @@ import { PluginRuntime } from "../plugin-host/runtime/PluginRuntime";
 import { createTauriPluginRuntimeAdapter } from "../services/plugin-runtime-api";
 import { installTauriPluginBridge } from "../plugin-host/runtime/tauriBridge";
 import { createPluginHostHandlers } from "../plugin-host/runtime/createHostHandlers";
-import { PluginRoomService } from "../plugin-host/services/PluginRoomService";
+import { PluginRoomService, type PluginRoomSummary } from "../plugin-host/services/PluginRoomService";
 import { PluginLeaderboardService } from "../plugin-host/services/PluginLeaderboardService";
 import type { AlertFeedbackResult, AlertRecord } from "../features/alerts/types";
 
@@ -75,8 +75,18 @@ const BasicSystemSettings = defineAsyncComponent(() => import("../pages/settings
 
 type UiThemeKey = "theme-dingtalk" | "theme-work" | "theme-lan" | "theme-light";
 type MainSection = "chat" | "devices" | "games" | "alerts" | "settings";
-type RecipientPickerMode = "privateChannelCreate" | "privateChannelInvite";
+type RecipientPickerMode = "gameInvite" | "privateChannelCreate" | "privateChannelInvite";
 type SimulationKind = "direct" | "channel" | "alert" | "disco";
+type PluginGameInvitePayload = {
+  pluginId: string;
+  gameId: string;
+  roomId: string;
+  roomName: string;
+  room: PluginRoomSummary;
+  inviterName: string;
+  createdAt: number;
+};
+const PLUGIN_GAME_INVITE_PREFIX = "LANCHAT_PLUGIN_GAME_INVITE:";
 const PRIVATE_CHANNEL_INVITE_PREFIX = "LANCHAT_PRIVATE_CHANNEL_INVITE:";
 const DEFAULT_CHANNEL_NOTICE = "欢迎来到频道，公告可以由超管维护。";
 const QUICK_ALERT_TRUST_RESET_ALL_TARGET = "__all__";
@@ -446,6 +456,8 @@ const publicChannelMutedIds = ref<Record<string, boolean>>(readSavedPublicChanne
 const recipientPickerOpen = ref(false);
 const recipientPickerMode = ref<RecipientPickerMode>("privateChannelCreate");
 const selectedRecipientPeerIds = ref<string[]>([]);
+const selectedRecipientConversationIds = ref<string[]>([]);
+const pendingPluginGameInvite = ref<PluginGameInvitePayload | null>(null);
 const privateChannelTitleDraft = ref("私有频道");
 const handledPrivateChannelInvites = ref<Record<string, "accepted" | "rejected">>(readSavedPrivateChannelInviteStates());
 const messageContextMenuOpen = ref(false);
@@ -468,6 +480,7 @@ const petDiscoDurationMs = computed(() =>
 );
 const enabledPluginManifests = ref<PluginManifestV1[]>([]);
 const activePluginGameId = ref("");
+const activePluginGamePayload = ref<unknown>();
 const pluginFeatures = computed(() => resolvePluginFeatures(
   enabledPluginManifests.value.map((manifest) => ({ manifest, enabled: true })),
 ));
@@ -530,6 +543,18 @@ let pluginRuntime: PluginRuntime;
 const pluginRoomService = new PluginRoomService({
   profile: () => profile.value,
   send: async (frame) => { await store.sendGameFrame(null, frame, true); },
+  invite: async (pluginId, room) => {
+    pendingPluginGameInvite.value = {
+      pluginId,
+      gameId: room.gameId,
+      roomId: room.roomId,
+      roomName: room.name,
+      room,
+      inviterName: profile.value?.nickname ?? "局域网玩家",
+      createdAt: Date.now(),
+    };
+    openRecipientPicker("gameInvite");
+  },
   emit: async (gameId, event) => {
     const pluginIds = enabledPluginManifests.value
       .filter((manifest) => manifest.contributes?.games?.some((game) => game.id === gameId))
@@ -612,10 +637,20 @@ const pickerPeerOptions = computed(() => {
 const activeMentionNotices = computed(() => mentionNoticesByConversation.value[activeConversationId.value] ?? []);
 const activeMentionLabel = computed(() => activeMentionNotices.value[0]?.kind === "all" ? "@所有人" : "有人@我");
 const recipientPickerTitle = computed(() => {
+  if (recipientPickerMode.value === "gameInvite") return "发送游戏邀请";
   if (recipientPickerMode.value === "privateChannelCreate") return "创建私有频道";
   return "邀请频道成员";
 });
+const pickerConversationOptions = computed(() => recipientPickerMode.value === "gameInvite"
+  ? conversations.value
+    .filter((conversation) => conversation.kind === "group")
+    .sort((left, right) => right.updated_at - left.updated_at)
+  : []);
 const recipientConfirmDisabled = computed(() => {
+  if (recipientPickerMode.value === "gameInvite") {
+    return !pendingPluginGameInvite.value
+      || selectedRecipientPeerIds.value.length + selectedRecipientConversationIds.value.length === 0;
+  }
   if (recipientPickerMode.value === "privateChannelCreate") return !privateChannelTitleDraft.value.trim();
   return selectedRecipientPeerIds.value.length === 0;
 });
@@ -1255,9 +1290,10 @@ async function initializePluginFeatures() {
     activeSection.value = "chat";
   }
 }
-function openPluginGame(gameId: string) {
+function openPluginGame(gameId: string, payload?: unknown) {
   if (!enabledGamePlugins.value.some((item) => item.gameId === gameId)) return;
   activePluginGameId.value = gameId;
+  activePluginGamePayload.value = payload;
   activeSection.value = "games";
   listPaneCollapsed.value = false;
 }
@@ -1954,6 +1990,37 @@ function selectLanguage(key: string | number) {
   setLanguagePreference(key);
 }
 
+function encodePluginGameInvite(invite: PluginGameInvitePayload) {
+  return `${PLUGIN_GAME_INVITE_PREFIX}${JSON.stringify(invite)}`;
+}
+function parsePluginGameInvite(content: string): PluginGameInvitePayload | null {
+  if (!content.startsWith(PLUGIN_GAME_INVITE_PREFIX)) return null;
+  try {
+    const invite = JSON.parse(content.slice(PLUGIN_GAME_INVITE_PREFIX.length)) as PluginGameInvitePayload;
+    if (!invite.pluginId || !invite.gameId || !invite.roomId || !invite.roomName || !invite.room) return null;
+    if (invite.room.roomId !== invite.roomId || invite.room.gameId !== invite.gameId) return null;
+    return invite;
+  } catch {
+    return null;
+  }
+}
+function pluginGameInvitePayload(message: Message) {
+  return message.message_type === "text" ? parsePluginGameInvite(message.content) : null;
+}
+function openPluginGameInvite(invite: PluginGameInvitePayload | null) {
+  if (!invite || !enabledGamePlugins.value.some((game) => game.pluginId === invite.pluginId && game.gameId === invite.gameId)) {
+    error.value = "请先安装并启用对应的游戏插件";
+    return;
+  }
+  try {
+    pluginRoomService.acceptInvite(invite.pluginId, invite.room);
+  } catch (err) {
+    error.value = stringifyError(err);
+    return;
+  }
+  openPluginGame(invite.gameId, { action: "join", roomId: invite.roomId, invite });
+}
+
 function encodePrivateChannelInvite(invite: PrivateChannelInvitePayload) {
   return `${PRIVATE_CHANNEL_INVITE_PREFIX}${JSON.stringify(invite)}`;
 }
@@ -2018,6 +2085,7 @@ function rejectPrivateChannelInviteCard(invite: PrivateChannelInvitePayload | nu
 function openRecipientPicker(mode: RecipientPickerMode) {
   recipientPickerMode.value = mode;
   selectedRecipientPeerIds.value = [];
+  selectedRecipientConversationIds.value = [];
   if (mode === "privateChannelCreate") {
     privateChannelTitleDraft.value = "私有频道";
   }
@@ -2028,9 +2096,23 @@ function toggleRecipientPeer(deviceId: string) {
     ? selectedRecipientPeerIds.value.filter((id) => id !== deviceId)
     : [...selectedRecipientPeerIds.value, deviceId];
 }
+function toggleRecipientConversation(conversationId: string) {
+  selectedRecipientConversationIds.value = selectedRecipientConversationIds.value.includes(conversationId)
+    ? selectedRecipientConversationIds.value.filter((id) => id !== conversationId)
+    : [...selectedRecipientConversationIds.value, conversationId];
+}
 async function confirmRecipientPicker() {
   if (recipientConfirmDisabled.value) return;
-  if (recipientPickerMode.value === "privateChannelCreate") {
+  if (recipientPickerMode.value === "gameInvite") {
+    const invite = pendingPluginGameInvite.value;
+    if (!invite) return;
+    const content = encodePluginGameInvite(invite);
+    const targetIds = [...new Set([...selectedRecipientPeerIds.value, ...selectedRecipientConversationIds.value])];
+    for (const targetId of targetIds) {
+      await store.sendMessageToConversation(targetId, content);
+    }
+    pendingPluginGameInvite.value = null;
+  } else if (recipientPickerMode.value === "privateChannelCreate") {
     const selectedTargets = [...selectedRecipientPeerIds.value];
     const conversation = await store.createPrivateChannel(privateChannelTitleDraft.value, []);
     activeSection.value = "chat";
@@ -4218,7 +4300,7 @@ async function closeWindow() {
                         <span class="message-meta-time">{{ formatTime(message.created_at) }}</span>
                       </div>
                       <div class="message-content-line">
-                        <div class="message-bubble" :class="{ 'message-card-bubble': privateChannelInvitePayload(message) }">
+                        <div class="message-bubble" :class="{ 'message-card-bubble': privateChannelInvitePayload(message) || pluginGameInvitePayload(message) }">
                           <template v-if="privateChannelInvitePayload(message)">
                             <div class="channel-invite-card invite-message-card">
                               <span class="channel-invite-icon">私</span>
@@ -4237,6 +4319,15 @@ async function closeWindow() {
                                 <NTag v-else size="small" :bordered="false" type="success">已发送</NTag>
                               </span>
                             </div>
+                          </template>
+                          <template v-else-if="pluginGameInvitePayload(message)">
+                            <button class="game-invite-card invite-message-card" type="button" @click="openPluginGameInvite(pluginGameInvitePayload(message))">
+                              <span class="game-invite-icon">🎮</span>
+                              <span class="game-invite-copy">
+                                <strong>{{ pluginGameInvitePayload(message)?.roomName }}</strong>
+                                <small>{{ pluginGameInvitePayload(message)?.inviterName }} 邀请你加入游戏</small>
+                              </span>
+                            </button>
                           </template>
                           <template v-else-if="message.message_type === 'text'">
                             <p>
@@ -4367,6 +4458,7 @@ async function closeWindow() {
                 :runtime="pluginRuntime"
                 :plugin-id="activePluginGame.pluginId"
                 :game-id="activePluginGame.gameId"
+                :payload="activePluginGamePayload"
                 @error="handlePluginViewportError"
             />
             <DevicesPage
@@ -5070,7 +5162,7 @@ async function closeWindow() {
             <div class="recipient-scroll">
               <section class="recipient-picker-section">
                 <div class="recipient-section-head">
-                  <strong>选择频道成员</strong>
+                  <strong>{{ recipientPickerMode === 'gameInvite' ? '发送给设备' : '选择频道成员' }}</strong>
                   <span>{{ selectedRecipientPeerIds.length }} 已选</span>
                 </div>
                 <div v-if="pickerPeerOptions.length > 0" class="recipient-list">
@@ -5091,15 +5183,39 @@ async function closeWindow() {
                 </div>
                 <div v-else class="recipient-empty">暂无可选择的在线设备</div>
               </section>
+              <section v-if="recipientPickerMode === 'gameInvite'" class="recipient-picker-section">
+                <div class="recipient-section-head">
+                  <strong>发送到频道</strong>
+                  <span>{{ selectedRecipientConversationIds.length }} 已选</span>
+                </div>
+                <div v-if="pickerConversationOptions.length > 0" class="recipient-list">
+                  <button
+                    v-for="conversation in pickerConversationOptions"
+                    :key="conversation.id"
+                    class="recipient-list-row"
+                    :class="{ active: selectedRecipientConversationIds.includes(conversation.id) }"
+                    type="button"
+                    @click="toggleRecipientConversation(conversation.id)"
+                  >
+                    <NAvatar class="peer-avatar">群</NAvatar>
+                    <span class="recipient-list-main">
+                      <strong>{{ conversationDisplayName(conversation) }}</strong>
+                      <small>{{ conversation.is_private ? '私有频道' : '公开频道' }}</small>
+                    </span>
+                    <span class="recipient-list-check">{{ selectedRecipientConversationIds.includes(conversation.id) ? '✓' : '' }}</span>
+                  </button>
+                </div>
+                <div v-else class="recipient-empty">暂无可选择的频道</div>
+              </section>
             </div>
             <div class="recipient-picker-footer">
               <NText depth="3">
-                私有频道消息会广播投递，但只有持有频道密钥的成员能解密。
+                {{ recipientPickerMode === 'gameInvite' ? '游戏邀请会以卡片消息发送，接收方点击即可进入房间。' : '私有频道消息会广播投递，但只有持有频道密钥的成员能解密。' }}
               </NText>
               <NSpace justify="end">
                 <NButton secondary @click="recipientPickerOpen = false">取消</NButton>
                 <NButton type="primary" :disabled="recipientConfirmDisabled" @click="confirmRecipientPicker">
-                  {{ recipientPickerMode === 'privateChannelCreate' ? '创建频道' : '邀请加入' }}
+                  {{ recipientPickerMode === 'gameInvite' ? '发送邀请' : recipientPickerMode === 'privateChannelCreate' ? '创建频道' : '邀请加入' }}
                 </NButton>
               </NSpace>
             </div>

@@ -17,6 +17,7 @@ export interface PluginRoomServiceDependencies {
   profile(): Profile | null;
   send(frame: GameFrame): Promise<void>;
   emit(gameId: string, event: PluginRoomEvent): Promise<void>;
+  invite?(pluginId: string, room: PluginRoomSummary): void | Promise<void>;
 }
 
 type PluginRoomWirePayload =
@@ -42,6 +43,25 @@ export class PluginRoomService {
 
   getRoom(roomId: string) {
     return this.#rooms.get(roomId) ?? null;
+  }
+
+  acceptInvite(pluginId: string, room: PluginRoomSummary) {
+    if (!room || typeof room !== "object") throw new Error("游戏邀请缺少房间信息");
+    if (typeof room.gameId !== "string" || pluginId !== `com.lanchat.${room.gameId}`) throw new Error("邀请中的插件与游戏不匹配");
+    if (typeof room.roomId !== "string" || typeof room.name !== "string" || !room.name.trim() || typeof room.ownerPeerId !== "string" || !room.ownerPeerId) {
+      throw new Error("游戏邀请缺少房间信息");
+    }
+    if (!Array.isArray(room.memberPeerIds)) throw new Error("游戏邀请的成员信息无效");
+    if (!Number.isInteger(room.maxPlayers) || room.maxPlayers < 1) throw new Error("游戏邀请的房间人数无效");
+    if (!Number.isInteger(room.schemaVersion) || room.schemaVersion < 1) throw new Error("游戏邀请的协议版本无效");
+    const accepted = {
+      ...room,
+      name: room.name.trim(),
+      memberPeerIds: [...new Set(room.memberPeerIds.filter(Boolean))],
+      updatedAt: Number.isFinite(room.updatedAt) ? room.updatedAt : Date.now(),
+    };
+    this.#rooms.set(accepted.roomId, accepted);
+    return accepted;
   }
 
   async create(input: { gameId: string; name: string; maxPlayers: number; schemaVersion: number }) {
@@ -115,6 +135,15 @@ export class PluginRoomService {
     return null;
   }
 
+  async invite(roomId: string, context: PluginBridgeHandlerContext) {
+    const profile = this.#requireProfile();
+    const room = this.#requireRoom(roomId);
+    if (context.pluginId !== `com.lanchat.${room.gameId}`) throw new Error("插件不能邀请其他游戏房间");
+    if (!room.memberPeerIds.includes(profile.device_id)) throw new Error("尚未加入此房间");
+    if (!this.#dependencies.invite) throw new Error("当前宿主不支持游戏邀请");
+    await this.#dependencies.invite(context.pluginId, room);
+  }
+
   async receive(frame: GameFrame) {
     if (frame.kind !== "plugin_room") return false;
     const payload = frame.payload as PluginRoomWirePayload;
@@ -133,6 +162,7 @@ export class PluginRoomService {
       "rooms.leave": (params: unknown) => this.leave((params as { roomId: string }).roomId),
       "rooms.send": (params: unknown) => this.send(params as Parameters<PluginRoomService["send"]>[0]),
       "rooms.snapshot": (params: unknown) => this.snapshot((params as { roomId: string }).roomId),
+      "rooms.invite": (params: unknown, context: PluginBridgeHandlerContext) => this.invite((params as { roomId: string }).roomId, context),
     };
   }
 

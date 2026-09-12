@@ -6,6 +6,7 @@ defineProps<{
   runtime: PluginRuntime;
   pluginId: string;
   gameId: string;
+  payload?: unknown;
 }>();
 
 const emit = defineEmits<{ error: [message: string] }>();
@@ -19,7 +20,16 @@ const emit = defineEmits<{ error: [message: string] }>();
       :plugin-id="pluginId"
       :feature-code="gameId"
       host-version="0.8.0"
+      :payload="payload"
       @error="emit('error', $event)"
     />
   </section>
 </template>
+
+<style scoped>
+.plugin-game-workspace {
+  display: block;
+  height: 100%;
+  min-height: 0;
+}
+</style>

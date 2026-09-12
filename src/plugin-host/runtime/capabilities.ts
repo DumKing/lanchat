@@ -12,6 +12,7 @@ export const PLUGIN_METHOD_CAPABILITIES: Readonly<Record<string, PluginCapabilit
   "rooms.leave": "rooms.write",
   "rooms.send": "rooms.write",
   "rooms.snapshot": "rooms.read",
+  "rooms.invite": "rooms.write",
   "leaderboard.list": "leaderboard.read",
   "leaderboard.submit": "leaderboard.write",
   "storage.get": "storage.private",

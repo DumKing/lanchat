@@ -25,6 +25,7 @@ export const PLUGIN_METHOD_SCHEMAS: Readonly<Record<string, Validator>> = Object
   "rooms.leave": (value) => hasString(value, "roomId"),
   "rooms.send": (value) => hasString(value, "roomId") && hasString(value, "type") && hasString(value, "idempotencyKey"),
   "rooms.snapshot": (value) => hasString(value, "roomId"),
+  "rooms.invite": (value) => hasString(value, "roomId"),
   "leaderboard.list": (value) => hasString(value, "gameId"),
   "leaderboard.submit": (value) => hasString(value, "gameId") && hasString(value, "roomId") && hasString(value, "idempotencyKey"),
   "storage.get": (value) => hasString(value, "key"),

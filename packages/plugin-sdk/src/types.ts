@@ -108,6 +108,7 @@ export interface PluginRoomApi {
   leave(input: { roomId: string }): Promise<void>;
   send(input: { roomId: string; type: string; payload: unknown; idempotencyKey: string }): Promise<void>;
   snapshot<TResult = unknown>(input: { roomId: string }): Promise<TResult>;
+  invite(input: { roomId: string }): Promise<void>;
 }
 
 export interface PluginLeaderboardEntry {

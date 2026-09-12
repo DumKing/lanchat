@@ -50,6 +50,7 @@ describe("createLanChatPluginClient", () => {
     await client.devices.list();
     await client.chat.send({ conversationId: "room-1", text: "你好" });
     await client.rooms.join({ roomId: "game-1" });
+    await client.rooms.invite({ roomId: "game-1" });
     await client.leaderboard.list({ gameId: "gomoku" });
     await client.storage.set("settings", { sound: true });
     await client.ui.notify({ title: "五子棋", body: "轮到你了" });
@@ -58,6 +59,7 @@ describe("createLanChatPluginClient", () => {
       "devices.list",
       "chat.send",
       "rooms.join",
+      "rooms.invite",
       "leaderboard.list",
       "storage.set",
       "ui.notify",

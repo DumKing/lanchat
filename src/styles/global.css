@@ -1516,6 +1516,30 @@
   grid-template-columns: 42px minmax(0, 1fr) 48px;
   padding: 10px;
 }
+.game-invite-card.invite-message-card {
+  appearance: none;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  color: #172033;
+  cursor: pointer;
+  text-align: left;
+}
+.game-invite-card.invite-message-card:hover {
+  border-color: var(--accent);
+  background: var(--soft-accent);
+}
+.game-invite-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  background: var(--avatar-bg);
+  font-size: 22px;
+}
 .channel-invite-actions {
   display: grid;
   grid-auto-rows: min-content;
