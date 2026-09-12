@@ -7,6 +7,7 @@ assert.ok(existsSync(modulePath), '真实度算法应拆到 src/utils/alertCredi
 
 const source = readFileSync(modulePath, 'utf8');
 const appVue = readFileSync(resolve('src/app/AppShell.vue'), 'utf8');
+const alertsPage = readFileSync(resolve('src/pages/AlertsPage.vue'), 'utf8');
 
 assert.match(source, /export function alertTruthScore/, '应导出单条告警真实度函数');
 assert.match(source, /export function senderCredibility/, '应导出发送人真实度函数');
@@ -28,7 +29,8 @@ assert.match(appVue, /from "\.\.\/utils\/alertCredibility"/, '应用外壳应使
 assert.doesNotMatch(appVue, /function alertTruthProbability/, 'App.vue 不应再保留旧的简单比例真实度函数');
 assert.doesNotMatch(appVue, /function senderTruthProbability/, 'App.vue 不应再保留旧的简单平均个人真实度函数');
 assert.match(appVue, /senderCredibility\(alertRecords\.value,\s*alert\.senderDeviceId/, '桌宠温度应按发送人历史真实度计算');
-assert.match(appVue, /alertTruthScore\(alert,\s*nowTick\.value\)/, '最近告警标签应使用新单条真实度算法');
+assert.match(appVue, /import AlertsPage from/, '应用外壳应使用独立告警页面');
+assert.match(alertsPage, /alertTruthScore\(alert,\s*now\)/, '最近告警标签应使用新单条真实度算法');
 assert.match(appVue, /senderCredibility\(alertRecords\.value,\s*row\.deviceId/, '排行榜应使用新个人真实度算法');
 assert.match(appVue, /QUICK_ALERT_TRUST_RESET_ALL_TARGET = "__all__"/, '超管应使用特殊目标广播清空全部狼来了记录');
 assert.match(appVue, /alertRecords\.value = \[\]/, '收到全量清空指令后应清空本地狼来了记录');

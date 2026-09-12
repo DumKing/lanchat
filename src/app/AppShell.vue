@@ -48,8 +48,9 @@ import { pluginApi } from "../services/plugin-api";
 import { callMediaCoordinator } from "../services/callMediaCoordinator";
 import ChatComposerInput from "../components/ChatComposerInput.vue";
 import PluginCenterPage from "../pages/PluginCenterPage.vue";
-import PluginViewport from "../components/plugins/PluginViewport.vue";
 import PluginGamesSidebar from "../components/plugins/PluginGamesSidebar.vue";
+import GamesPage from "../pages/GamesPage.vue";
+import AlertsPage from "../pages/AlertsPage.vue";
 import AppNavigationRail from "./navigation/AppNavigationRail.vue";
 import { DEFAULT_GROUP_ID, useLanChatStore } from "../stores/lanchat";
 import { useDesktopPetStore } from "../stores/desktopPet";
@@ -67,32 +68,12 @@ import { installTauriPluginBridge } from "../plugin-host/runtime/tauriBridge";
 import { createPluginHostHandlers } from "../plugin-host/runtime/createHostHandlers";
 import { PluginRoomService } from "../plugin-host/services/PluginRoomService";
 import { PluginLeaderboardService } from "../plugin-host/services/PluginLeaderboardService";
+import type { AlertFeedbackResult, AlertRecord } from "../features/alerts/types";
 
 type UiThemeKey = "theme-dingtalk" | "theme-work" | "theme-lan" | "theme-light";
 type MainSection = "chat" | "devices" | "games" | "alerts" | "settings";
 type RecipientPickerMode = "privateChannelCreate" | "privateChannelInvite";
 type SimulationKind = "direct" | "channel" | "alert" | "disco";
-type AlertFeedbackResult = "real" | "false";
-type AlertFeedbackRecord = {
-  responderDeviceId: string;
-  responderNickname: string;
-  result: AlertFeedbackResult;
-  createdAt: number;
-};
-type AlertRecord = {
-  alertId: string;
-  senderDeviceId: string;
-  senderNickname: string;
-  senderAddress?: string | null;
-  content: string;
-  mode: PetAlertMode;
-  simulation?: SimulationMeta | null;
-  createdAt: number;
-  incoming: boolean;
-  handled: boolean;
-  localFeedback?: AlertFeedbackResult;
-  feedbacks: AlertFeedbackRecord[];
-};
 const PRIVATE_CHANNEL_INVITE_PREFIX = "LANCHAT_PRIVATE_CHANNEL_INVITE:";
 const DEFAULT_CHANNEL_NOTICE = "欢迎来到频道，公告可以由超管维护。";
 const QUICK_ALERT_TRUST_RESET_ALL_TARGET = "__all__";
@@ -4377,16 +4358,14 @@ async function closeWindow() {
                 </div>
               </footer>
             </section>
-            <section v-else-if="activeSection === 'games' && activePluginGame" class="game-workspace plugin-game-workspace">
-              <PluginViewport
+            <GamesPage
+              v-else-if="activeSection === 'games' && activePluginGame"
                 :key="activePluginGame.pluginId"
                 :runtime="pluginRuntime"
                 :plugin-id="activePluginGame.pluginId"
-                :feature-code="activePluginGame.gameId"
-                host-version="0.8.0"
+                :game-id="activePluginGame.gameId"
                 @error="handlePluginViewportError"
-              />
-            </section>
+            />
             <section v-else-if="activeSection === 'devices'" class="workspace-view device-address-book">
               <div class="workspace-header">
                 <h2>设备通讯录</h2>
@@ -4494,56 +4473,19 @@ async function closeWindow() {
                 </NEmpty>
               </div>
             </section>
-            <section v-else-if="activeSection === 'alerts'" class="workspace-view alert-dashboard-view">
-              <div class="workspace-header">
-                <h2>狼来了排行榜</h2>
-                <p>按别人反馈后的真实概率排行，真实概率也会作为桌宠温度展示。</p>
-              </div>
-              <div class="alert-dashboard-grid">
-                <NCard title="呱呱告警" size="small" class="quick-alert-card">
-                  <NSpace vertical>
-                    <NText depth="3">双击桌面桌宠也可以发送呱呱告警。当前告警会广播给在线设备，后续接入 LanChat Hub 后由 Hub 转发。</NText>
-                    <NInput v-model:value="quickAlertDraft" maxlength="60" clearable placeholder="例如：快来处理一下" />
-                    <NButton type="error" block @click="sendPetQuickAlert(petAlertMode)">{{ quickAlertDraft || "呱呱~呱~~" }}</NButton>
-                  </NSpace>
-                </NCard>
-                <NCard title="狼来了排行" size="small" class="alert-rank-card">
-                  <div class="alert-rank-list">
-                    <div class="alert-rank-head">
-                      <span>名次</span>
-                      <span>人员</span>
-                      <span>真实度</span>
-                      <span>反馈</span>
-                    </div>
-                    <div v-if="alertRankingRows.length === 0" class="leaderboard-empty">暂无告警反馈，收到或发送告警后会出现在这里</div>
-                    <div v-for="(row, index) in alertRankingRows" :key="row.deviceId" class="alert-rank-row">
-                      <span class="leaderboard-rank">{{ index + 1 }}</span>
-                      <strong>{{ row.deviceId === profile?.device_id ? `我 · ${row.nickname}` : row.nickname }}</strong>
-                      <span class="alert-temperature">{{ row.probability === null ? '待确认' : `${row.probability}%` }}</span>
-                      <small>{{ row.real }} 真 / {{ row.falseCount }} 假 · {{ row.total }} 次告警</small>
-                    </div>
-                  </div>
-                </NCard>
-                <NCard title="最近告警" size="small" class="alert-history-card">
-                  <div class="alert-history-list">
-                    <div v-if="alertRecords.length === 0" class="leaderboard-empty">暂无告警记录</div>
-                    <div v-for="alert in alertRecords.slice(0, 10)" :key="alert.alertId" class="alert-history-row" :class="{ pending: alert.incoming && !alert.handled }">
-                      <div>
-                        <strong>{{ alert.senderDeviceId === profile?.device_id ? `我 · ${alert.senderNickname}` : alert.senderNickname }}</strong>
-                        <span>{{ alert.content }}</span>
-                        <NTag v-if="simulationLabel(alert.simulation)" size="tiny" :bordered="false" type="warning">{{ simulationLabel(alert.simulation) }}</NTag>
-                      </div>
-                      <div class="alert-history-meta">
-                        <NTag size="small" :bordered="false" :type="alertTruthScore(alert, nowTick).feedbackCount === 0 ? 'default' : alertTruthScore(alert, nowTick).probability >= 60 ? 'success' : 'error'">
-                          {{ alertProbabilityLabel(alert) }}
-                        </NTag>
-                        <small>{{ formatTime(alert.createdAt) }}</small>
-                      </div>
-                    </div>
-                  </div>
-                </NCard>
-              </div>
-            </section>
+            <AlertsPage
+              v-else-if="activeSection === 'alerts'"
+              v-model:quick-alert-draft="quickAlertDraft"
+              :profile-device-id="profile?.device_id"
+              :alert-mode="petAlertMode"
+              :ranking-rows="alertRankingRows"
+              :alert-records="alertRecords"
+              :now="nowTick"
+              :simulation-label="simulationLabel"
+              :probability-label="alertProbabilityLabel"
+              :format-time="formatTime"
+              @send="sendPetQuickAlert"
+            />
             <section v-show="activeSection === 'settings'" class="workspace-view settings-view">
               <div class="settings-layout">
                 <nav class="settings-subnav" aria-label="设置分类">
