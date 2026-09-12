@@ -5,6 +5,7 @@ const read = (file) => readFileSync(resolve(process.cwd(), file), "utf8");
 const backend = read("src-tauri/src/lib.rs");
 const api = read("src/services/tauri-api.ts");
 const app = read("src/app/AppShell.vue");
+const basicSettings = read("src/pages/settings/BasicSystemSettings.vue");
 
 for (const [name, source, needle] of [
   ["credential storage", backend, 'UPDATE_GITHUB_TOKEN_SERVICE'],
@@ -15,8 +16,9 @@ for (const [name, source, needle] of [
   ["token clear command", backend, "clear_update_github_token"],
   ["frontend api", api, "getUpdateGithubTokenInfo"],
   ["frontend save", api, "saveUpdateGithubToken"],
-  ["settings input", app, "GitHub API Token"],
-  ["settings status", app, "GitHub Token 已配置"],
+  ["settings component", app, "BasicSystemSettings"],
+  ["settings input", basicSettings, "GitHub API Token"],
+  ["settings status", basicSettings, "GitHub Token 已配置"],
 ]) {
   if (!source.includes(needle)) throw new Error(`${name} missing: ${needle}`);
 }

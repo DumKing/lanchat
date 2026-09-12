@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const [app, packageJson, cargoToml, lib, capability] = await Promise.all([
+const [app, basicSettings, packageJson, cargoToml, lib, capability] = await Promise.all([
   readFile(new URL("../src/app/AppShell.vue", import.meta.url), "utf8"),
+  readFile(new URL("../src/pages/settings/BasicSystemSettings.vue", import.meta.url), "utf8"),
   readFile(new URL("../package.json", import.meta.url), "utf8"),
   readFile(new URL("../src-tauri/Cargo.toml", import.meta.url), "utf8"),
   readFile(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8"),
@@ -19,7 +20,8 @@ assert.match(app, /from "@tauri-apps\/plugin-autostart"/, "设置页必须调用
 assert.match(app, /AUTOSTART_INITIALIZED_KEY/, "首次默认开启后必须记录初始化状态，避免覆盖用户主动关闭");
 assert.match(app, /!initialized\s*&&\s*import\.meta\.env\.PROD/, "开发调试时不能把临时可执行文件注册到系统启动项");
 assert.match(app, /async function initializeAutostart/, "应用启动时必须恢复并初始化自启动状态");
-assert.match(app, /title="启动设置"/, "基础设置必须提供启动设置卡片");
-assert.match(app, /开机自动启动 LanChat/, "设置页必须提供明确的开机自启开关");
+assert.match(app, /<BasicSystemSettings/, "应用外壳必须挂载独立的基础系统设置组件");
+assert.match(basicSettings, /title="启动设置"/, "基础设置必须提供启动设置卡片");
+assert.match(basicSettings, /开机自动启动 LanChat/, "设置页必须提供明确的开机自启开关");
 
 console.log("autostart settings guards passed");

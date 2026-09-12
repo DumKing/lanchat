@@ -52,6 +52,7 @@ import PluginGamesSidebar from "../components/plugins/PluginGamesSidebar.vue";
 import GamesPage from "../pages/GamesPage.vue";
 import AlertsPage from "../pages/AlertsPage.vue";
 import DevicesPage from "../pages/DevicesPage.vue";
+import BasicSystemSettings from "../pages/settings/BasicSystemSettings.vue";
 import AppNavigationRail from "./navigation/AppNavigationRail.vue";
 import { DEFAULT_GROUP_ID, useLanChatStore } from "../stores/lanchat";
 import { useDesktopPetStore } from "../stores/desktopPet";
@@ -4489,86 +4490,41 @@ async function closeWindow() {
                     <NButton block secondary type="primary" @click="saveProfile">保存资料</NButton>
                   </NSpace>
                 </NCard>
-                <NCard v-if="settingsCategory === 'basic'" title="启动设置" size="small">
-                  <div class="setting-switch-row compact-setting-row">
-                    <div>
-                      <strong>开机自动启动 LanChat</strong>
-                      <p>登录 Windows 后自动启动软件。首次安装默认开启，关闭后会保留你的选择。</p>
-                    </div>
-                    <NSwitch :value="autostartEnabled" :loading="autostartLoading" @update:value="updateAutostart" />
-                  </div>
-                </NCard>
-                <NCard v-if="settingsCategory === 'basic'" title="网络修复" size="small" class="basic-network-repair-card">
-                  <NSpace vertical>
-                    <NText depth="3">{{ networkRepairDescription }}</NText>
-                    <NText v-if="canRepairWindowsNetwork" depth="3">会请求管理员权限，并放行 LanChat.exe、TCP 18145、UDP 18146、UDP 5353。</NText>
-                    <NButton v-if="canRepairWindowsNetwork" block type="primary" :loading="networkRepairing" @click="store.repairNetwork">网络修复</NButton>
-                    <NAlert v-if="networkRepairStatus" type="success" title="已打开修复窗口">
-                      {{ networkRepairStatus }}
-                    </NAlert>
-                  </NSpace>
-                </NCard>
-                <NCard v-if="settingsCategory === 'basic'" title="通话权限" size="small">
-                  <NSpace vertical>
-                    <NText depth="3">首次发起或接听通话会自动申请权限；若此前拒绝，可在这里重新授权。</NText>
-                    <NSpace>
-                      <NButton secondary type="primary" @click="requestCallDevicePermission('audio')">重新授权麦克风</NButton>
-                      <NButton secondary type="primary" @click="requestCallDevicePermission('video')">重新授权摄像头</NButton>
-                    </NSpace>
-                  </NSpace>
-                </NCard>
-                <NCard v-if="settingsCategory === 'basic'" title="图片缓存" size="small" class="basic-image-cache-card">
-                  <NSpace vertical>
-                    <NText depth="3">带预览能力的图片会自动下载到本机缓存，聊天历史仍可在发送方离线后查看。</NText>
-                    <div class="update-info-grid">
-                      <span>缓存文件</span><strong>{{ previewMediaCacheInfo?.fileCount ?? 0 }} 个</strong>
-                      <span>占用空间</span><strong>{{ formatFileSize(previewMediaCacheInfo?.totalBytes) }}</strong>
-                    </div>
-                    <NButton secondary type="warning" :loading="previewMediaCacheClearing" @click="clearImagePreviewCache">清理图片缓存</NButton>
-                  </NSpace>
-                </NCard>
-                <NCard v-if="settingsCategory === 'basic'" title="版本更新" size="small">
-                  <NSpace vertical>
-                    <div class="setting-switch-row">
-                      <div>
-                        <strong>自动检查更新</strong>
-                        <p>每次启动都会检查，运行期间每 12 小时复检一次。强制更新版本必须安装后才能继续使用。</p>
-                      </div>
-                      <NTag type="success" :bordered="false">已启用</NTag>
-                    </div>
-                    <div class="update-info-grid">
-                      <span>当前版本</span><strong>{{ localVersionLabel }}</strong>
-                      <span>检查状态</span><NTag size="small" :type="updateStatusType" :bordered="false">{{ updateStatusLabel }}</NTag>
-                      <span>最新版本</span><strong>{{ updateInfo?.latestVersion ?? "未知" }}</strong>
-                      <span>上次检查</span><strong>{{ formatDateTime(updateInfo?.checkedAt) }}</strong>
-                    </div>
-                    <NAlert v-if="updateInfo?.updateAvailable" type="warning" title="发现新版本">
-                      {{ updateInfo.title }}
-                    </NAlert>
-                    <pre v-if="updateInfo" class="update-notes compact">{{ updateNotesPreview(updateInfo.notes) }}</pre>
-                    <div v-if="nativeUpdateInstalling" class="update-progress-panel compact">
-                      <NProgress type="line" :percentage="nativeUpdateProgressPercent" :height="8" processing />
-                      <span>{{ nativeUpdateProgressLabel }}</span>
-                    </div>
-                    <NSpace>
-                      <NButton type="primary" :loading="updateChecking" @click="checkUpdates(true)">检查更新</NButton>
-                      <NButton secondary :disabled="!preferredUpdateUrl" @click="openPreferredUpdateUrl">下载更新</NButton>
-                      <NButton quaternary :disabled="!updateInfo" @click="openReleasePage">Release 页面</NButton>
-                    </NSpace>
-                  </NSpace>
-                  <div class="update-token-section">
-                    <strong>GitHub API Token</strong>
-                    <NText depth="3">配置仅用于读取 LanChat 的 GitHub Release，减少匿名 API 限流。Token 会保存在系统凭据库，不会同步到局域网设备。</NText>
-                    <NAlert v-if="updateGithubTokenInfo?.configured" type="success" :show-icon="false">
-                      {{ updateGithubTokenInfo.maskedValue || 'GitHub Token 已配置' }}
-                    </NAlert>
-                    <NInput v-model:value="updateGithubTokenDraft" type="password" show-password-on="click" placeholder="粘贴 GitHub Fine-grained Token（仅需 Contents: Read）" @keyup.enter="saveUpdateGithubToken" />
-                    <NSpace>
-                      <NButton type="primary" :disabled="!updateGithubTokenDraft.trim()" :loading="updateGithubTokenSaving" @click="saveUpdateGithubToken">保存 Token</NButton>
-                      <NButton v-if="updateGithubTokenInfo?.configured" secondary type="error" :loading="updateGithubTokenSaving" @click="clearUpdateGithubToken">清除 Token</NButton>
-                    </NSpace>
-                  </div>
-                </NCard>
+                <BasicSystemSettings
+                  v-if="settingsCategory === 'basic'"
+                  v-model:update-github-token-draft="updateGithubTokenDraft"
+                  :autostart-enabled="autostartEnabled"
+                  :autostart-loading="autostartLoading"
+                  :network-repair-description="networkRepairDescription"
+                  :can-repair-windows-network="canRepairWindowsNetwork"
+                  :network-repairing="networkRepairing"
+                  :network-repair-status="networkRepairStatus"
+                  :preview-media-cache-info="previewMediaCacheInfo"
+                  :preview-media-cache-clearing="previewMediaCacheClearing"
+                  :local-version-label="localVersionLabel"
+                  :update-status-type="updateStatusType"
+                  :update-status-label="updateStatusLabel"
+                  :update-info="updateInfo"
+                  :native-update-installing="nativeUpdateInstalling"
+                  :native-update-progress-percent="nativeUpdateProgressPercent"
+                  :native-update-progress-label="nativeUpdateProgressLabel"
+                  :update-checking="updateChecking"
+                  :preferred-update-url="preferredUpdateUrl"
+                  :update-github-token-info="updateGithubTokenInfo"
+                  :update-github-token-saving="updateGithubTokenSaving"
+                  :format-file-size="formatFileSize"
+                  :format-date-time="formatDateTime"
+                  :update-notes-preview="updateNotesPreview"
+                  @update-autostart="updateAutostart"
+                  @repair-network="store.repairNetwork"
+                  @request-call-permission="requestCallDevicePermission"
+                  @clear-image-cache="clearImagePreviewCache"
+                  @check-updates="checkUpdates(true)"
+                  @download-update="openPreferredUpdateUrl"
+                  @open-release-page="openReleasePage"
+                  @save-update-token="saveUpdateGithubToken"
+                  @clear-update-token="clearUpdateGithubToken"
+                />
                 <NCard v-if="settingsCategory === 'admin' && superAdminEnabled" title="超管通知" size="small">
                   <NSpace vertical>
                     <NText depth="3">指定设备会直连送达；全员模式会为每台在线设备独立创建一条通知，便于逐人审核。</NText>
