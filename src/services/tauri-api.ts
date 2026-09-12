@@ -1,8 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotification, AdminRemoteUpdate, AdminRemoteUpdateDispatch, AppVersionInfo, CallSignal, ChannelMember, Conversation, DesktopPetRuntimeState, GameFrame, Message, Nudge, Peer, PetAlertMode, PlatformInfo, PreviewMediaCacheInfo, PrivateChannelInvitePayload, Profile, QuickAlert, QuickAlertFeedback, QuickAlertTrustReset, TrayAttentionItem, UpdateCheckResult, UpdateGithubTokenInfo } from "../types/lanchat";
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, PetStatePlaybackConfig } from "../types/desktop-pet";
-import type { GameStatsRecord } from "../games/gameLeaderboard";
-import type { MinesweeperLeaderboardRecord } from "../games/minesweeperLeaderboard";
+import type { PluginGameStatsRecord, PluginTimedLeaderboardRecord } from "../plugin-host/services/leaderboardRecords";
 
 export const api = {
   getPlatformInfo: () => invoke<PlatformInfo>("get_platform_info"),
@@ -34,13 +33,13 @@ export const api = {
   listConversations: () => invoke<Conversation[]>("list_conversations"),
   deleteDirectConversation: (conversationId: string) =>
     invoke<boolean>("delete_direct_conversation", { conversationId }),
-  listGameStats: () => invoke<GameStatsRecord[]>("list_game_stats"),
-  upsertGameStats: (records: GameStatsRecord[]) =>
-    invoke<GameStatsRecord[]>("upsert_game_stats", { records }),
+  listGameStats: () => invoke<PluginGameStatsRecord[]>("list_game_stats"),
+  upsertGameStats: (records: PluginGameStatsRecord[]) =>
+    invoke<PluginGameStatsRecord[]>("upsert_game_stats", { records }),
   listMinesweeperLeaderboard: () =>
-    invoke<MinesweeperLeaderboardRecord[]>("list_minesweeper_leaderboard"),
-  upsertMinesweeperLeaderboard: (records: MinesweeperLeaderboardRecord[]) =>
-    invoke<MinesweeperLeaderboardRecord[]>("upsert_minesweeper_leaderboard", { records }),
+    invoke<PluginTimedLeaderboardRecord[]>("list_minesweeper_leaderboard"),
+  upsertMinesweeperLeaderboard: (records: PluginTimedLeaderboardRecord[]) =>
+    invoke<PluginTimedLeaderboardRecord[]>("upsert_minesweeper_leaderboard", { records }),
   listChannelMembers: (conversationId: string) =>
     invoke<ChannelMember[]>("list_channel_members", { conversationId }),
   isChannelMuted: (conversationId: string) =>

@@ -1,7 +1,6 @@
 import type { PluginBridgeHandlerContext } from "../runtime/BridgeDispatcher";
 import type { PluginRoomService } from "./PluginRoomService";
-import { createGameStatsRecord, type GameStatsRecord, upsertGameStatsRecords } from "../../games/gameLeaderboard";
-import { createMinesweeperLeaderboardRecord, upsertMinesweeperLeaderboardRecords } from "../../games/minesweeperLeaderboard";
+import { createPluginGameStatsRecord, createPluginTimedLeaderboardRecord, upsertPluginGameStatsRecords, upsertPluginTimedLeaderboardRecords } from "./leaderboardRecords";
 import { eligibleLeaderboardParticipants } from "../../features/games/leaderboardService";
 import { api } from "../../services/tauri-api";
 import type { Peer, Profile } from "../../types/lanchat";
@@ -66,7 +65,7 @@ export class PluginLeaderboardService {
     if (input.gameId === "minesweeper") {
       const peerId = String(result.peerId ?? "");
       if (!room.memberPeerIds.includes(peerId)) throw new Error("排行榜玩家不在房间中");
-      const record = createMinesweeperLeaderboardRecord({
+      const record = createPluginTimedLeaderboardRecord({
         deviceId: peerId,
         nickname: this.#nickname(peerId),
         width: Number(result.width),
@@ -76,7 +75,7 @@ export class PluginLeaderboardService {
         moves: Number(result.moves),
       });
       const existing = await api.listMinesweeperLeaderboard();
-      await api.upsertMinesweeperLeaderboard(upsertMinesweeperLeaderboardRecords(existing, [record]));
+      await api.upsertMinesweeperLeaderboard(upsertPluginTimedLeaderboardRecords(existing, [record]));
       this.#submitted.add(submissionKey);
       return;
     }
@@ -85,15 +84,15 @@ export class PluginLeaderboardService {
     const existing = await api.listGameStats();
     const updates = humans.filter((player) => !player.isBot).map((player) => {
       const current = existing.find((record) => record.game === input.gameId && record.deviceId === player.deviceId);
-      return createGameStatsRecord({
-        game: input.gameId as GameStatsRecord["game"],
+      return createPluginGameStatsRecord({
+        game: input.gameId,
         deviceId: player.deviceId,
         nickname: player.nickname,
         totalGames: (current?.totalGames ?? 0) + 1,
         wins: (current?.wins ?? 0) + (winnerIds.has(player.deviceId) ? 1 : 0),
       });
     });
-    await api.upsertGameStats(upsertGameStatsRecords(existing, updates));
+    await api.upsertGameStats(upsertPluginGameStatsRecords(existing, updates));
     this.#submitted.add(submissionKey);
   }
 
