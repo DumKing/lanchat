@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const appVue = await readFile("src/App.vue", "utf8");
+const appVue = await readFile("src/app/AppShell.vue", "utf8");
 const pkg = await readFile("package.json", "utf8");
 
 assert.match(pkg, /"crypto-js"/, "应使用开源 crypto-js 处理 MD5");

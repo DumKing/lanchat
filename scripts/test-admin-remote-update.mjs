@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 const protocol = await readFile(new URL("../src-tauri/src/protocol.rs", import.meta.url), "utf8");
 const runtime = await readFile(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
 const network = await readFile(new URL("../src-tauri/src/network.rs", import.meta.url), "utf8");
-const app = await readFile(new URL("../src/App.vue", import.meta.url), "utf8");
+const app = await readFile(new URL("../src/app/AppShell.vue", import.meta.url), "utf8");
 
 assert.match(
   protocol,

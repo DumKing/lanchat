@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { NAvatar, NLayoutSider, NTooltip } from "naive-ui";
+import { t } from "../../i18n";
 
 export type AppNavigationSection = "chat" | "devices" | "games" | "alerts" | "settings";
 
@@ -37,23 +38,23 @@ const emit = defineEmits<{
       <button class="rail-collapse-toggle" :title="expanded ? '收起侧栏' : '展开侧栏'" @click="emit('toggle')">
         {{ expanded ? "‹" : "›" }}
       </button>
-      <button class="rail-action" :class="{ active: activeSection === 'chat' }" title="聊天" @click="emit('select', 'chat')">
+      <button class="rail-action" :class="{ active: activeSection === 'chat' }" :title="t('nav.chat')" @click="emit('select', 'chat')">
         <span class="nav-icon">💬</span>
-        <span v-if="expanded" class="nav-label">聊天</span>
+        <span v-if="expanded" class="nav-label">{{ t("nav.chat") }}</span>
         <span v-if="totalUnread > 0" class="nav-unread">{{ totalUnread > 99 ? "99+" : totalUnread }}</span>
       </button>
-      <button class="rail-action" :class="{ active: activeSection === 'devices' }" title="设备列表" @click="emit('select', 'devices')">
+      <button class="rail-action" :class="{ active: activeSection === 'devices' }" :title="t('nav.devices')" @click="emit('select', 'devices')">
         <span class="nav-icon">🖥</span>
-        <span v-if="expanded" class="nav-label">设备列表</span>
+        <span v-if="expanded" class="nav-label">{{ t("nav.devices") }}</span>
       </button>
-      <button v-if="gamesAvailable" class="rail-action" :class="{ active: activeSection === 'games' }" title="游戏" @click="emit('select', 'games')">
+      <button v-if="gamesAvailable" class="rail-action" :class="{ active: activeSection === 'games' }" :title="t('nav.games')" @click="emit('select', 'games')">
         <span class="nav-icon">🎮</span>
-        <span v-if="expanded" class="nav-label">游戏</span>
+        <span v-if="expanded" class="nav-label">{{ t("nav.games") }}</span>
         <span v-if="showGameAttention" class="nav-unread">{{ gameAttentionCount > 9 ? "9+" : gameAttentionCount }}</span>
       </button>
-      <button v-if="petAlertEnabled" class="rail-action" :class="{ active: activeSection === 'alerts' }" title="狼来了排行榜" @click="emit('select', 'alerts')">
+      <button v-if="petAlertEnabled" class="rail-action" :class="{ active: activeSection === 'alerts' }" :title="t('nav.alerts')" @click="emit('select', 'alerts')">
         <span class="nav-icon">🐸</span>
-        <span v-if="expanded" class="nav-label">狼来了</span>
+        <span v-if="expanded" class="nav-label">{{ t("nav.alerts") }}</span>
       </button>
       <button class="rail-action add" title="添加设备" @click="emit('select', 'devices')">
         <span class="nav-icon">＋</span>
@@ -64,7 +65,7 @@ const emit = defineEmits<{
         <template #trigger>
           <button class="rail-action rail-notification-bell" title="历史公告" @click="emit('openNotificationHistory')">
             <span class="nav-icon nav-bell-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d="M18 10a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 22h4" /></svg></span>
-            <span v-if="expanded" class="nav-label">公告通知</span>
+            <span v-if="expanded" class="nav-label">{{ t("nav.notifications") }}</span>
             <span v-if="pendingNotificationCount > 0" class="nav-notification-dot"></span>
           </button>
         </template>
@@ -72,9 +73,9 @@ const emit = defineEmits<{
       </NTooltip>
       <NTooltip trigger="hover" placement="right">
         <template #trigger>
-          <button class="rail-action" :class="{ active: activeSection === 'settings' }" title="设置" @click="emit('select', 'settings')">
+          <button class="rail-action" :class="{ active: activeSection === 'settings' }" :title="t('nav.settings')" @click="emit('select', 'settings')">
             <span class="nav-icon">⚙</span>
-            <span v-if="expanded" class="nav-label">设置</span>
+            <span v-if="expanded" class="nav-label">{{ t("nav.settings") }}</span>
             <span v-if="updateAvailable" class="nav-upgrade-badge">{{ updateBadgeLabel }}</span>
           </button>
         </template>

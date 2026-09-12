@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
-const appVue = fs.readFileSync("src/App.vue", "utf8");
+const appVue = fs.readFileSync("src/app/AppShell.vue", "utf8");
 const api = fs.readFileSync("src/services/tauri-api.ts", "utf8");
 const types = fs.readFileSync("src/types/lanchat.ts", "utf8");
 const store = fs.readFileSync("src/stores/lanchat.ts", "utf8");

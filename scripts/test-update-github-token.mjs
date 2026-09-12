@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 const read = (file) => readFileSync(resolve(process.cwd(), file), "utf8");
 const backend = read("src-tauri/src/lib.rs");
 const api = read("src/services/tauri-api.ts");
-const app = read("src/App.vue");
+const app = read("src/app/AppShell.vue");
 
 for (const [name, source, needle] of [
   ["credential storage", backend, 'UPDATE_GITHUB_TOKEN_SERVICE'],

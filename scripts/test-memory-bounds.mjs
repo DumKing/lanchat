@@ -3,12 +3,13 @@ import { readFile } from "node:fs/promises";
 
 const [store, app, storage, network, fileServer, backend] = await Promise.all([
   readFile(new URL("../src/stores/lanchat.ts", import.meta.url), "utf8"),
-  readFile(new URL("../src/App.vue", import.meta.url), "utf8"),
+  readFile(new URL("../src/app/AppShell.vue", import.meta.url), "utf8"),
   readFile(new URL("../src-tauri/src/storage.rs", import.meta.url), "utf8"),
   readFile(new URL("../src-tauri/src/network.rs", import.meta.url), "utf8"),
   readFile(new URL("../src-tauri/src/file_server.rs", import.meta.url), "utf8"),
   readFile(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8"),
 ]);
+const previewCache = backend.match(/async fn cache_preview_media[\s\S]*?(?=\r?\n#\[tauri::command\]\r?\nfn get_preview_media_cache_info)/)?.[0] ?? "";
 
 assert.match(store, /MAX_MESSAGES_PER_CONVERSATION = 500/, "前端单会话消息缓存需要有上限");
 assert.match(store, /MAX_CACHED_CONVERSATIONS = 12/, "前端会话缓存数量需要有上限");
@@ -29,7 +30,7 @@ assert.match(fileServer, /tokio::io::copy\(&mut file_handle, &mut stream\)/, "�
 assert.doesNotMatch(fileServer, /tokio::fs::read\(&file\.path\)/, "文件下载不能整文件读入内存");
 assert.match(backend, /PREVIEW_MEDIA_CACHE_TOTAL_LIMIT_BYTES/, "图片缓存总容量需要限制");
 assert.match(backend, /enforce_preview_media_cache_limit/, "图片缓存需要按 LRU 清理");
-assert.match(backend, /\.chunk\(\)[\s\S]{0,60}\.await/, "图片缓存下载应分块处理，不能一次性读入整张图片");
-assert.doesNotMatch(backend, /response\s*\.bytes\(\)\s*\.await/, "图片缓存不能一次性读入整张图片");
+assert.match(previewCache, /\.chunk\(\)[\s\S]{0,60}\.await/, "图片缓存下载应分块处理，不能一次性读入整张图片");
+assert.doesNotMatch(previewCache, /response\s*\.bytes\(\)\s*\.await/, "图片缓存不能一次性读入整张图片");
 
 console.log("memory bounds contracts passed");

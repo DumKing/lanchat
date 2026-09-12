@@ -1,7 +1,7 @@
 ﻿import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const appVue = await readFile("src/App.vue", "utf8");
+const appVue = await readFile("src/app/AppShell.vue", "utf8");
 const css = await readFile("src/styles/global.css", "utf8");
 const api = await readFile("src/services/tauri-api.ts", "utf8");
 const store = await readFile("src/stores/lanchat.ts", "utf8");

@@ -7,7 +7,7 @@ const backend = readFileSync("src-tauri/src/lib.rs", "utf8");
 const storage = readFileSync("src-tauri/src/storage.rs", "utf8");
 const api = readFileSync("src/services/tauri-api.ts", "utf8");
 const types = readFileSync("src/types/lanchat.ts", "utf8");
-const app = readFileSync("src/App.vue", "utf8");
+const app = readFileSync("src/app/AppShell.vue", "utf8");
 
 assert.match(protocol, /pub struct SimulationMeta/, "协议需要声明模拟操作元数据");
 assert.match(protocol, /pub simulation: Option<SimulationMeta>/, "聊天和告警帧需要可选模拟元数据");

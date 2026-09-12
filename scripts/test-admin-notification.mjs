@@ -6,7 +6,7 @@ const protocol = read("src-tauri/src/protocol.rs");
 const storage = read("src-tauri/src/storage.rs");
 const network = read("src-tauri/src/network.rs");
 const backend = read("src-tauri/src/lib.rs");
-const app = read("src/App.vue");
+const app = `${read("src/app/AppShell.vue")}\n${read("src/app/navigation/AppNavigationRail.vue")}`;
 
 for (const [name, source, needle] of [
   ["protocol", protocol, "AdminNotificationSubmission"],

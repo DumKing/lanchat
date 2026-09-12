@@ -15,7 +15,7 @@ assert.equal(shouldSendComposerMessage({ key: "Enter", shiftKey: false, isCompos
 assert.equal(shouldSendComposerMessage({ key: "Enter", shiftKey: false, isComposing: false, keyCode: 229 }), false);
 assert.equal(shouldSendComposerMessage({ key: "A", shiftKey: false, isComposing: false, keyCode: 65 }), false);
 
-const appSource = fs.readFileSync("src/App.vue", "utf8");
+const appSource = fs.readFileSync("src/app/AppShell.vue", "utf8");
 const componentSource = fs.readFileSync("src/components/ChatComposerInput.vue", "utf8");
 assert.match(appSource, /<ChatComposerInput\b/, "聊天输入框应隔离为独立组件，避免页面计时刷新打断输入法合成态");
 assert.match(componentSource, /<NInput\b/, "独立输入组件应保留 Naive UI 输入框");

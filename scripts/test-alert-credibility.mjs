@@ -6,7 +6,7 @@ const modulePath = resolve('src/utils/alertCredibility.ts');
 assert.ok(existsSync(modulePath), '真实度算法应拆到 src/utils/alertCredibility.ts，避免散落在 App.vue');
 
 const source = readFileSync(modulePath, 'utf8');
-const appVue = readFileSync(resolve('src/App.vue'), 'utf8');
+const appVue = readFileSync(resolve('src/app/AppShell.vue'), 'utf8');
 
 assert.match(source, /export function alertTruthScore/, '应导出单条告警真实度函数');
 assert.match(source, /export function senderCredibility/, '应导出发送人真实度函数');
@@ -24,7 +24,7 @@ assert.match(source, /credibility >= 60[\s\S]*?return Math\.round\(70 \+/, '60-7
 assert.match(source, /credibility >= 40[\s\S]*?return Math\.round\(45 \+/, '40-59% 应映射到 45-69°C');
 assert.match(source, /return Math\.round\(20 \+/, '40% 以下应映射到 20-44°C');
 
-assert.match(appVue, /from "\.\/utils\/alertCredibility"/, 'App.vue 应使用统一真实度算法模块');
+assert.match(appVue, /from "\.\.\/utils\/alertCredibility"/, '应用外壳应使用统一真实度算法模块');
 assert.doesNotMatch(appVue, /function alertTruthProbability/, 'App.vue 不应再保留旧的简单比例真实度函数');
 assert.doesNotMatch(appVue, /function senderTruthProbability/, 'App.vue 不应再保留旧的简单平均个人真实度函数');
 assert.match(appVue, /senderCredibility\(alertRecords\.value,\s*alert\.senderDeviceId/, '桌宠温度应按发送人历史真实度计算');

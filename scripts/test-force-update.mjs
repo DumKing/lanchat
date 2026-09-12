@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const app = await readFile("src/App.vue", "utf8");
+const app = await readFile("src/app/AppShell.vue", "utf8");
 const backend = await readFile("src-tauri/src/lib.rs", "utf8");
 const workflow = await readFile(".github/workflows/release.yml", "utf8");
 

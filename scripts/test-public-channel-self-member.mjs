@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const app = await readFile(new URL("../src/App.vue", import.meta.url), "utf8");
+const app = await readFile(new URL("../src/app/AppShell.vue", import.meta.url), "utf8");
 
 assert.match(app, /const publicChannelMembers = computed/, "公开局域网频道应构建包含本机的成员列表");
 assert.match(app, /channel_id:\s*DEFAULT_GROUP_ID/, "本机成员记录应属于默认局域网频道");

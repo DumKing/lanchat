@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 
 const config = JSON.parse(await readFile("src-tauri/tauri.conf.json", "utf8"));
 const scope = config.app.security.assetProtocol.scope;
-const source = await readFile("src/App.vue", "utf8");
+const source = await readFile("src/app/AppShell.vue", "utf8");
 const backend = await readFile("src-tauri/src/lib.rs", "utf8");
 
 assert.ok(scope.includes("$APPLOCALDATA/**"), "图片缓存位于应用本地数据目录，必须允许 asset protocol 读取");

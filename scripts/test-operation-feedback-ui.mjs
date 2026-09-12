@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const [app, styles] = await Promise.all([
-  readFile(new URL("../src/App.vue", import.meta.url), "utf8"),
+  readFile(new URL("../src/app/AppShell.vue", import.meta.url), "utf8"),
   readFile(new URL("../src/styles/global.css", import.meta.url), "utf8"),
 ]);
 

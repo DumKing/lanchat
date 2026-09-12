@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 
-const source = readFileSync(new URL("../src/App.vue", import.meta.url), "utf8");
+const source = readFileSync(new URL("../src/app/AppShell.vue", import.meta.url), "utf8");
 
 if (!source.includes("callPeerConnection.remoteDescription")) {
   throw new Error("ICE 候选必须在远端描述可用后才加入连接");

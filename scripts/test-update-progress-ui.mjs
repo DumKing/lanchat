@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
-const app = fs.readFileSync("src/App.vue", "utf8");
+const app = fs.readFileSync("src/app/AppShell.vue", "utf8");
 
 assert.match(app, /nativeUpdateProgress/, "自动更新应维护下载进度状态");
 assert.match(app, /download\s*\(\s*\(event\)/, "自动更新应使用带事件回调的 download() 接收进度");

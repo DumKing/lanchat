@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const [app, packageJson, cargoToml, lib, capability] = await Promise.all([
-  readFile(new URL("../src/App.vue", import.meta.url), "utf8"),
+  readFile(new URL("../src/app/AppShell.vue", import.meta.url), "utf8"),
   readFile(new URL("../package.json", import.meta.url), "utf8"),
   readFile(new URL("../src-tauri/Cargo.toml", import.meta.url), "utf8"),
   readFile(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8"),

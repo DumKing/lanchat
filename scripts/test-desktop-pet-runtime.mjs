@@ -10,7 +10,7 @@ assert.ok(!fs.existsSync(legacyRuntimePath), "旧 native_frog_pet.rs 应被移�
 
 const runtime = fs.readFileSync(runtimePath, "utf8");
 const lib = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
-const appVue = fs.readFileSync("src/App.vue", "utf8");
+const appVue = fs.readFileSync("src/app/AppShell.vue", "utf8");
 const feedbackPanel = runtime.slice(
   runtime.indexOf("if state.feedbackable"),
   runtime.indexOf("fn draw_call_details"),

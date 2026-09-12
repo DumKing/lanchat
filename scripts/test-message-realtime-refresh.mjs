@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const app = readFileSync(resolve(process.cwd(), "src/App.vue"), "utf8");
+const app = readFileSync(resolve(process.cwd(), "src/app/AppShell.vue"), "utf8");
 const store = readFileSync(resolve(process.cwd(), "src/stores/lanchat.ts"), "utf8");
 
 if (!store.includes("appendOrUpdateMessage(message);")) {

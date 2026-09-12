@@ -5,7 +5,7 @@ const [backend, api, store, app] = await Promise.all([
   readFile(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8"),
   readFile(new URL("../src/services/tauri-api.ts", import.meta.url), "utf8"),
   readFile(new URL("../src/stores/lanchat.ts", import.meta.url), "utf8"),
-  readFile(new URL("../src/App.vue", import.meta.url), "utf8"),
+  readFile(new URL("../src/app/AppShell.vue", import.meta.url), "utf8"),
 ]);
 
 assert.match(backend, /Get-Process -Id \$appProcessId/, "绿色版更新应等待旧进程实际退出");

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const app = await readFile(new URL("../src/App.vue", import.meta.url), "utf8");
+const app = await readFile(new URL("../src/app/AppShell.vue", import.meta.url), "utf8");
 const css = await readFile(new URL("../src/styles/global.css", import.meta.url), "utf8");
 
 assert.match(app, /'basic-settings-grid': settingsCategory === 'basic'/, "基础设置必须使用独立的单列布局");

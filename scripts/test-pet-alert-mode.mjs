@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const appVue = readFileSync("src/App.vue", "utf8");
+const appVue = readFileSync("src/app/AppShell.vue", "utf8");
 const store = readFileSync("src/stores/lanchat.ts", "utf8");
 const api = readFileSync("src/services/tauri-api.ts", "utf8");
 const types = readFileSync("src/types/lanchat.ts", "utf8");
@@ -28,9 +28,10 @@ assert.match(desktopPetTypes, /discoDurationSeconds: number/, "前端桌宠配�
 assert.match(appVue, /petDiscoDurationMs/, "所有蹦迪入口应读取统一时长配置");
 assert.match(
   appVue,
-  /function stopPetAlertVisuals\(\)[\s\S]{0,1400}pendingQuickAlertIds[\s\S]{0,500}visuallyStoppedAlertIds[\s\S]{0,700}pendingFaceAlertIds[\s\S]{0,500}visuallyStoppedCameraFaceAlertIds/,
-  "停止快捷键应抑制当时全部未处理告警，反馈切换下一条时不能重新蹦迪",
+  /function stopPetAlertVisuals\(\)[\s\S]{0,1600}pendingQuickAlertIds[\s\S]{0,500}visuallyStoppedAlertIds/,
+  "停止快捷键应抑制当时全部未处理的核心告警，反馈切换下一条时不能重新蹦迪",
 );
+assert.doesNotMatch(appVue, /pendingFaceAlertIds|visuallyStoppedCameraFaceAlertIds/, "核心程序不应保留视觉识别告警状态");
 assert.match(appVue, /label="蹦迪持续时长"/, "桌宠设置页应允许配置蹦迪持续时长");
 assert.match(lib, /duration_ms\.unwrap_or\(60_000\)/, "原生超管蹦迪命令的回退时长应为一分钟");
 assert.doesNotMatch(appVue, /FrogAlertMode|sendFrogQuickAlert|normalizeFrogAlertMode/, "前端不应保留旧青蛙报警接口");

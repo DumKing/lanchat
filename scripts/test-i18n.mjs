@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const app = await readFile(new URL("../src/App.vue", import.meta.url), "utf8");
+const app = `${await readFile(new URL("../src/app/AppShell.vue", import.meta.url), "utf8")}\n${await readFile(new URL("../src/app/navigation/AppNavigationRail.vue", import.meta.url), "utf8")}`;
 const i18n = await readFile(new URL("../src/i18n.ts", import.meta.url), "utf8");
 
 assert.match(i18n, /export type LanguagePreference = "system" \| "zh-CN" \| "en-US"/, "语言偏好必须支持跟随系统、中文和英文");

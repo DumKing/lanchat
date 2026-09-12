@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const appVue = readFileSync("src/App.vue", "utf8");
+const appVue = readFileSync("src/app/AppShell.vue", "utf8");
 
 assert.match(appVue, /async function scrollActiveChatToBottom\(\)/, "聊天滚到底应有统一函数");
 assert.match(appVue, /requestAnimationFrame[\s\S]{0,180}messagePane\.value\.scrollTop = messagePane\.value\.scrollHeight/, "滚动应等到下一帧，确保消息容器高度已稳定");
