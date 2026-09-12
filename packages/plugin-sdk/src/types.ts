@@ -53,12 +53,56 @@ export interface PluginRoomEvent {
   payload: unknown;
 }
 
+export type PluginRoomAdmission = "lobby" | "closed";
+
+export interface PluginRoomIntent {
+  kind: "intent";
+  roomId: string;
+  commandId: string;
+  baseRevision: number;
+  protocolVersion: number;
+  senderPeerId: string;
+  payload: unknown;
+}
+
+export interface PluginAuthoritativeCommit {
+  kind: "commit";
+  roomId: string;
+  commitId: string;
+  commandId: string;
+  baseRevision: number;
+  revision: number;
+  protocolVersion: number;
+  events: unknown[];
+  stateHash: string;
+  terminal?: { resultHash: string };
+}
+
+export type PluginAuthoritativeRoomEvent = PluginRoomIntent | PluginAuthoritativeCommit;
+
+export interface PluginRoomCheckpoint {
+  roomId: string;
+  revision: number;
+  protocolVersion: number;
+  payload: unknown;
+  stateHash: string;
+  checksum: string;
+}
+
+export interface PluginRoomPresenceEvent {
+  roomId: string;
+  peerId: string;
+  status: "online" | "offline" | "recovered";
+  occurredAt: number;
+}
+
 export interface PluginEventApi {
   onPluginEnter(callback: (context: PluginEnterContext) => void): PluginUnsubscribe;
   onPluginOut(callback: (context: PluginExitContext) => void): PluginUnsubscribe;
   onThemeChanged(callback: (theme: PluginThemeSnapshot) => void): PluginUnsubscribe;
   onNetworkChanged(callback: (network: PluginNetworkSnapshot) => void): PluginUnsubscribe;
-  onRoomEvent(callback: (event: PluginRoomEvent) => void): PluginUnsubscribe;
+  onRoomEvent(callback: (event: PluginRoomEvent | PluginAuthoritativeRoomEvent) => void): PluginUnsubscribe;
+  onRoomPresenceChanged(callback: (event: PluginRoomPresenceEvent) => void): PluginUnsubscribe;
   onVisibilityChanged(callback: (visible: boolean) => void): PluginUnsubscribe;
 }
 
@@ -99,7 +143,26 @@ export interface PluginRoomSummary {
   ownerPeerId: string;
   memberPeerIds: string[];
   schemaVersion: number;
+  admission?: PluginRoomAdmission;
+  roomVersion?: number;
+  revision?: number;
 }
+
+export interface PluginRoomRecovery {
+  room: PluginRoomSummary;
+  checkpoint: PluginRoomCheckpoint | null;
+  commits: PluginAuthoritativeCommit[];
+}
+
+export type PluginRoomInviteFailureReason = "expired" | "full" | "closed" | "not_found" | "incompatible" | "stale";
+
+export type PluginRoomInviteResolution =
+  | { ok: true; room: PluginRoomSummary }
+  | { ok: false; reason: PluginRoomInviteFailureReason; message: string };
+
+export type PluginRoomIntentInput = Omit<PluginRoomIntent, "kind" | "senderPeerId">;
+export type PluginAuthoritativeCommitInput = Omit<PluginAuthoritativeCommit, "kind" | "commitId" | "revision">;
+export type PluginRoomCheckpointInput = Omit<PluginRoomCheckpoint, "checksum">;
 
 export interface PluginRoomApi {
   list(input?: { gameId?: string }): Promise<PluginRoomSummary[]>;
@@ -109,6 +172,12 @@ export interface PluginRoomApi {
   send(input: { roomId: string; type: string; payload: unknown; idempotencyKey: string }): Promise<void>;
   snapshot<TResult = unknown>(input: { roomId: string }): Promise<TResult>;
   invite(input: { roomId: string }): Promise<void>;
+  sendIntent(input: PluginRoomIntentInput): Promise<void>;
+  commit(input: PluginAuthoritativeCommitInput): Promise<PluginAuthoritativeCommit>;
+  publishCheckpoint(input: PluginRoomCheckpointInput): Promise<PluginRoomCheckpoint>;
+  recover(input: { roomId: string; afterRevision: number }): Promise<PluginRoomRecovery>;
+  setAdmission(input: { roomId: string; admission: PluginRoomAdmission }): Promise<PluginRoomSummary>;
+  resolveInvite(input: { roomId: string; roomVersion: number; expiresAt: number }): Promise<PluginRoomInviteResolution>;
 }
 
 export interface PluginLeaderboardEntry {
@@ -122,7 +191,14 @@ export interface PluginLeaderboardEntry {
 
 export interface PluginLeaderboardApi {
   list(input: { gameId: string; limit?: number }): Promise<PluginLeaderboardEntry[]>;
-  submit(input: { gameId: string; roomId: string; idempotencyKey: string; result: unknown }): Promise<void>;
+  submit(input: {
+    gameId: string;
+    roomId: string;
+    terminalRevision: number;
+    terminalCommitId: string;
+    stateHash: string;
+    result: unknown;
+  }): Promise<void>;
 }
 
 export interface PluginStorageApi {

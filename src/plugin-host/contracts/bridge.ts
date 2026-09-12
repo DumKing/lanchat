@@ -68,6 +68,72 @@ export interface PluginRoomEvent {
   payload: unknown;
 }
 
+export type PluginRoomAdmission = "lobby" | "closed";
+
+export interface PluginRoomIntent {
+  kind: "intent";
+  roomId: string;
+  commandId: string;
+  baseRevision: number;
+  protocolVersion: number;
+  senderPeerId: string;
+  payload: unknown;
+}
+
+export interface PluginAuthoritativeCommit {
+  kind: "commit";
+  roomId: string;
+  commitId: string;
+  commandId: string;
+  baseRevision: number;
+  revision: number;
+  protocolVersion: number;
+  events: unknown[];
+  stateHash: string;
+  terminal?: { resultHash: string };
+}
+
+export type PluginAuthoritativeRoomEvent = PluginRoomIntent | PluginAuthoritativeCommit;
+
+export interface PluginRoomCheckpoint {
+  roomId: string;
+  revision: number;
+  protocolVersion: number;
+  payload: unknown;
+  stateHash: string;
+  checksum: string;
+}
+
+export interface PluginRoomSummary {
+  roomId: string;
+  gameId: string;
+  ownerPeerId: string;
+  memberPeerIds: string[];
+  schemaVersion: number;
+  admission?: PluginRoomAdmission;
+  roomVersion?: number;
+  revision?: number;
+}
+
+export interface PluginRoomRecovery {
+  room: PluginRoomSummary;
+  checkpoint: PluginRoomCheckpoint | null;
+  commits: PluginAuthoritativeCommit[];
+}
+
+export type PluginRoomInviteFailureReason = "expired" | "full" | "closed" | "not_found" | "incompatible" | "stale";
+
+export type PluginRoomInviteResolution =
+  | { ok: true; room: PluginRoomSummary }
+  | { ok: false; reason: PluginRoomInviteFailureReason; message: string };
+
+export interface PluginRoomPresenceEvent {
+  roomId: string;
+  peerId: string;
+  status: "online" | "offline" | "recovered";
+  occurredAt: number;
+}
+
 export type PluginUnsubscribe = () => void;
 
 export interface PluginEventApi {
@@ -75,6 +141,7 @@ export interface PluginEventApi {
   onPluginOut(callback: (context: PluginExitContext) => void): PluginUnsubscribe;
   onThemeChanged(callback: (theme: PluginThemeSnapshot) => void): PluginUnsubscribe;
   onNetworkChanged(callback: (network: PluginNetworkSnapshot) => void): PluginUnsubscribe;
-  onRoomEvent(callback: (event: PluginRoomEvent) => void): PluginUnsubscribe;
+  onRoomEvent(callback: (event: PluginRoomEvent | PluginAuthoritativeRoomEvent) => void): PluginUnsubscribe;
+  onRoomPresenceChanged(callback: (event: PluginRoomPresenceEvent) => void): PluginUnsubscribe;
   onVisibilityChanged(callback: (visible: boolean) => void): PluginUnsubscribe;
 }

@@ -66,12 +66,96 @@ describe("createLanChatPluginClient", () => {
     ]);
   });
 
+  it("把权威房间调用的方法名和参数原样传给桥接层", async () => {
+    const { transport, requests } = createTransport();
+    const client = createLanChatPluginClient(transport);
+    const intent = {
+      roomId: "room-1",
+      commandId: "command-1",
+      baseRevision: 3,
+      protocolVersion: 2,
+      payload: { action: "roll" },
+    };
+    const commit = {
+      roomId: "room-1",
+      commandId: "command-1",
+      baseRevision: 3,
+      protocolVersion: 2,
+      events: [{ type: "dice-rolled", value: 6 }],
+      stateHash: "state-4",
+      terminal: { resultHash: "result-4" },
+    };
+    const checkpoint = {
+      roomId: "room-1",
+      revision: 4,
+      protocolVersion: 2,
+      payload: { turn: "peer-2" },
+      stateHash: "state-4",
+    };
+    const recovery = { roomId: "room-1", afterRevision: 4 };
+    const admission = { roomId: "room-1", admission: "closed" as const };
+    const invite = { roomId: "room-1", roomVersion: 7, expiresAt: 2_000_000_000_000 };
+
+    await client.rooms.sendIntent(intent);
+    await client.rooms.commit(commit);
+    await client.rooms.publishCheckpoint(checkpoint);
+    await client.rooms.recover(recovery);
+    await client.rooms.setAdmission(admission);
+    await client.rooms.resolveInvite(invite);
+
+    expect(requests).toEqual([
+      { method: "rooms.sendIntent", params: intent },
+      { method: "rooms.commit", params: commit },
+      { method: "rooms.publishCheckpoint", params: checkpoint },
+      { method: "rooms.recover", params: recovery },
+      { method: "rooms.setAdmission", params: admission },
+      { method: "rooms.resolveInvite", params: invite },
+    ]);
+  });
+
+  it("保留旧 rooms.send 并使用新的排行榜提交契约", async () => {
+    const { transport, requests } = createTransport();
+    const client = createLanChatPluginClient(transport);
+    const legacyEvent = {
+      roomId: "room-1",
+      type: "move",
+      payload: { steps: 2 },
+      idempotencyKey: "legacy-1",
+    };
+    const result = {
+      gameId: "monopoly",
+      roomId: "room-1",
+      terminalRevision: 18,
+      terminalCommitId: "commit-18",
+      stateHash: "state-18",
+      result: { winnerPeerId: "peer-1" },
+    };
+
+    await client.rooms.send(legacyEvent);
+    await client.leaderboard.submit(result);
+
+    expect(requests).toEqual([
+      { method: "rooms.send", params: legacyEvent },
+      { method: "leaderboard.submit", params: result },
+    ]);
+  });
+
   it("取消订阅后不再保留事件监听器", () => {
     const { transport, subscriptions } = createTransport();
     const client = createLanChatPluginClient(transport);
     const unsubscribe = client.events.onVisibilityChanged(() => undefined);
 
     expect(subscriptions.map((item) => item.event)).toEqual(["visibility.changed"]);
+    unsubscribe();
+    expect(subscriptions).toHaveLength(0);
+  });
+
+  it("订阅并取消订阅房间在线状态事件", () => {
+    const { transport, subscriptions } = createTransport();
+    const client = createLanChatPluginClient(transport);
+    const unsubscribe = client.events.onRoomPresenceChanged(() => undefined);
+
+    expect(subscriptions.map((item) => item.event)).toEqual(["room.presenceChanged"]);
     unsubscribe();
     expect(subscriptions).toHaveLength(0);
   });
