@@ -11,6 +11,7 @@ import type {
 } from "./types";
 
 export type * from "./types";
+export { PLUGIN_HASH_CONTRACT } from "./types.js";
 export { PLUGIN_EVENTS, type PluginEventName } from "./events.js";
 
 export function createLanChatPluginClient(transport: PluginBridgeTransport): LanChatPluginApiV1 {
@@ -26,7 +27,8 @@ export function createLanChatPluginClient(transport: PluginBridgeTransport): Lan
       onPluginOut: (callback: (context: PluginExitContext) => void) => transport.subscribe("plugin.out", callback),
       onThemeChanged: (callback: (theme: PluginThemeSnapshot) => void) => transport.subscribe("theme.changed", callback),
       onNetworkChanged: (callback: (network: PluginNetworkSnapshot) => void) => transport.subscribe("network.changed", callback),
-      onRoomEvent: (callback: (event: PluginRoomEvent | PluginAuthoritativeRoomEvent) => void) => transport.subscribe("room.event", callback),
+      onRoomEvent: (callback: (event: PluginRoomEvent) => void) => transport.subscribe("room.event", callback),
+      onAuthoritativeRoomEvent: (callback: (event: PluginAuthoritativeRoomEvent) => void) => transport.subscribe("room.authoritativeEvent", callback),
       onRoomPresenceChanged: (callback: (event: PluginRoomPresenceEvent) => void) => transport.subscribe("room.presenceChanged", callback),
       onVisibilityChanged: (callback: (visible: boolean) => void) => transport.subscribe("visibility.changed", callback),
     },

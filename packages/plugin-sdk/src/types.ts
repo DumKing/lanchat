@@ -42,6 +42,11 @@ export interface PluginNetworkSnapshot {
   lanAvailable: boolean;
 }
 
+export const PLUGIN_HASH_CONTRACT = Object.freeze({
+  algorithm: "sha256",
+  canonicalization: "canonical-json-v1",
+} as const);
+
 export interface PluginRoomEvent {
   sequence: number;
   roomId: string;
@@ -74,8 +79,12 @@ export interface PluginAuthoritativeCommit {
   revision: number;
   protocolVersion: number;
   events: unknown[];
+  /** SHA-256 digest of canonical JSON as defined by {@link PLUGIN_HASH_CONTRACT}. */
   stateHash: string;
-  terminal?: { resultHash: string };
+  terminal?: {
+    /** SHA-256 digest of canonical JSON as defined by {@link PLUGIN_HASH_CONTRACT}. */
+    resultHash: string;
+  };
 }
 
 export type PluginAuthoritativeRoomEvent = PluginRoomIntent | PluginAuthoritativeCommit;
@@ -85,7 +94,9 @@ export interface PluginRoomCheckpoint {
   revision: number;
   protocolVersion: number;
   payload: unknown;
+  /** SHA-256 digest of canonical JSON as defined by {@link PLUGIN_HASH_CONTRACT}. */
   stateHash: string;
+  /** SHA-256 digest of canonical JSON as defined by {@link PLUGIN_HASH_CONTRACT}. */
   checksum: string;
 }
 
@@ -101,7 +112,8 @@ export interface PluginEventApi {
   onPluginOut(callback: (context: PluginExitContext) => void): PluginUnsubscribe;
   onThemeChanged(callback: (theme: PluginThemeSnapshot) => void): PluginUnsubscribe;
   onNetworkChanged(callback: (network: PluginNetworkSnapshot) => void): PluginUnsubscribe;
-  onRoomEvent(callback: (event: PluginRoomEvent | PluginAuthoritativeRoomEvent) => void): PluginUnsubscribe;
+  onRoomEvent(callback: (event: PluginRoomEvent) => void): PluginUnsubscribe;
+  onAuthoritativeRoomEvent(callback: (event: PluginAuthoritativeRoomEvent) => void): PluginUnsubscribe;
   onRoomPresenceChanged(callback: (event: PluginRoomPresenceEvent) => void): PluginUnsubscribe;
   onVisibilityChanged(callback: (visible: boolean) => void): PluginUnsubscribe;
 }
@@ -148,8 +160,25 @@ export interface PluginRoomSummary {
   revision?: number;
 }
 
+export interface PluginAuthoritativeRoomSummary extends PluginRoomSummary {
+  admission: PluginRoomAdmission;
+  roomVersion: number;
+  revision: number;
+}
+
+export interface PluginRoomInvite {
+  inviteId: string;
+  /** Opaque capability token minted and validated by the host. */
+  token: string;
+  roomId: string;
+  roomVersion: number;
+  expiresAt: number;
+  pluginId: string;
+}
+
 export interface PluginRoomRecovery {
-  room: PluginRoomSummary;
+  room: PluginAuthoritativeRoomSummary;
+  headRevision: number;
   checkpoint: PluginRoomCheckpoint | null;
   commits: PluginAuthoritativeCommit[];
 }
@@ -157,7 +186,7 @@ export interface PluginRoomRecovery {
 export type PluginRoomInviteFailureReason = "expired" | "full" | "closed" | "not_found" | "incompatible" | "stale";
 
 export type PluginRoomInviteResolution =
-  | { ok: true; room: PluginRoomSummary }
+  | { ok: true; room: PluginAuthoritativeRoomSummary }
   | { ok: false; reason: PluginRoomInviteFailureReason; message: string };
 
 export type PluginRoomIntentInput = Omit<PluginRoomIntent, "kind" | "senderPeerId">;
@@ -171,13 +200,13 @@ export interface PluginRoomApi {
   leave(input: { roomId: string }): Promise<void>;
   send(input: { roomId: string; type: string; payload: unknown; idempotencyKey: string }): Promise<void>;
   snapshot<TResult = unknown>(input: { roomId: string }): Promise<TResult>;
-  invite(input: { roomId: string }): Promise<void>;
+  invite(input: { roomId: string }): Promise<PluginRoomInvite>;
   sendIntent(input: PluginRoomIntentInput): Promise<void>;
   commit(input: PluginAuthoritativeCommitInput): Promise<PluginAuthoritativeCommit>;
   publishCheckpoint(input: PluginRoomCheckpointInput): Promise<PluginRoomCheckpoint>;
   recover(input: { roomId: string; afterRevision: number }): Promise<PluginRoomRecovery>;
-  setAdmission(input: { roomId: string; admission: PluginRoomAdmission }): Promise<PluginRoomSummary>;
-  resolveInvite(input: { roomId: string; roomVersion: number; expiresAt: number }): Promise<PluginRoomInviteResolution>;
+  setAdmission(input: { roomId: string; admission: PluginRoomAdmission }): Promise<PluginAuthoritativeRoomSummary>;
+  resolveInvite(input: { inviteId: string; token: string }): Promise<PluginRoomInviteResolution>;
 }
 
 export interface PluginLeaderboardEntry {
@@ -189,16 +218,27 @@ export interface PluginLeaderboardEntry {
   updatedAt: number;
 }
 
+export interface PluginLegacyLeaderboardSubmitInput {
+  gameId: string;
+  roomId: string;
+  idempotencyKey: string;
+  result: unknown;
+}
+
+export interface PluginAuthoritativeLeaderboardSubmitInput {
+  gameId: string;
+  roomId: string;
+  terminalRevision: number;
+  terminalCommitId: string;
+  /** SHA-256 digest of canonical JSON as defined by {@link PLUGIN_HASH_CONTRACT}. */
+  stateHash: string;
+  result: unknown;
+}
+
 export interface PluginLeaderboardApi {
   list(input: { gameId: string; limit?: number }): Promise<PluginLeaderboardEntry[]>;
-  submit(input: {
-    gameId: string;
-    roomId: string;
-    terminalRevision: number;
-    terminalCommitId: string;
-    stateHash: string;
-    result: unknown;
-  }): Promise<void>;
+  submit(input: PluginLegacyLeaderboardSubmitInput): Promise<void>;
+  submit(input: PluginAuthoritativeLeaderboardSubmitInput): Promise<void>;
 }
 
 export interface PluginStorageApi {

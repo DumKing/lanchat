@@ -4,6 +4,7 @@ export const PLUGIN_EVENTS = Object.freeze({
   themeChanged: "theme.changed",
   networkChanged: "network.changed",
   roomEvent: "room.event",
+  authoritativeRoomEvent: "room.authoritativeEvent",
   roomPresenceChanged: "room.presenceChanged",
   visibilityChanged: "visibility.changed",
 } as const);

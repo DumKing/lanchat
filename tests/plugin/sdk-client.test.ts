@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PLUGIN_EVENTS, createLanChatPluginClient } from "../../packages/plugin-sdk/src/index";
+import { PLUGIN_EVENTS, PLUGIN_HASH_CONTRACT, createLanChatPluginClient } from "../../packages/plugin-sdk/src/index";
 import type { PluginEventName } from "../../packages/plugin-sdk/src/index";
 import type { PluginBridgeTransport, PluginUnsubscribe } from "../../packages/plugin-sdk/src/types";
 
@@ -28,6 +28,11 @@ describe("createLanChatPluginClient", () => {
     const eventName: PluginEventName = "room.presenceChanged";
 
     expect(PLUGIN_EVENTS.roomPresenceChanged).toBe(eventName);
+  });
+
+  it("公开稳定的哈希与权威房间事件约定", () => {
+    expect(PLUGIN_HASH_CONTRACT).toEqual({ algorithm: "sha256", canonicalization: "canonical-json-v1" });
+    expect(PLUGIN_EVENTS.authoritativeRoomEvent).toBe("room.authoritativeEvent");
   });
 
   it("暴露完整的 v1 标准 API 命名空间", () => {
@@ -101,7 +106,7 @@ describe("createLanChatPluginClient", () => {
     };
     const recovery = { roomId: "room-1", afterRevision: 4 };
     const admission = { roomId: "room-1", admission: "closed" as const };
-    const invite = { roomId: "room-1", roomVersion: 7, expiresAt: 2_000_000_000_000 };
+    const invite = { inviteId: "invite-1", token: "opaque-token" };
 
     await client.rooms.sendIntent(intent);
     await client.rooms.commit(commit);
@@ -147,6 +152,33 @@ describe("createLanChatPluginClient", () => {
     ]);
   });
 
+  it("排行榜旧、新提交参数都原样透传", async () => {
+    const { transport, requests } = createTransport();
+    const client = createLanChatPluginClient(transport);
+    const legacy = {
+      gameId: "gomoku",
+      roomId: "room-legacy",
+      idempotencyKey: "legacy-result-1",
+      result: { winnerPeerId: "peer-1" },
+    };
+    const authoritative = {
+      gameId: "monopoly",
+      roomId: "room-authoritative",
+      terminalRevision: 18,
+      terminalCommitId: "commit-18",
+      stateHash: "state-18",
+      result: { winnerPeerId: "peer-2" },
+    };
+
+    await client.leaderboard.submit(legacy);
+    await client.leaderboard.submit(authoritative);
+
+    expect(requests).toEqual([
+      { method: "leaderboard.submit", params: legacy },
+      { method: "leaderboard.submit", params: authoritative },
+    ]);
+  });
+
   it("取消订阅后不再保留事件监听器", () => {
     const { transport, subscriptions } = createTransport();
     const client = createLanChatPluginClient(transport);
@@ -164,6 +196,19 @@ describe("createLanChatPluginClient", () => {
 
     expect(subscriptions.map((item) => item.event)).toEqual(["room.presenceChanged"]);
     unsubscribe();
+    expect(subscriptions).toHaveLength(0);
+  });
+
+  it("分别订阅并取消订阅旧房间事件与权威房间事件", () => {
+    const { transport, subscriptions } = createTransport();
+    const client = createLanChatPluginClient(transport);
+    const unsubscribeLegacy = client.events.onRoomEvent(() => undefined);
+    const unsubscribeAuthoritative = client.events.onAuthoritativeRoomEvent(() => undefined);
+
+    expect(subscriptions.map((item) => item.event)).toEqual(["room.event", "room.authoritativeEvent"]);
+    unsubscribeLegacy();
+    expect(subscriptions.map((item) => item.event)).toEqual(["room.authoritativeEvent"]);
+    unsubscribeAuthoritative();
     expect(subscriptions).toHaveLength(0);
   });
 });

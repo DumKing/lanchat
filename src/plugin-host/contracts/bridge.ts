@@ -115,8 +115,24 @@ export interface PluginRoomSummary {
   revision?: number;
 }
 
+export interface PluginAuthoritativeRoomSummary extends PluginRoomSummary {
+  admission: PluginRoomAdmission;
+  roomVersion: number;
+  revision: number;
+}
+
+export interface PluginRoomInvite {
+  inviteId: string;
+  token: string;
+  roomId: string;
+  roomVersion: number;
+  expiresAt: number;
+  pluginId: string;
+}
+
 export interface PluginRoomRecovery {
-  room: PluginRoomSummary;
+  room: PluginAuthoritativeRoomSummary;
+  headRevision: number;
   checkpoint: PluginRoomCheckpoint | null;
   commits: PluginAuthoritativeCommit[];
 }
@@ -124,7 +140,7 @@ export interface PluginRoomRecovery {
 export type PluginRoomInviteFailureReason = "expired" | "full" | "closed" | "not_found" | "incompatible" | "stale";
 
 export type PluginRoomInviteResolution =
-  | { ok: true; room: PluginRoomSummary }
+  | { ok: true; room: PluginAuthoritativeRoomSummary }
   | { ok: false; reason: PluginRoomInviteFailureReason; message: string };
 
 export interface PluginRoomPresenceEvent {
@@ -141,7 +157,61 @@ export interface PluginEventApi {
   onPluginOut(callback: (context: PluginExitContext) => void): PluginUnsubscribe;
   onThemeChanged(callback: (theme: PluginThemeSnapshot) => void): PluginUnsubscribe;
   onNetworkChanged(callback: (network: PluginNetworkSnapshot) => void): PluginUnsubscribe;
-  onRoomEvent(callback: (event: PluginRoomEvent | PluginAuthoritativeRoomEvent) => void): PluginUnsubscribe;
+  onRoomEvent(callback: (event: PluginRoomEvent) => void): PluginUnsubscribe;
+  onAuthoritativeRoomEvent(callback: (event: PluginAuthoritativeRoomEvent) => void): PluginUnsubscribe;
   onRoomPresenceChanged(callback: (event: PluginRoomPresenceEvent) => void): PluginUnsubscribe;
   onVisibilityChanged(callback: (visible: boolean) => void): PluginUnsubscribe;
 }
+
+export interface PluginLegacyLeaderboardSubmitInput {
+  gameId: string;
+  roomId: string;
+  idempotencyKey: string;
+  result: unknown;
+}
+
+export interface PluginAuthoritativeLeaderboardSubmitInput {
+  gameId: string;
+  roomId: string;
+  terminalRevision: number;
+  terminalCommitId: string;
+  stateHash: string;
+  result: unknown;
+}
+
+// The built-in SDK is the contract source. These assertions keep the host bridge mirror structurally compatible.
+import type {
+  PluginAuthoritativeCommit as SdkPluginAuthoritativeCommit,
+  PluginAuthoritativeLeaderboardSubmitInput as SdkPluginAuthoritativeLeaderboardSubmitInput,
+  PluginAuthoritativeRoomEvent as SdkPluginAuthoritativeRoomEvent,
+  PluginAuthoritativeRoomSummary as SdkPluginAuthoritativeRoomSummary,
+  PluginLegacyLeaderboardSubmitInput as SdkPluginLegacyLeaderboardSubmitInput,
+  PluginRoomCheckpoint as SdkPluginRoomCheckpoint,
+  PluginRoomEvent as SdkPluginRoomEvent,
+  PluginRoomInvite as SdkPluginRoomInvite,
+  PluginRoomInviteResolution as SdkPluginRoomInviteResolution,
+  PluginRoomRecovery as SdkPluginRoomRecovery,
+} from "../../../packages/plugin-sdk/src/types";
+
+type IsExactly<Left, Right> =
+  (<Value>() => Value extends Left ? 1 : 2) extends
+  (<Value>() => Value extends Right ? 1 : 2)
+    ? (<Value>() => Value extends Right ? 1 : 2) extends
+      (<Value>() => Value extends Left ? 1 : 2)
+      ? true
+      : false
+    : false;
+type Assert<Condition extends true> = Condition;
+
+export type PluginBridgeContractCompatibilityAssertions = [
+  Assert<IsExactly<PluginRoomEvent, SdkPluginRoomEvent>>,
+  Assert<IsExactly<PluginAuthoritativeRoomEvent, SdkPluginAuthoritativeRoomEvent>>,
+  Assert<IsExactly<PluginAuthoritativeCommit, SdkPluginAuthoritativeCommit>>,
+  Assert<IsExactly<PluginRoomCheckpoint, SdkPluginRoomCheckpoint>>,
+  Assert<IsExactly<PluginAuthoritativeRoomSummary, SdkPluginAuthoritativeRoomSummary>>,
+  Assert<IsExactly<PluginRoomInvite, SdkPluginRoomInvite>>,
+  Assert<IsExactly<PluginRoomRecovery, SdkPluginRoomRecovery>>,
+  Assert<IsExactly<PluginRoomInviteResolution, SdkPluginRoomInviteResolution>>,
+  Assert<IsExactly<PluginLegacyLeaderboardSubmitInput, SdkPluginLegacyLeaderboardSubmitInput>>,
+  Assert<IsExactly<PluginAuthoritativeLeaderboardSubmitInput, SdkPluginAuthoritativeLeaderboardSubmitInput>>,
+];
