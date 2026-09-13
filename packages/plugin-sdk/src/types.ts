@@ -79,10 +79,10 @@ export interface PluginAuthoritativeCommit {
   revision: number;
   protocolVersion: number;
   events: unknown[];
-  /** SHA-256 digest of canonical JSON as defined by {@link PLUGIN_HASH_CONTRACT}. */
+  /** Hash of the complete business-state payload using {@link PLUGIN_HASH_CONTRACT}. */
   stateHash: string;
   terminal?: {
-    /** SHA-256 digest of canonical JSON as defined by {@link PLUGIN_HASH_CONTRACT}. */
+    /** Hash of `result` using {@link PLUGIN_HASH_CONTRACT}. */
     resultHash: string;
   };
 }
@@ -94,9 +94,9 @@ export interface PluginRoomCheckpoint {
   revision: number;
   protocolVersion: number;
   payload: unknown;
-  /** SHA-256 digest of canonical JSON as defined by {@link PLUGIN_HASH_CONTRACT}. */
+  /** Hash of the complete business-state payload using {@link PLUGIN_HASH_CONTRACT}. */
   stateHash: string;
-  /** SHA-256 digest of canonical JSON as defined by {@link PLUGIN_HASH_CONTRACT}. */
+  /** Hash of `{roomId,revision,protocolVersion,payload,stateHash}` using {@link PLUGIN_HASH_CONTRACT}. */
   checksum: string;
 }
 
@@ -166,9 +166,10 @@ export interface PluginAuthoritativeRoomSummary extends PluginRoomSummary {
   revision: number;
 }
 
+/** Host-issued invitation payload delivered through the invitation card or plugin entry context. */
 export interface PluginRoomInvite {
   inviteId: string;
-  /** Opaque capability token minted and validated by the host. */
+  /** Opaque capability token minted and validated by the host; `rooms.invite` never returns it. */
   token: string;
   roomId: string;
   roomVersion: number;
@@ -200,7 +201,7 @@ export interface PluginRoomApi {
   leave(input: { roomId: string }): Promise<void>;
   send(input: { roomId: string; type: string; payload: unknown; idempotencyKey: string }): Promise<void>;
   snapshot<TResult = unknown>(input: { roomId: string }): Promise<TResult>;
-  invite(input: { roomId: string }): Promise<PluginRoomInvite>;
+  invite(input: { roomId: string }): Promise<void>;
   sendIntent(input: PluginRoomIntentInput): Promise<void>;
   commit(input: PluginAuthoritativeCommitInput): Promise<PluginAuthoritativeCommit>;
   publishCheckpoint(input: PluginRoomCheckpointInput): Promise<PluginRoomCheckpoint>;
@@ -230,7 +231,7 @@ export interface PluginAuthoritativeLeaderboardSubmitInput {
   roomId: string;
   terminalRevision: number;
   terminalCommitId: string;
-  /** SHA-256 digest of canonical JSON as defined by {@link PLUGIN_HASH_CONTRACT}. */
+  /** Hash of the complete business-state payload using {@link PLUGIN_HASH_CONTRACT}. */
   stateHash: string;
   result: unknown;
 }

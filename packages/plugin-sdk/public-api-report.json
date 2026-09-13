@@ -1,4 +1,5 @@
 {
+  "schemaVersion": 1,
   "exportedTypes": [
     "LanChatPluginApiV1",
     "PluginAppApi",
@@ -19,6 +20,7 @@
     "PluginEventName",
     "PluginExitContext",
     "PluginExitReason",
+    "PluginJsonValue",
     "PluginLeaderboardApi",
     "PluginLeaderboardEntry",
     "PluginLegacyLeaderboardSubmitInput",
@@ -43,13 +45,20 @@
     "PluginUiApi",
     "PluginUnsubscribe"
   ],
+  "runtimeExports": [
+    "PLUGIN_EVENTS",
+    "PLUGIN_HASH_CONTRACT",
+    "canonicalizePluginValue",
+    "createLanChatPluginClient",
+    "sha256PluginValue"
+  ],
   "runtimeConstants": {
     "PLUGIN_EVENTS": {
+      "authoritativeRoomEvent": "room.authoritativeEvent",
       "enter": "plugin.enter",
       "networkChanged": "network.changed",
       "out": "plugin.out",
       "roomEvent": "room.event",
-      "authoritativeRoomEvent": "room.authoritativeEvent",
       "roomPresenceChanged": "room.presenceChanged",
       "themeChanged": "theme.changed",
       "visibilityChanged": "visibility.changed"
@@ -60,15 +69,65 @@
     }
   },
   "clientMethods": {
-    "app": ["close", "getInstance", "getVersion"],
-    "chat": ["send"],
-    "devices": ["list"],
-    "events": ["onAuthoritativeRoomEvent", "onNetworkChanged", "onPluginEnter", "onPluginOut", "onRoomEvent", "onRoomPresenceChanged", "onThemeChanged", "onVisibilityChanged"],
-    "leaderboard": ["list", "submit"],
-    "logger": ["debug", "error", "info", "warn"],
-    "rooms": ["commit", "create", "invite", "join", "leave", "list", "publishCheckpoint", "recover", "resolveInvite", "send", "sendIntent", "setAdmission", "snapshot"],
-    "storage": ["delete", "get", "keys", "set"],
-    "theme": ["current"],
-    "ui": ["confirm", "notify", "pickFile"]
+    "app": [
+      "close",
+      "getInstance",
+      "getVersion"
+    ],
+    "chat": [
+      "send"
+    ],
+    "devices": [
+      "list"
+    ],
+    "events": [
+      "onAuthoritativeRoomEvent",
+      "onNetworkChanged",
+      "onPluginEnter",
+      "onPluginOut",
+      "onRoomEvent",
+      "onRoomPresenceChanged",
+      "onThemeChanged",
+      "onVisibilityChanged"
+    ],
+    "leaderboard": [
+      "list",
+      "submit"
+    ],
+    "logger": [
+      "debug",
+      "error",
+      "info",
+      "warn"
+    ],
+    "rooms": [
+      "commit",
+      "create",
+      "invite",
+      "join",
+      "leave",
+      "list",
+      "publishCheckpoint",
+      "recover",
+      "resolveInvite",
+      "send",
+      "sendIntent",
+      "setAdmission",
+      "snapshot"
+    ],
+    "storage": [
+      "delete",
+      "get",
+      "keys",
+      "set"
+    ],
+    "theme": [
+      "current"
+    ],
+    "ui": [
+      "confirm",
+      "notify",
+      "pickFile"
+    ]
   }
 }

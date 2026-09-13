@@ -13,7 +13,9 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "public-api:generate": "npm run build && node scripts/generate-public-api-report.mjs --output public-api-report.json",
+    "public-api:check": "npm run build && node scripts/generate-public-api-report.mjs --check public-api-report.json"
   },
   "devDependencies": {
     "typescript": "~5.6.2"

@@ -1,0 +1,13 @@
+{
+  "canonicalization": [
+    { "name": "null", "input": null, "expected": "null" },
+    { "name": "negative zero", "input": -0, "expected": "0" },
+    { "name": "nested values and sorted keys", "input": { "b": 1, "a": [true, null, "x"] }, "expected": "{\"a\":[true,null,\"x\"],\"b\":1}" },
+    { "name": "UTF-16 code-unit key order", "input": { "": 2, "😀": 1 }, "expected": "{\"😀\":1,\"\":2}" }
+  ],
+  "hashes": [
+    { "name": "zero", "input": 0, "expected": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9" },
+    { "name": "nested object", "input": { "b": 1, "a": [true, null, "x"] }, "expected": "54a65415ad370228851a1da4b31b6fd42dc58b19a50d35cae759325f7388ce64" },
+    { "name": "unicode keys", "input": { "": 2, "😀": 1 }, "expected": "04208f6cdb854e2ab1b07dd3633a39dec854344fe72824cf7f2fdb4e2e33129e" }
+  ]
+}

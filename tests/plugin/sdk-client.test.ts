@@ -125,6 +125,14 @@ describe("createLanChatPluginClient", () => {
     ]);
   });
 
+  it("保持 rooms.invite 的旧 void 返回行为", async () => {
+    const { transport, requests } = createTransport();
+    const client = createLanChatPluginClient(transport);
+
+    await expect(client.rooms.invite({ roomId: "legacy-room" })).resolves.toBeUndefined();
+    expect(requests).toContainEqual({ method: "rooms.invite", params: { roomId: "legacy-room" } });
+  });
+
   it("保留旧 rooms.send 并使用新的排行榜提交契约", async () => {
     const { transport, requests } = createTransport();
     const client = createLanChatPluginClient(transport);

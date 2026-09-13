@@ -6,48 +6,63 @@ import { describe, expect, it } from "vitest";
 import { PLUGIN_EVENTS, PLUGIN_HASH_CONTRACT, createLanChatPluginClient } from "../../packages/plugin-sdk/src/index";
 import type { PluginBridgeTransport } from "../../packages/plugin-sdk/src/index";
 
-interface PublicApiSnapshot {
+interface PublicApiReport {
+  schemaVersion: number;
   exportedTypes: string[];
+  runtimeExports: string[];
   runtimeConstants: { PLUGIN_EVENTS: Record<string, string>; PLUGIN_HASH_CONTRACT: Record<string, string> };
   clientMethods: Record<string, string[]>;
 }
 
-async function loadSnapshot(): Promise<PublicApiSnapshot> {
-  return JSON.parse(await readFile(resolve("tests/plugin-sdk-public-api.snapshot.json"), "utf8")) as PublicApiSnapshot;
+async function loadReport(): Promise<PublicApiReport> {
+  return JSON.parse(await readFile(resolve("packages/plugin-sdk/public-api-report.json"), "utf8")) as PublicApiReport;
 }
 
 describe("内置 SDK 公共 API 漂移护栏", () => {
+  it("编译产物可重建已提交的规范化公共 API report", () => {
+    const result = spawnSync(process.execPath, [
+      resolve("packages/plugin-sdk/scripts/generate-public-api-report.mjs"),
+      "--check",
+      resolve("packages/plugin-sdk/public-api-report.json"),
+    ], { encoding: "utf8" });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+  });
+
   it("以运行时结构校验常量与客户端方法", async () => {
-    const snapshot = await loadSnapshot();
+    const report = await loadReport();
     const transport: PluginBridgeTransport = {
       request: async <TResult>() => undefined as TResult,
       subscribe: () => () => undefined,
     };
     const client = createLanChatPluginClient(transport) as unknown as Record<string, Record<string, unknown>>;
 
-    expect(PLUGIN_EVENTS).toEqual(snapshot.runtimeConstants.PLUGIN_EVENTS);
-    expect(PLUGIN_HASH_CONTRACT).toEqual(snapshot.runtimeConstants.PLUGIN_HASH_CONTRACT);
-    for (const [namespace, methods] of Object.entries(snapshot.clientMethods)) {
+    expect(PLUGIN_EVENTS).toEqual(report.runtimeConstants.PLUGIN_EVENTS);
+    expect(PLUGIN_HASH_CONTRACT).toEqual(report.runtimeConstants.PLUGIN_HASH_CONTRACT);
+    for (const [namespace, methods] of Object.entries(report.clientMethods)) {
       expect(Object.keys(client[namespace]).sort()).toEqual(methods);
     }
   });
 
   it("以 tsc 夹具校验全部公共类型及旧、新调用", async () => {
     // 主程序内置 SDK 是插件契约源；独立 SDK 仓库发布它的镜像。
-    const snapshot = await loadSnapshot();
+    const report = await loadReport();
     const directory = await mkdtemp(join(tmpdir(), "lanchat-plugin-sdk-source-"));
     const fixturePath = join(directory, "fixture.ts");
     const configPath = join(directory, "tsconfig.json");
-    const importedTypes = snapshot.exportedTypes.join(",\n  ");
+    const importedTypes = report.exportedTypes.join(",\n  ");
     const fixture = `
 import type {\n  ${importedTypes}\n} from "@lanchat/plugin-sdk";
-import { PLUGIN_HASH_CONTRACT } from "@lanchat/plugin-sdk";
+import { PLUGIN_HASH_CONTRACT, canonicalizePluginValue, sha256PluginValue } from "@lanchat/plugin-sdk";
 declare const api: LanChatPluginApiV1;
+const legacyInvite: (input: { roomId: string }) => Promise<void> = api.rooms.invite;
 api.leaderboard.submit({ gameId: "g", roomId: "r", idempotencyKey: "legacy", result: {} });
 api.leaderboard.submit({ gameId: "g", roomId: "r", terminalRevision: 1, terminalCommitId: "c", stateHash: "s", result: {} });
+const canonical: string = canonicalizePluginValue({ b: 1, a: 2 });
+const digest: Promise<string> = sha256PluginValue({ b: 1, a: 2 });
 api.events.onRoomEvent((event) => void event.sequence);
 api.events.onAuthoritativeRoomEvent((event) => void event.kind);
-api.rooms.invite({ roomId: "r" }).then((issued) => void issued.token);
+api.rooms.invite({ roomId: "r" });
 api.rooms.resolveInvite({ inviteId: "i", token: "opaque" });
 api.rooms.resolveInvite({ inviteId: "i", token: "opaque" }).then((resolved) => resolved.ok && void resolved.room.revision);
 api.rooms.recover({ roomId: "r", afterRevision: 0 }).then((recovered) => void recovered.headRevision);
@@ -58,8 +73,8 @@ const invite: PluginRoomInvite = { inviteId: "i", token: "opaque", roomId: "r", 
 const room: PluginAuthoritativeRoomSummary = { roomId: "r", gameId: "g", ownerPeerId: "p", memberPeerIds: ["p"], schemaVersion: 1, admission: "lobby", roomVersion: 1, revision: 0 };
 const recovery: PluginRoomRecovery = { room, headRevision: 0, checkpoint: null, commits: [] };
 const resolvedInvite: PluginRoomInviteResolution = { ok: true, room };
-type PublicTypes = [${snapshot.exportedTypes.join(", ")}];
-void [invite, recovery, resolvedInvite, PLUGIN_HASH_CONTRACT];
+type PublicTypes = [${report.exportedTypes.join(", ")}];
+void [legacyInvite, invite, recovery, resolvedInvite, canonical, digest, PLUGIN_HASH_CONTRACT];
 declare const publicTypes: PublicTypes;
 void publicTypes;
 `;

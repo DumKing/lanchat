@@ -40,7 +40,7 @@
     "test:i18n": "node scripts/test-i18n.mjs",
     "test:tauri-main-binary": "node scripts/test-tauri-main-binary.mjs",
     "test:plugin-contracts": "node scripts/test-plugin-contracts.mjs",
-    "test:plugin": "vitest run tests/plugin",
+    "test:plugin": "npm run build:plugin-sdk && vitest run tests/plugin",
     "build:plugin-sdk": "npm run build --workspace @lanchat/plugin-sdk",
     "build": "node scripts/write-build-timestamp.mjs && vue-tsc --noEmit && vite build",
     "preview": "vite preview",
