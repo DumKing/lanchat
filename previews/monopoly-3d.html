@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>大富翁 3D · 微缩城市预览</title>
+  <link rel="stylesheet" href="./monopoly-3d.css">
+  <link rel="stylesheet" href="./monopoly-3d-app.css">
+</head>
+<body class="provider-root theme-lan">
+  <header><div class="brand"><span class="brand-icon">🎲</span><strong>大富翁 <em>3D</em></strong><span class="badge">预览房间</span></div><div class="header-actions"><label class="theme-picker">主题 <select id="theme" aria-label="预览软件主题"><option value="lan">局域网绿</option><option value="dingtalk">钉钉蓝</option><option value="work">办公简约</option><option value="light">清新浅色</option></select></label><button id="rules-open">游戏规则 ↗</button></div></header>
+  <main>
+    <section class="game">
+      <div class="scene-heading"><div><h1>城市棋盘</h1><p>40 格 · 原版规则 · 4 人示例</p></div><div class="view-options"><button id="angle" aria-pressed="false">切换俯视</button><button id="reset">重置预览</button></div></div>
+      <div class="scene"><svg id="board" viewBox="0 0 1080 760" role="group" aria-label="40 格立体棋盘"></svg><div class="zoom-controls" role="group" aria-label="棋盘缩放"><button id="zoom-out" aria-label="缩小棋盘" title="缩小">−</button><output id="zoom-value" aria-live="polite">100%</output><button id="zoom-in" aria-label="放大棋盘" title="放大">＋</button><button id="zoom-reset" title="恢复默认大小和位置">复位</button></div><div class="scene-tip">滚轮缩放 · 拖动棋盘 · 点击地块查看详情</div><div class="compass">N<br>◇</div></div>
+      <div class="play-bar"><div class="turn-icon">▶</div><div class="turn-copy"><strong>轮到你探索城市</strong><small id="status" aria-live="polite">从起点出发，试试掷骰子吧</small></div><span class="dice" id="dice">⚄</span><button class="primary" id="roll">掷骰子 <span>→</span></button></div>
+      <div class="preview-note">视觉与走格演示 · 示例资产与建筑 · 正式版将复用现有规则和房间逻辑</div>
+    </section>
+    <aside><div class="section-title"><h2>城市玩家</h2><span>4 人示例</span></div><div id="players"></div><section class="property-panel"><div class="section-title"><h2>地块详情</h2><span id="tile-number">NO. 02</span></div><div id="property-art"></div><div class="property-heading"><div><small id="property-kind">地产</small><h3 id="property-name">晴川城</h3></div><span id="owner-chip">红队</span></div><div id="property-facts" class="facts"></div><p id="property-description"></p></section><div class="small-note"><span>✦</span><div><strong>原版规则，立体呈现</strong><p>买地、免费升级、连排收租，<br>还有熟悉的道具与随机事件。</p></div></div></aside>
+  </main>
+  <dialog id="rules"><div class="dialog-heading"><h2>沿用现有大富翁规则</h2><button id="rules-close" aria-label="关闭规则">✕</button></div><p>本页是视觉与移动预览，不执行完整经济结算、道具或多人联机。</p><ul><li>棋盘共 40 格：32 块地产、4 个随机事件、起点／机场／地价翻倍／监狱。</li><li>默认开局 5000 金币、20 个完整回合，每次行动限时 30 秒。</li><li>购买空地花费 350 金币并形成小屋；再次踩中自己的建筑，自动免费升一级，最高三级。</li><li>小屋、二级、三级基础过路费依次为 500、1000、2000 金币；连排、神明与特殊状态按原规则计算。</li><li>银行暂持的小屋、二级、三级直接购买价依次为 500、1500、3500 金币。</li><li>道具、机场目标、随机事件、破产处置及房主裁决计划复用原实现。</li><li>到达回合上限或仅剩一名未破产玩家时结束，最终只按当前金币排名。</li></ul></dialog>
+  <script type="module" src="./monopoly-3d.js"></script>
+</body></html>

@@ -1,0 +1,41 @@
+/* Room-sized preview: use LanChat theme variables and fit the available panel. */
+.provider-root{
+  --board-shadow:color-mix(in srgb,var(--accent) 35%,var(--text));
+  --board-side:color-mix(in srgb,var(--accent) 30%,var(--line));
+  --board-base:color-mix(in srgb,var(--accent) 23%,var(--panel-bg));
+  --board-edge:color-mix(in srgb,var(--accent) 6%,var(--panel-bg));
+  --board-park:color-mix(in srgb,var(--accent) 12%,var(--panel-bg));
+  --board-garden:color-mix(in srgb,var(--accent) 19%,var(--panel-bg));
+  --board-water:color-mix(in srgb,var(--accent) 38%,var(--panel-bg));
+  --board-water-deep:color-mix(in srgb,var(--accent) 55%,var(--panel-bg));
+  --board-tree-shadow:color-mix(in srgb,var(--accent) 20%,transparent);
+  --board-trunk:color-mix(in srgb,var(--accent) 25%,var(--muted));
+  --board-tree:color-mix(in srgb,var(--accent) 48%,var(--panel-bg));
+  --board-tree-light:color-mix(in srgb,var(--accent) 30%,var(--panel-bg));
+  --board-ink:color-mix(in srgb,var(--accent) 45%,var(--text));
+  --board-tile:color-mix(in srgb,var(--accent) 3%,var(--panel-bg));
+  --board-event:color-mix(in srgb,var(--accent) 19%,var(--panel-bg));
+  --board-corner:color-mix(in srgb,var(--accent) 26%,var(--panel-bg));
+  --board-line:color-mix(in srgb,var(--accent) 25%,var(--line));
+}
+#board .tile:hover .tile-top,#board .tile-top:focus-visible{fill:var(--soft-accent);stroke:var(--accent);stroke-width:3}
+#board .tile.selected .tile-top{fill:var(--board-corner);stroke:var(--accent);stroke-width:3}
+html,body{width:100%;height:100%;overflow:hidden}
+body{display:grid;grid-template-rows:52px minmax(0,1fr);font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif;color:var(--text);background:var(--app-bg)}
+body>header{height:52px;padding:0 16px;background:var(--top-bg);border-color:var(--line)}
+.brand{gap:9px}.brand-icon{width:30px;height:30px;font-size:18px;border-radius:6px;background:var(--soft-accent);box-shadow:none}.brand strong{font-size:15px;letter-spacing:0}.brand em{color:var(--accent)}.badge{color:var(--muted);border-color:var(--line);font-size:10px}
+.header-actions{gap:12px}.theme-picker{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:11px}.theme-picker select{font:inherit;color:var(--text);border:1px solid var(--line);background:var(--panel-bg);border-radius:6px;padding:5px}
+button{border-color:var(--line);color:var(--text);background:var(--panel-bg);border-radius:6px;font-size:12px;padding:7px 10px}button:hover{background:var(--soft-accent)}button:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+main{width:100%;max-width:none;min-height:0;padding:12px;margin:0;gap:12px;grid-template-columns:minmax(0,1fr) 224px;overflow:hidden}
+.game{display:grid;grid-template-rows:38px minmax(0,1fr) 64px 16px;gap:8px;min-height:0;overflow:hidden}
+.scene-heading{padding:0 2px;gap:8px;align-items:center}.scene-heading>div:first-child{display:flex;align-items:center;gap:12px;min-width:0}h1{font-size:13px;margin:0;letter-spacing:0;white-space:nowrap}.scene-heading p{font-size:11px;color:var(--muted)}.view-options{flex-direction:row;gap:6px}.view-options button{background:var(--panel-bg);padding:6px 9px}
+.scene{margin:0;min-height:0;border:1px solid var(--line);border-radius:8px;background:radial-gradient(ellipse at center,color-mix(in srgb,var(--accent) 9%,var(--chat-bg)),var(--chat-bg) 75%)}
+#board{width:100%;height:100%;max-height:none;display:block;overflow:hidden}
+.scene-tip{bottom:9px;font-size:10px;color:var(--muted)}.compass{right:16px;bottom:20px;color:var(--muted)}
+.zoom-controls{top:10px;left:10px;padding:3px;border-radius:6px;background:var(--panel-bg);border-color:var(--line);box-shadow:0 2px 8px #00000008}.zoom-controls button:hover{background:var(--soft-accent)}.zoom-controls output{color:var(--muted)}#zoom-reset{border-color:var(--line)}
+.play-bar{padding:10px 12px;gap:12px;border-radius:8px;background:var(--panel-bg);border-color:var(--line);box-shadow:none}.turn-icon{display:grid;width:32px;height:32px;background:var(--soft-accent);color:var(--accent)}.turn-copy strong{font-size:12px}.turn-copy small{color:var(--muted);font-size:10px;margin-top:4px}.dice{font-size:29px;color:var(--accent)}.primary{padding:10px 18px;background:var(--accent);border-color:var(--accent);color:#fff;font-size:12px}.primary:hover{background:color-mix(in srgb,var(--accent) 85%,#000)}.preview-note{margin:0;color:var(--muted);font-size:9px;line-height:16px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+aside{display:block;min-width:0;min-height:0;overflow:auto;padding:2px 0 0;scrollbar-width:thin}.section-title{margin-bottom:9px}h2{font-size:12px}.section-title>span{color:var(--muted)}.player{padding:8px;gap:8px;border-radius:6px;margin-bottom:6px;background:var(--panel-bg);border-color:var(--line)}.player.you{border-color:var(--accent);background:var(--soft-accent);box-shadow:none}.avatar{width:32px;height:32px;border-radius:6px;flex-shrink:0}.player strong{font-size:11px}.player small{font-size:9px;color:var(--muted);margin-top:3px}.money{font-size:12px}
+.property-panel{margin-top:12px;padding:12px;border-radius:8px;background:var(--panel-bg);border-color:var(--line)}#property-art{height:88px;background:radial-gradient(ellipse,var(--soft-accent),transparent 70%)}.sprite{width:74px;height:82px}.property-heading{margin:8px 0 10px}.property-heading small{color:var(--muted)}h3{font-size:16px}.facts{padding:10px 0;margin-bottom:8px;border-color:var(--line)}.facts small{color:var(--muted)}.facts strong{font-size:12px}.property-panel p{font-size:10px;color:var(--muted)}.small-note{display:none}
+dialog{color:var(--text);background:var(--panel-bg);border-color:var(--line);border-radius:8px;max-height:calc(100dvh - 32px);overflow:auto}dialog p{color:var(--muted)}
+@media(max-width:960px){main{grid-template-columns:minmax(0,1fr) 196px;padding:8px;gap:8px}.scene-heading p{display:none}.play-bar{gap:8px}.primary{padding:10px 12px}.primary span{padding-left:10px}}
+@media(max-width:620px){main{grid-template-columns:minmax(0,1fr) 160px;padding:6px;gap:6px}.brand .badge,.theme-picker{display:none}.scene-heading>div:first-child{display:none}.scene-heading{justify-content:flex-end}.player{gap:5px;padding:6px}.avatar{width:26px;height:26px}.money{font-size:10px}.player strong{font-size:10px}.property-panel{padding:8px}.turn-icon,.dice,.compass{display:none}.primary{padding:10px 8px}.primary span{display:none}.scene-tip{font-size:9px;white-space:normal;width:90%;text-align:center}.zoom-controls button{padding:6px;min-width:26px}.zoom-controls output{min-width:40px}.turn-copy small{max-width:130px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
