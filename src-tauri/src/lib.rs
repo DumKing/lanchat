@@ -34,13 +34,16 @@ use protocol::{CallSignalFrame, GameFrame};
 use plugin::commands::{
     destroy_plugin_instance, destroy_plugin_instances, emit_plugin_runtime_event,
     plugin_private_storage_delete, plugin_private_storage_get, plugin_private_storage_keys,
-    plugin_private_storage_set, resolve_plugin_bridge_request,
-    set_plugin_instance_bounds, set_plugin_instance_visible, start_plugin_instance,
+    plugin_private_storage_set, plugin_room_append_commit, plugin_room_close, plugin_room_load,
+    plugin_room_save_checkpoint, plugin_room_save_metadata, plugin_room_set_admission,
+    resolve_plugin_bridge_request, set_plugin_instance_bounds, set_plugin_instance_visible,
+    start_plugin_instance,
 };
 use plugin::manifest::{parse_and_validate_manifest, PluginManifest};
 use plugin::protocol::{plugin_bridge_protocol, plugin_protocol_response};
 use plugin::registry::load_enabled_plugin_manifests;
 use plugin::repository::PluginRepository;
+use plugin::room_storage::PluginRoomStorage;
 use plugin::runtime::PluginRuntime;
 use plugin::signature::PluginKeyring;
 use plugin::storage::{InstalledPluginRecord, PluginStorage};
@@ -571,6 +574,7 @@ struct ReleaseDownloadMetadata {
 struct AppState {
     storage: Arc<Storage>,
     plugin_storage: Arc<PluginStorage>,
+    plugin_room_storage: Arc<PluginRoomStorage>,
     plugin_repository: Arc<PluginRepository>,
     plugin_runtime: Arc<PluginRuntime>,
     network: Network,
@@ -4314,6 +4318,10 @@ pub fn run() {
                 PluginStorage::open(app_dir.join("plugins.sqlite3"))
                     .map_err(|err| format!("初始化插件存储失败：{err}"))?,
             );
+            let plugin_room_storage = Arc::new(
+                PluginRoomStorage::open(app_dir.join("plugins.sqlite3"))
+                    .map_err(|err| format!("初始化插件房间存储失败：{err}"))?,
+            );
             let plugin_keyring = PluginKeyring::from_json(include_bytes!(
                 "../resources/plugin-trusted-keys.json"
             ))?;
@@ -4347,6 +4355,7 @@ pub fn run() {
             app.manage(AppState {
                 storage,
                 plugin_storage,
+                plugin_room_storage,
                 plugin_repository,
                 plugin_runtime,
                 network,
@@ -4380,6 +4389,12 @@ pub fn run() {
             plugin_private_storage_set,
             plugin_private_storage_delete,
             plugin_private_storage_keys,
+            plugin_room_load,
+            plugin_room_save_metadata,
+            plugin_room_set_admission,
+            plugin_room_append_commit,
+            plugin_room_save_checkpoint,
+            plugin_room_close,
             list_installed_plugins,
             list_enabled_plugin_manifests,
             install_plugin_package,

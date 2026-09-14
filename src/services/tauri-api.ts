@@ -3,7 +3,83 @@ import type { AdminAlertMode, AdminAlertPushPolicy, AdminDiscoMode, AdminNotific
 import type { DesktopPetPackage, DesktopPetRegistrySnapshot, DesktopPetSettings, PetStatePlaybackConfig } from "../types/desktop-pet";
 import type { PluginGameStatsRecord, PluginTimedLeaderboardRecord } from "../plugin-host/services/leaderboardRecords";
 
+export type StoredPluginRoomAdmission = "lobby" | "closed";
+
+export interface StoredPluginRoomMember {
+  peerId: string;
+  seatIndex: number;
+  joinedAt: number;
+}
+
+export interface SavePluginRoomMetadataInput {
+  pluginId: string;
+  roomId: string;
+  gameId: string;
+  ownerPeerId: string;
+  maxPlayers: number;
+  schemaVersion: number;
+  protocolVersion: number;
+  roomVersion: number;
+  members: StoredPluginRoomMember[];
+}
+
+export interface StoredPluginRoomMetadata extends Omit<SavePluginRoomMetadataInput, "members"> {
+  admission: StoredPluginRoomAdmission;
+  revision: number;
+  terminalCommitId: string | null;
+  terminalStateHash: string | null;
+  closedAt: number | null;
+  updatedAt: number;
+}
+
+export interface AppendPluginRoomCommitInput {
+  commitId: string;
+  commandId: string;
+  baseRevision: number;
+  protocolVersion: number;
+  payload: unknown;
+  stateHash: string;
+  terminalResultHash?: string | null;
+}
+
+export interface StoredPluginRoomCommit extends AppendPluginRoomCommitInput {
+  revision: number;
+  terminalResultHash: string | null;
+  createdAt: number;
+}
+
+export interface SavePluginRoomCheckpointInput {
+  revision: number;
+  protocolVersion: number;
+  payload: unknown;
+  stateHash: string;
+  checksum: string;
+}
+
+export interface StoredPluginRoomCheckpoint extends SavePluginRoomCheckpointInput {
+  createdAt: number;
+}
+
+export interface StoredPluginRoom {
+  metadata: StoredPluginRoomMetadata;
+  members: StoredPluginRoomMember[];
+  checkpoint: StoredPluginRoomCheckpoint | null;
+  commits: StoredPluginRoomCommit[];
+}
+
 export const api = {
+  pluginRoomLoad: (pluginId: string, roomId: string) =>
+    invoke<StoredPluginRoom | null>("plugin_room_load", { pluginId, roomId }),
+  pluginRoomSaveMetadata: (input: SavePluginRoomMetadataInput) =>
+    invoke<StoredPluginRoomMetadata>("plugin_room_save_metadata", { input }),
+  pluginRoomSetAdmission: (pluginId: string, roomId: string, callerPeerId: string, admission: StoredPluginRoomAdmission, roomVersion: number) =>
+    invoke<StoredPluginRoomMetadata>("plugin_room_set_admission", { pluginId, roomId, callerPeerId, admission, roomVersion }),
+  pluginRoomAppendCommit: (pluginId: string, roomId: string, callerPeerId: string, input: AppendPluginRoomCommitInput) =>
+    invoke<StoredPluginRoomCommit>("plugin_room_append_commit", { pluginId, roomId, callerPeerId, input }),
+  pluginRoomSaveCheckpoint: (pluginId: string, roomId: string, callerPeerId: string, input: SavePluginRoomCheckpointInput) =>
+    invoke<StoredPluginRoomCheckpoint>("plugin_room_save_checkpoint", { pluginId, roomId, callerPeerId, input }),
+  pluginRoomClose: (pluginId: string, roomId: string, callerPeerId: string) =>
+    invoke<StoredPluginRoomMetadata>("plugin_room_close", { pluginId, roomId, callerPeerId }),
   getPlatformInfo: () => invoke<PlatformInfo>("get_platform_info"),
   getAppVersionInfo: () => invoke<AppVersionInfo>("get_app_version_info"),
   refreshUpdateProxy: () => invoke<void>("refresh_update_proxy"),

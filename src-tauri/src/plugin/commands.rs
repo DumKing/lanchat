@@ -1,4 +1,8 @@
 use super::manifest::parse_and_validate_manifest;
+use super::room_storage::{
+    AppendCommitInput, CheckpointInput, RoomAdmission, SaveRoomMetadataInput, StoredCheckpoint,
+    StoredCommit, StoredRoom, StoredRoomMetadata,
+};
 use super::runtime::{PluginBounds, StartedPluginInstance};
 use crate::AppState;
 use serde_json::{json, Value};
@@ -229,4 +233,91 @@ pub fn plugin_private_storage_delete(state: State<'_, AppState>, plugin_id: Stri
 #[tauri::command]
 pub fn plugin_private_storage_keys(state: State<'_, AppState>, plugin_id: String) -> Result<Vec<String>, String> {
     state.plugin_storage.storage_keys(&plugin_id)
+}
+
+#[tauri::command]
+pub fn plugin_room_load(
+    state: State<'_, AppState>,
+    plugin_id: String,
+    room_id: String,
+) -> Result<Option<StoredRoom>, String> {
+    state.plugin_room_storage.load(&plugin_id, &room_id)
+}
+
+#[tauri::command]
+pub fn plugin_room_save_metadata(
+    state: State<'_, AppState>,
+    input: SaveRoomMetadataInput,
+) -> Result<StoredRoomMetadata, String> {
+    state
+        .plugin_room_storage
+        .save_metadata(input, chrono::Utc::now().timestamp_millis())
+}
+
+#[tauri::command]
+pub fn plugin_room_set_admission(
+    state: State<'_, AppState>,
+    plugin_id: String,
+    room_id: String,
+    caller_peer_id: String,
+    admission: RoomAdmission,
+    room_version: i64,
+) -> Result<StoredRoomMetadata, String> {
+    state.plugin_room_storage.set_admission(
+        &plugin_id,
+        &room_id,
+        &caller_peer_id,
+        admission,
+        room_version,
+        chrono::Utc::now().timestamp_millis(),
+    )
+}
+
+#[tauri::command]
+pub fn plugin_room_append_commit(
+    state: State<'_, AppState>,
+    plugin_id: String,
+    room_id: String,
+    caller_peer_id: String,
+    input: AppendCommitInput,
+) -> Result<StoredCommit, String> {
+    state.plugin_room_storage.append_commit(
+        &plugin_id,
+        &room_id,
+        &caller_peer_id,
+        input,
+        chrono::Utc::now().timestamp_millis(),
+    )
+}
+
+#[tauri::command]
+pub fn plugin_room_save_checkpoint(
+    state: State<'_, AppState>,
+    plugin_id: String,
+    room_id: String,
+    caller_peer_id: String,
+    input: CheckpointInput,
+) -> Result<StoredCheckpoint, String> {
+    state.plugin_room_storage.save_checkpoint(
+        &plugin_id,
+        &room_id,
+        &caller_peer_id,
+        input,
+        chrono::Utc::now().timestamp_millis(),
+    )
+}
+
+#[tauri::command]
+pub fn plugin_room_close(
+    state: State<'_, AppState>,
+    plugin_id: String,
+    room_id: String,
+    caller_peer_id: String,
+) -> Result<StoredRoomMetadata, String> {
+    state.plugin_room_storage.close(
+        &plugin_id,
+        &room_id,
+        &caller_peer_id,
+        chrono::Utc::now().timestamp_millis(),
+    )
 }

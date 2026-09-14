@@ -6,6 +6,7 @@ pub mod permissions;
 pub mod protocol;
 pub mod registry;
 pub mod repository;
+pub mod room_storage;
 pub mod runtime;
 pub mod signature;
 pub mod storage;
