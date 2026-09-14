@@ -1,15 +1,54 @@
 import ts from "typescript";
-import { readFile, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { readFile, readdir, writeFile } from "node:fs/promises";
+import { dirname, relative, resolve } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
-const sdkRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const defaultSdkRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 function sortedRecord(value) {
   return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0));
 }
 
-export async function createPublicApiReport() {
+function normalizeDeclaration(content) {
+  return `${content.replace(/\r\n?/g, "\n").split("\n").map((line) => line.replace(/[ \t]+$/g, "")).join("\n").replace(/\n*$/g, "")}\n`;
+}
+
+function sha256(content) {
+  return createHash("sha256").update(content, "utf8").digest("hex");
+}
+
+async function collectDeclarations(directory, root = directory) {
+  const declarations = [];
+  const entries = await readdir(directory, { withFileTypes: true });
+  for (const entry of entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0)) {
+    const path = resolve(directory, entry.name);
+    if (entry.isDirectory()) {
+      declarations.push(...await collectDeclarations(path, root));
+    } else if (entry.isFile() && entry.name.endsWith(".d.ts")) {
+      const normalized = normalizeDeclaration(await readFile(path, "utf8"));
+      declarations.push({
+        path: relative(root, path).replaceAll("\\", "/"),
+        content: normalized,
+      });
+    }
+  }
+  return declarations.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+}
+
+function summarizeDeclarations(declarations) {
+  const files = declarations.map(({ path, content }) => ({
+    path,
+    contentHash: sha256(content),
+  }));
+  return {
+    contentHash: sha256(JSON.stringify(declarations.map(({ content }) => content))),
+    graphHash: sha256(JSON.stringify(files)),
+    files,
+  };
+}
+
+export async function createPublicApiReport(sdkRoot = defaultSdkRoot) {
   const declarationPath = resolve(sdkRoot, "dist/index.d.ts");
   const program = ts.createProgram([declarationPath], {
     target: ts.ScriptTarget.ES2020,
@@ -48,8 +87,12 @@ export async function createPublicApiReport() {
     clientMethods[namespace] = Object.keys(client[namespace]).sort();
   }
 
+  const declarations = await collectDeclarations(resolve(sdkRoot, "dist"));
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    generatorVersion: "2.0.0",
+    apiVersion: client.apiVersion,
+    declarations: summarizeDeclarations(declarations),
     exportedTypes,
     runtimeExports: Object.keys(runtime).sort(),
     runtimeConstants: {
@@ -65,8 +108,11 @@ export function serializePublicApiReport(report) {
 }
 
 async function main() {
-  const reportText = serializePublicApiReport(await createPublicApiReport());
   const args = process.argv.slice(2);
+  const sdkRootIndex = args.indexOf("--sdk-root");
+  const sdkRoot = sdkRootIndex >= 0 ? args[sdkRootIndex + 1] : defaultSdkRoot;
+  if (!sdkRoot) throw new Error("--sdk-root requires a directory path");
+  const reportText = serializePublicApiReport(await createPublicApiReport(resolve(sdkRoot)));
   const checkIndex = args.indexOf("--check");
   const outputIndex = args.indexOf("--output");
   if (checkIndex >= 0) {

@@ -1,5 +1,29 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
+  "generatorVersion": "2.0.0",
+  "apiVersion": "1.0",
+  "declarations": {
+    "contentHash": "58635efae68b67a07410ff4b940b6281889bf3a5889bb2739c7fc28e68f8af4b",
+    "graphHash": "e86b8947235e9c3f593b1a6354020980b30486b5081a5450021c0422d59e373b",
+    "files": [
+      {
+        "path": "canonical-json.d.ts",
+        "contentHash": "2d5b12bb2cc248e6438876956c6a97609d1d14c2bc0c73eba8473416ed991db2"
+      },
+      {
+        "path": "events.d.ts",
+        "contentHash": "7b463e41997f42361cf8d7dc4072b15d2055a10b04d2a8820e720ddeac607ed0"
+      },
+      {
+        "path": "index.d.ts",
+        "contentHash": "9ea8cfbff5beda3e68b06d553fc8c83640306b3433f9a8b303aeef2e0401d460"
+      },
+      {
+        "path": "types.d.ts",
+        "contentHash": "a965a2f4f11d6c93c552efdf50f89aa68fa5773f3d8e97096f9b72f797527d6f"
+      }
+    ]
+  },
   "exportedTypes": [
     "LanChatPluginApiV1",
     "PluginAppApi",

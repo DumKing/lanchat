@@ -56,7 +56,7 @@ export function createLanChatPluginClient(transport: PluginBridgeTransport): Lan
       publishCheckpoint: (input) => transport.request("rooms.publishCheckpoint", input),
       recover: (input) => transport.request("rooms.recover", input),
       setAdmission: (input) => transport.request("rooms.setAdmission", input),
-      resolveInvite: (input) => transport.request("rooms.resolveInvite", input),
+      resolveInvite: ({ inviteId, token }) => transport.request("rooms.resolveInvite", { inviteId, token }),
     },
     leaderboard: {
       list: (input) => transport.request("leaderboard.list", input),

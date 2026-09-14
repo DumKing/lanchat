@@ -133,6 +133,24 @@ describe("createLanChatPluginClient", () => {
     expect(requests).toContainEqual({ method: "rooms.invite", params: { roomId: "legacy-room" } });
   });
 
+  it("resolveInvite 只向桥接层发送宿主签发的标识和令牌", async () => {
+    const { transport, requests } = createTransport();
+    const client = createLanChatPluginClient(transport);
+
+    await client.rooms.resolveInvite({
+      inviteId: "invite-1",
+      token: "opaque-token",
+      roomVersion: 99,
+      expiresAt: Number.MAX_SAFE_INTEGER,
+      pluginId: "forged.plugin",
+    } as never);
+
+    expect(requests.at(-1)).toEqual({
+      method: "rooms.resolveInvite",
+      params: { inviteId: "invite-1", token: "opaque-token" },
+    });
+  });
+
   it("保留旧 rooms.send 并使用新的排行榜提交契约", async () => {
     const { transport, requests } = createTransport();
     const client = createLanChatPluginClient(transport);

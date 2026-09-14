@@ -35,6 +35,12 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Build plugin SDK
+        run: npm run build:plugin-sdk
+
+      - name: Check plugin SDK public API report
+        run: npm run public-api:check --workspace @lanchat/plugin-sdk
+
       - name: Build external desktop pet packages
         shell: pwsh
         run: |

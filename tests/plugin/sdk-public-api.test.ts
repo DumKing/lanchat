@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -8,6 +8,13 @@ import type { PluginBridgeTransport } from "../../packages/plugin-sdk/src/index"
 
 interface PublicApiReport {
   schemaVersion: number;
+  generatorVersion: string;
+  apiVersion: string;
+  declarations: {
+    contentHash: string;
+    graphHash: string;
+    files: Array<{ path: string; contentHash: string }>;
+  };
   exportedTypes: string[];
   runtimeExports: string[];
   runtimeConstants: { PLUGIN_EVENTS: Record<string, string>; PLUGIN_HASH_CONTRACT: Record<string, string> };
@@ -16,6 +23,21 @@ interface PublicApiReport {
 
 async function loadReport(): Promise<PublicApiReport> {
   return JSON.parse(await readFile(resolve("packages/plugin-sdk/public-api-report.json"), "utf8")) as PublicApiReport;
+}
+
+const generatorPath = resolve("packages/plugin-sdk/scripts/generate-public-api-report.mjs");
+
+function generateReport(sdkRoot?: string) {
+  const args = [generatorPath];
+  if (sdkRoot) args.push("--sdk-root", sdkRoot);
+  const result = spawnSync(process.execPath, args, { encoding: "utf8" });
+  expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+  return result.stdout;
+}
+
+function replaceRequired(content: string, search: string, replacement: string) {
+  expect(content).toContain(search);
+  return content.replace(search, replacement);
 }
 
 describe("内置 SDK 公共 API 漂移护栏", () => {
@@ -28,6 +50,96 @@ describe("内置 SDK 公共 API 漂移护栏", () => {
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
   });
+
+  it("report 包含版本元数据、完整内容哈希和声明图哈希", async () => {
+    const report = JSON.parse(generateReport()) as PublicApiReport;
+
+    expect(report.schemaVersion).toBe(2);
+    expect(report.generatorVersion).toBe("2.0.0");
+    expect(report.apiVersion).toBe("1.0");
+    expect(report.declarations.contentHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(report.declarations.graphHash).toMatch(/^[a-f0-9]{64}$/);
+    const declarationPaths = report.declarations.files.map(({ path }) => path);
+    expect(declarationPaths).toContain("index.d.ts");
+    expect(declarationPaths).toContain("types.d.ts");
+    expect(declarationPaths).toEqual([...declarationPaths].sort());
+    expect(declarationPaths.every((path) => !path.includes("\\"))).toBe(true);
+  });
+
+  it("声明换行、行尾空白和终止换行差异会被规范化", async () => {
+    const directory = await mkdtemp(resolve(".tmp-plugin-sdk-normalized-"));
+    const sdkRoot = join(directory, "plugin-sdk");
+    try {
+      await cp(resolve("packages/plugin-sdk/dist"), join(sdkRoot, "dist"), { recursive: true });
+      for (const entry of await readdir(join(sdkRoot, "dist"))) {
+        if (!entry.endsWith(".d.ts")) continue;
+        const declarationPath = join(sdkRoot, "dist", entry);
+        const declaration = await readFile(declarationPath, "utf8");
+        const withFormattingNoise = `${declaration.replace(/\r?\n/g, "  \r\n")}\r\n\r\n`;
+        await writeFile(declarationPath, withFormattingNoise, "utf8");
+      }
+
+      expect(generateReport(sdkRoot)).toBe(generateReport());
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("任一声明字段漂移都会使 report 检查失败", async () => {
+    const directory = await mkdtemp(resolve(".tmp-plugin-sdk-declaration-drift-"));
+    const sdkRoot = join(directory, "plugin-sdk");
+    try {
+      await cp(resolve("packages/plugin-sdk/dist"), join(sdkRoot, "dist"), { recursive: true });
+      const typesPath = join(sdkRoot, "dist/types.d.ts");
+      const declarations = await readFile(typesPath, "utf8");
+      await writeFile(typesPath, declarations.replace("roomId: string;", "roomId: string;\n    reviewDrift?: string;"), "utf8");
+      const result = spawnSync(process.execPath, [
+        resolve("packages/plugin-sdk/scripts/generate-public-api-report.mjs"),
+        "--sdk-root",
+        sdkRoot,
+        "--check",
+        resolve("packages/plugin-sdk/public-api-report.json"),
+      ], { encoding: "utf8" });
+
+      expect(result.status).not.toBe(0);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("签名、overload、联合类型、返回类型和嵌套声明变化都会改变 report", async () => {
+    const mutations: Array<[string, string, string]> = [
+      ["types.d.ts", "invite(input: {", "invite(input: {\n        source?: string;"],
+      ["types.d.ts", "    submit(input: PluginLegacyLeaderboardSubmitInput): Promise<void>;\n", ""],
+      ["types.d.ts", '"lobby" | "closed"', '"lobby" | "closed" | "review"'],
+      ["types.d.ts", "Promise<PluginRoomRecovery>", "Promise<void>"],
+    ];
+    const baseline = generateReport();
+
+    for (const [file, search, replacement] of mutations) {
+      const directory = await mkdtemp(resolve(".tmp-plugin-sdk-api-drift-"));
+      const sdkRoot = join(directory, "plugin-sdk");
+      try {
+        await cp(resolve("packages/plugin-sdk/dist"), join(sdkRoot, "dist"), { recursive: true });
+        const declarationPath = join(sdkRoot, "dist", file);
+        const declaration = await readFile(declarationPath, "utf8");
+        await writeFile(declarationPath, replaceRequired(declaration, search, replacement), "utf8");
+        expect(generateReport(sdkRoot)).not.toBe(baseline);
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+
+    const directory = await mkdtemp(resolve(".tmp-plugin-sdk-nested-declaration-"));
+    const sdkRoot = join(directory, "plugin-sdk");
+    try {
+      await cp(resolve("packages/plugin-sdk/dist"), join(sdkRoot, "dist"), { recursive: true });
+      await writeFile(join(sdkRoot, "dist", "nested.d.ts"), "export interface NestedContract { value: string; }\n", "utf8");
+      expect(generateReport(sdkRoot)).not.toBe(baseline);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 15_000);
 
   it("以运行时结构校验常量与客户端方法", async () => {
     const report = await loadReport();
