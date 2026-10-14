@@ -2,7 +2,7 @@
 
 > 文档状态：设计稿 V1  
 > 适用项目：LanChat（Tauri 2 + Vue 3 + TypeScript + Rust）  
-> 对接规范：`DesktopPet_Runtime_与_Skill_对接规范_V2.md`、`windows-desktop-pet-generator` Skill
+> 对接规范：[桌宠资源与 manifest.json 规范](docs/desktop-pet-manifest.md)、`windows-desktop-pet-generator` Skill
 
 ## 1. 目标与边界
 
